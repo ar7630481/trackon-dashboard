@@ -9,18 +9,30 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# 1. PAGE SETUP & THEME
+# 1. PAGE SETUP & LIGHT THEME
 # ==========================================
-st.set_page_config(page_title="Trackon Command Center", page_icon="🚀", layout="wide")
+# Light theme set through code config, overriding dark mode
+st.set_page_config(page_title="Trackon Command Center", page_icon="🚀", layout="wide", initial_sidebar_state="expanded")
 
+# Inject Custom CSS for White/Light Professional Theme & Full Wrapping
 st.markdown("""
 <style>
-    .reportview-container {
-        background: #0E1117;
+    /* Force Light Theme Colors */
+    .stApp {
+        background-color: #F8F9FA;
+        color: #212529;
     }
-    .dataframe {
-        border-radius: 8px !important;
-        overflow: hidden !important;
+    .css-1d391kg {
+        background-color: #FFFFFF;
+    }
+    /* Make headers pop in light mode */
+    h1, h2, h3 {
+        color: #1F618D !important; 
+    }
+    /* DataFrame Wrapping Fix */
+    .stDataFrame {
+        border-radius: 4px !important;
+        background: white !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -54,8 +66,8 @@ if 'role' not in st.session_state:
     st.session_state['role'] = None
 
 if not st.session_state['logged_in']:
-    st.markdown("<h1 style='text-align: center; color: #4facfe;'>🚀 Trackon Command Center</h1>", unsafe_allow_html=True)
-    st.markdown("<h3 style='text-align: center; color: #a8b2d1;'>Secure Login Portal</h3>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center;'>🚀 Trackon Command Center</h1>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center; color: #5D6D7E;'>Secure Login Portal</h3>", unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 1, 1])
     with col2:
@@ -134,7 +146,7 @@ if st.session_state['role'] == 'Admin':
 if os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
     ts = os.path.getmtime(FILE_MAP["FINAL_OUTPUT"])
     dt = datetime.datetime.fromtimestamp(ts).strftime('%d %b %Y, %I:%M %p')
-    st.sidebar.info(f"📊 Dashboard Last Refreshed:\n{dt}")
+    st.sidebar.info(f"📊 Data Last Refreshed:\n{dt}")
 
 # ==========================================
 # 4. DATA LOADING
@@ -150,9 +162,6 @@ def load_dashboard_data():
 
 data = load_dashboard_data()
 
-# ==========================================
-# 5. DASHBOARD NAVIGATION
-# ==========================================
 if not data:
     st.warning("⚠ No dashboard data found! Admin must upload raw files and process data.")
     st.stop()
@@ -161,10 +170,10 @@ menu = ["📊 Daily Standup (1-Hour Call)", "💳 Vendor Payment Dashboard", "�
 choice = st.sidebar.radio("Navigate to:", menu)
 
 # -------------------------------------------------------------
-# A. DAILY STANDUP
+# A. DAILY STANDUP (DIRECT CLICK TO PROOF)
 # -------------------------------------------------------------
 if choice == "📊 Daily Standup (1-Hour Call)":
-    st.markdown("<h1 style='color: #4facfe;'>🚨 Exception Reporting</h1>", unsafe_allow_html=True)
+    st.markdown("<h1>🚨 Exception Reporting</h1>", unsafe_allow_html=True)
     
     if 'Legwise_Route_Summary' in data and 'Legwise_Processed_Data' in data:
         df_leg_sum = data['Legwise_Route_Summary'].copy()
@@ -190,9 +199,10 @@ if choice == "📊 Daily Standup (1-Hour Call)":
                 except: return 0.0
             return 0.0
             
+        # Push 1-Trip to bottom
         if 'Late Dep, Late Arr %' in df_display.columns:
             df_display['SortKey'] = df_display['Late Dep, Late Arr %'].apply(extract_pct)
-            df_display['Is_Single_Trip'] = df_display['Total_Trips'] == 1
+            df_display['Is_Single_Trip'] = df_display['Total_Trips'] <= 1
             df_display = df_display.sort_values(by=['Is_Single_Trip', 'SortKey'], ascending=[True, False]).drop(columns=['SortKey', 'Is_Single_Trip'])
 
         def format_val(x):
@@ -214,11 +224,11 @@ if choice == "📊 Daily Standup (1-Hour Call)":
             try: pct = float(val.split('%')[0].strip())
             except: return ''
             
-            if pct == 0: return 'color: #78909C;' 
-            if 'Late Dep, Late Arr' in col: return 'background-color: rgba(211, 47, 47, 0.2); color: #ff5252; font-weight: bold;'
-            elif 'Ontime Dep, Ontime Arr' in col: return 'background-color: rgba(56, 142, 60, 0.2); color: #69f0ae; font-weight: bold;'
-            elif 'Ontime Dep, Late Arr' in col: return 'background-color: rgba(245, 127, 23, 0.2); color: #ffd740; font-weight: bold;'
-            elif 'Late Dep, Ontime Arr' in col: return 'background-color: rgba(123, 31, 162, 0.2); color: #e040fb; font-weight: bold;'
+            if pct == 0: return 'color: #B0BEC5;' 
+            if 'Late Dep, Late Arr' in col: return 'background-color: rgba(211, 47, 47, 0.15); color: #C62828; font-weight: bold;'
+            elif 'Ontime Dep, Ontime Arr' in col: return 'background-color: rgba(56, 142, 60, 0.15); color: #2E7D32; font-weight: bold;'
+            elif 'Ontime Dep, Late Arr' in col: return 'background-color: rgba(245, 127, 23, 0.15); color: #F57F17; font-weight: bold;'
+            elif 'Late Dep, Ontime Arr' in col: return 'background-color: rgba(123, 31, 162, 0.15); color: #6A1B9A; font-weight: bold;'
             return ''
 
         styled_df = df_display.style
@@ -228,6 +238,7 @@ if choice == "📊 Daily Standup (1-Hour Call)":
 
         st.markdown("### 🔥 Top Priority Routes Summary (Click a row to see proof)")
         
+        # Native click selection
         selection = st.dataframe(
             styled_df, 
             use_container_width=True, 
@@ -238,14 +249,12 @@ if choice == "📊 Daily Standup (1-Hour Call)":
         
         if selection and selection.get('selection', {}).get('rows'):
             selected_idx = selection['selection']['rows'][0]
-            # Fetch BOTH Route Path AND Legwise
             selected_route = df_display.iloc[selected_idx]['Route Path']
             selected_leg = df_display.iloc[selected_idx]['Legwise']
             
             st.markdown("---")
             st.markdown(f"### 🔍 1-Click Proof: Raw Data for `{selected_route}` - `{selected_leg}`")
             
-            # Filter raw data using BOTH Route Path and Legwise
             filtered_raw = df_raw_leg[(df_raw_leg['Route Path'] == selected_route) & (df_raw_leg['Legwise'] == selected_leg)].copy()
             
             cols_to_drop = ['Scheduled TAT Till Destination', 'Actual TAT Till Destination', 
@@ -263,8 +272,8 @@ if choice == "📊 Daily Standup (1-Hour Call)":
             
             def highlight_remarks(val):
                 if isinstance(val, str):
-                    if 'Late Dep, Late Arr' in val: return 'color: #ff5252; font-weight: bold;'
-                    elif 'Ontime Dep, Ontime Arr' in val: return 'color: #69f0ae;'
+                    if 'Late Dep, Late Arr' in val: return 'color: #C62828; font-weight: bold;'
+                    elif 'Ontime Dep, Ontime Arr' in val: return 'color: #2E7D32;'
                 return ''
                 
             styled_raw = filtered_raw.style
@@ -283,7 +292,7 @@ if choice == "📊 Daily Standup (1-Hour Call)":
 # B. VENDOR PAYMENT DASHBOARD 
 # -------------------------------------------------------------
 elif choice == "💳 Vendor Payment Dashboard":
-    st.markdown("<h1 style='color: #4facfe;'>💳 Pan-India Department Pending Tracker</h1>", unsafe_allow_html=True)
+    st.markdown("<h1>💳 Pan-India Department Pending Tracker</h1>", unsafe_allow_html=True)
     
     if 'Master_Database' in data:
         df_pay = data['Master_Database'].copy()
@@ -295,16 +304,16 @@ elif choice == "💳 Vendor Payment Dashboard":
         existing_cols = [c for c in cols_order if c in pvt.columns]
         pvt = pvt.reindex(columns=existing_cols)
         
-        # Function to color columns in pivot table
+        # Colors adjusted for light theme
         def color_payment_columns(val, col_name):
             if pd.isna(val) or val == 0:
                 return ''
             if col_name == '1. USER / DRAFT PENDING':
-                return 'background-color: rgba(211, 47, 47, 0.3); color: white;' # Red
+                return 'background-color: #FFCDD2; color: #C62828; font-weight: bold;' # Red
             elif col_name == '2. COST CONTROL PENDING':
-                return 'background-color: rgba(245, 127, 23, 0.3); color: white;' # Yellow
+                return 'background-color: #FFF9C4; color: #F57F17; font-weight: bold;' # Yellow/Orange
             elif col_name == '3. FINANCE PENDING':
-                return 'background-color: rgba(245, 127, 23, 0.15); color: white;' # Light Yellow
+                return 'background-color: #FFFDE7; color: #FBC02D; font-weight: bold;' # Lighter Yellow
             return ''
 
         styled_pvt = pvt.style
@@ -344,7 +353,15 @@ elif choice == "💳 Vendor Payment Dashboard":
             filtered_pay = filtered_pay[final_pay_cols + leftovers_pay]
             if 'Amount' in filtered_pay.columns: filtered_pay = filtered_pay.sort_values(by='Amount', ascending=False)
                 
-            st.dataframe(filtered_pay, use_container_width=True)
+            # Using data_editor for forcing text wrap on long remark columns
+            st.data_editor(
+                filtered_pay,
+                use_container_width=True,
+                disabled=True,
+                column_config={
+                    "Revert Remarks": st.column_config.TextColumn("Revert Remarks", width="large")
+                }
+            )
         else:
              st.info("👆 Click any RO row in the table above to view specific invoices.")
     else:
@@ -354,7 +371,7 @@ elif choice == "💳 Vendor Payment Dashboard":
 # C. WHATSAPP AUTOMATOR
 # -------------------------------------------------------------
 elif choice == "📱 WhatsApp Automator":
-    st.markdown("<h1 style='color: #25D366;'>📱 WhatsApp Automator</h1>", unsafe_allow_html=True)
+    st.markdown("<h1>📱 WhatsApp Automator</h1>", unsafe_allow_html=True)
     
     if 'Actionable_Notes' in data:
         df_notes = data['Actionable_Notes']
@@ -375,7 +392,7 @@ elif choice == "📱 WhatsApp Automator":
             
             st.markdown(f"""
             <a href="{whatsapp_url}" target="_blank">
-                <button style="background-color: #25D366; color: black; padding: 10px 24px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; font-weight: bold;">
+                <button style="background-color: #25D366; color: white; padding: 10px 24px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; font-weight: bold;">
                     💬 Send to WhatsApp Web
                 </button>
             </a>
@@ -386,12 +403,18 @@ elif choice == "📱 WhatsApp Automator":
         st.info("No data available.")
 
 # -------------------------------------------------------------
-# D. CPK & UTILIZATION ANALYSIS
+# D. CPK & UTILIZATION ANALYSIS (UP-DOWN LINKING ENGINE)
 # -------------------------------------------------------------
 elif choice == "💰 CPK & Utilization Analysis":
-    st.markdown("<h1 style='color: #4facfe;'>💰 CPK & Utilization Analysis</h1>", unsafe_allow_html=True)
+    st.markdown("<h1>💰 CPK & Utilization Analysis</h1>", unsafe_allow_html=True)
     if 'Up_Down_Route_Summary' in data:
-        df_cpk = data['Up_Down_Route_Summary']
+        df_cpk = data['Up_Down_Route_Summary'].copy()
+        
+        # Keep ONLY MCD-National and MCD-Zonal
+        df_cpk = df_cpk[df_cpk['Type'].isin(['MCD-National LH', 'MCD-Zonal LH'])]
+        # Clean names
+        df_cpk['Type'] = df_cpk['Type'].replace({'MCD-National LH': 'National', 'MCD-Zonal LH': 'Zonal'})
+        
         ro_filter = st.selectbox("Filter RO (CPK):", ["ALL"] + sorted(df_cpk['VendorRO'].dropna().unique().tolist()))
         if ro_filter != "ALL": df_cpk = df_cpk[df_cpk['VendorRO'] == ro_filter]
             
@@ -402,6 +425,53 @@ elif choice == "💰 CPK & Utilization Analysis":
         avg_cpk = (df_cpk['Total Trip Cost'].sum() / df_cpk['Total Carried Wt'].sum()) if df_cpk['Total Carried Wt'].sum() > 0 else 0
         c3.metric("Overall CPK", f"₹ {avg_cpk:.2f}")
         
-        st.dataframe(df_cpk.style.format({'Overall CPK': '{:.2f}', 'Overall Util %': '{:.2%}'}), use_container_width=True)
+        st.markdown("### Top Priority Utilization (Click row to see Full UP-DOWN Network)")
+        
+        # Display the formatted table
+        disp_df = df_cpk.copy()
+        for col in ['Overall CPK', 'Avg Trip Cost']: disp_df[col] = disp_df[col].apply(lambda x: f"₹{x:.2f}")
+        disp_df['Overall Util %'] = disp_df['Overall Util %'].apply(lambda x: f"{x:.2f}%")
+        
+        # Hide SortKey from view but keep it for logic
+        view_df = disp_df.drop(columns=['SortKey'])
+        
+        selection_cpk = st.dataframe(
+            view_df, 
+            use_container_width=True, 
+            on_select="rerun", 
+            selection_mode="single-row"
+        )
+        
+        if selection_cpk and selection_cpk.get('selection', {}).get('rows'):
+            selected_idx = selection_cpk['selection']['rows'][0]
+            
+            # The MAGIC: Grab the SortKey of the clicked row
+            selected_sortkey = df_cpk.iloc[selected_idx]['SortKey']
+            
+            st.markdown("---")
+            st.markdown(f"### 🔗 UP-DOWN Network Connected View")
+            st.info("Showing ALL connecting/returning legs for this route block:")
+            
+            # Filter original dataframe by that SortKey!
+            network_df = df_cpk[df_cpk['SortKey'] == selected_sortkey].copy()
+            network_df = network_df.drop(columns=['SortKey'])
+            
+            # Format and Force Wrapping on Vendors using data_editor
+            for col in ['Overall CPK', 'Avg Trip Cost']: network_df[col] = network_df[col].apply(lambda x: f"₹{x:.2f}")
+            network_df['Overall Util %'] = network_df['Overall Util %'].apply(lambda x: f"{x:.2f}%")
+            
+            st.data_editor(
+                network_df,
+                use_container_width=True,
+                disabled=True,
+                column_config={
+                    "Vendor(s)": st.column_config.TextColumn("Vendor(s)", width="large"),
+                    "Route (UP/DOWN)": st.column_config.TextColumn("Route", width="large")
+                },
+                hide_index=True
+            )
+        else:
+            st.info("👆 Click any row above to view its UP & DOWN network connected together.")
+            
     else:
         st.info("Please process CPK data first.")
