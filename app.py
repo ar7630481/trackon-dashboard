@@ -13,7 +13,6 @@ warnings.filterwarnings('ignore')
 # ==========================================
 st.set_page_config(page_title="Trackon Command Center", page_icon="🚀", layout="wide")
 
-# Custom CSS for a better theme
 st.markdown("""
 <style>
     .reportview-container {
@@ -55,7 +54,7 @@ if 'role' not in st.session_state:
     st.session_state['role'] = None
 
 if not st.session_state['logged_in']:
-    st.markdown("<h1 style='text-align: center; color: #4facfe;'>🚀 Trackon Master Command Center</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #4facfe;'>🚀 Trackon Command Center</h1>", unsafe_allow_html=True)
     st.markdown("<h3 style='text-align: center; color: #a8b2d1;'>Secure Login Portal</h3>", unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 1, 1])
@@ -131,7 +130,6 @@ if st.session_state['role'] == 'Admin':
         st.caption(f"Last updated: {get_file_time('ROUTE_LOOKUP')}")
 
     st.sidebar.markdown("---")
-    # Processing code would be called here if included.
     
 if os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
     ts = os.path.getmtime(FILE_MAP["FINAL_OUTPUT"])
@@ -163,10 +161,10 @@ menu = ["📊 Daily Standup (1-Hour Call)", "💳 Vendor Payment Dashboard", "�
 choice = st.sidebar.radio("Navigate to:", menu)
 
 # -------------------------------------------------------------
-# A. DAILY STANDUP (DIRECT CLICK TO PROOF)
+# A. DAILY STANDUP
 # -------------------------------------------------------------
 if choice == "📊 Daily Standup (1-Hour Call)":
-    st.markdown("<h1 style='color: #4facfe;'>🚨 Exception Reporting (Manager's Visual Heatmap)</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='color: #4facfe;'>🚨 Exception Reporting</h1>", unsafe_allow_html=True)
     
     if 'Legwise_Route_Summary' in data and 'Legwise_Processed_Data' in data:
         df_leg_sum = data['Legwise_Route_Summary'].copy()
@@ -192,7 +190,6 @@ if choice == "📊 Daily Standup (1-Hour Call)":
                 except: return 0.0
             return 0.0
             
-        # Sorting Logic: Worst % First, but 1-Trip items pushed to very bottom
         if 'Late Dep, Late Arr %' in df_display.columns:
             df_display['SortKey'] = df_display['Late Dep, Late Arr %'].apply(extract_pct)
             df_display['Is_Single_Trip'] = df_display['Total_Trips'] == 1
@@ -231,8 +228,6 @@ if choice == "📊 Daily Standup (1-Hour Call)":
 
         st.markdown("### 🔥 Top Priority Routes Summary (Click a row to see proof)")
         
-        # New Streamlit feature: Native dataframe selection (Requires Streamlit >= 1.35)
-        # We capture the row click directly from the dataframe
         selection = st.dataframe(
             styled_df, 
             use_container_width=True, 
@@ -241,15 +236,17 @@ if choice == "📊 Daily Standup (1-Hour Call)":
             selection_mode="single-row"
         )
         
-        # 1-CLICK PROOF LINKING based on actual table click
         if selection and selection.get('selection', {}).get('rows'):
             selected_idx = selection['selection']['rows'][0]
+            # Fetch BOTH Route Path AND Legwise
             selected_route = df_display.iloc[selected_idx]['Route Path']
+            selected_leg = df_display.iloc[selected_idx]['Legwise']
             
             st.markdown("---")
-            st.markdown(f"### 🔍 1-Click Proof: Raw Data for `{selected_route}`")
+            st.markdown(f"### 🔍 1-Click Proof: Raw Data for `{selected_route}` - `{selected_leg}`")
             
-            filtered_raw = df_raw_leg[df_raw_leg['Route Path'] == selected_route].copy()
+            # Filter raw data using BOTH Route Path and Legwise
+            filtered_raw = df_raw_leg[(df_raw_leg['Route Path'] == selected_route) & (df_raw_leg['Legwise'] == selected_leg)].copy()
             
             cols_to_drop = ['Scheduled TAT Till Destination', 'Actual TAT Till Destination', 
                             'Overall Remark', 'MCD_EndDate', 'LH Type', 'Origin', 'Destination', 'Region', 'Origin RO']
@@ -298,8 +295,27 @@ elif choice == "💳 Vendor Payment Dashboard":
         existing_cols = [c for c in cols_order if c in pvt.columns]
         pvt = pvt.reindex(columns=existing_cols)
         
+        # Function to color columns in pivot table
+        def color_payment_columns(val, col_name):
+            if pd.isna(val) or val == 0:
+                return ''
+            if col_name == '1. USER / DRAFT PENDING':
+                return 'background-color: rgba(211, 47, 47, 0.3); color: white;' # Red
+            elif col_name == '2. COST CONTROL PENDING':
+                return 'background-color: rgba(245, 127, 23, 0.3); color: white;' # Yellow
+            elif col_name == '3. FINANCE PENDING':
+                return 'background-color: rgba(245, 127, 23, 0.15); color: white;' # Light Yellow
+            return ''
+
+        styled_pvt = pvt.style
+        for col in existing_cols:
+            if hasattr(styled_pvt, 'map'):
+                styled_pvt = styled_pvt.map(lambda x, c=col: color_payment_columns(x, c), subset=[col])
+            else:
+                styled_pvt = styled_pvt.applymap(lambda x, c=col: color_payment_columns(x, c), subset=[col])
+
         pay_selection = st.dataframe(
-            pvt, 
+            styled_pvt, 
             use_container_width=True, 
             on_select="rerun", 
             selection_mode="single-row"
@@ -310,9 +326,8 @@ elif choice == "💳 Vendor Payment Dashboard":
             sel_pay_ro = pvt.index[selected_idx]
             
             st.markdown("---")
-            st.markdown(f"### 🔍 Payment Proof Engine for `{sel_pay_ro}`")
+            st.markdown(f"### 🔍 Payment Proof for `{sel_pay_ro}`")
             
-            # Simple dropdown for bucket if they clicked a specific RO
             sel_bucket = st.selectbox("Select Pending Status:", existing_cols[:-1])
             
             if sel_pay_ro == 'Grand Total':
@@ -336,7 +351,7 @@ elif choice == "💳 Vendor Payment Dashboard":
         st.error("Payment Master Database not found.")
 
 # -------------------------------------------------------------
-# C. WHATSAPP AUTOMATOR (Unchanged)
+# C. WHATSAPP AUTOMATOR
 # -------------------------------------------------------------
 elif choice == "📱 WhatsApp Automator":
     st.markdown("<h1 style='color: #25D366;'>📱 WhatsApp Automator</h1>", unsafe_allow_html=True)
@@ -371,7 +386,7 @@ elif choice == "📱 WhatsApp Automator":
         st.info("No data available.")
 
 # -------------------------------------------------------------
-# D. CPK & UTILIZATION ANALYSIS (Unchanged)
+# D. CPK & UTILIZATION ANALYSIS
 # -------------------------------------------------------------
 elif choice == "💰 CPK & Utilization Analysis":
     st.markdown("<h1 style='color: #4facfe;'>💰 CPK & Utilization Analysis</h1>", unsafe_allow_html=True)
