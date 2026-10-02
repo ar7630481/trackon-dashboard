@@ -133,7 +133,7 @@ def format_pct_cnt(count, total):
     return f"{pct:.1f}% ({int(count)})"
 
 # ==========================================
-# 4. THE CORE PROCESSING ENGINE (YOUR MEGA SCRIPT)
+# 4. THE CORE PROCESSING ENGINE 
 # ==========================================
 def process_all_data():
     progress = st.progress(0)
@@ -440,6 +440,9 @@ def process_all_data():
         writer.close()
         progress.progress(100)
         status_text.success("✅ Master Data Generated Successfully!")
+        
+        # 🔥 CLEAR CACHE AUTOMATICALLY SO APP INSTANTLY RELOADS 🔥
+        st.cache_data.clear()
     
     except Exception as e:
         status_text.error(f"❌ Error during processing: {e}")
@@ -490,6 +493,7 @@ if st.session_state['role'] == 'Admin':
     st.sidebar.markdown("---")
     if st.sidebar.button("🚀 PROCESS & REFRESH DATA", use_container_width=True):
         process_all_data()
+        st.rerun()  # Forces entire app to reload with fresh cache!
 
 # Show Last Processed Time
 if os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
@@ -502,7 +506,7 @@ else:
 # ==========================================
 # 6. DATA LOADING FOR DASHBOARD VIEWS
 # ==========================================
-@st.cache_data(ttl=300) # Cache clears every 5 mins to ensure fresh data loads
+@st.cache_data
 def load_dashboard_data():
     if not os.path.exists(FILE_MAP["FINAL_OUTPUT"]): return {}
     xls = pd.ExcelFile(FILE_MAP["FINAL_OUTPUT"])
@@ -550,6 +554,7 @@ elif choice == "📱 WhatsApp Automator":
     st.title("📱 WhatsApp Automator")
     st.markdown("Select an RO to generate a pre-formatted WhatsApp report for the Vendor Group.")
     
+    # 📌 TUNE APNE GROUP NAMES YAHAN ADD KAR SAKTA HAI
     ro_group_map = {
         "DELRO": "Delhi Vendors Official 🚛",
         "MUMRO": "Mumbai Operations Sync 🚚",
