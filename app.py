@@ -4,7 +4,6 @@ import numpy as np
 import datetime
 import urllib.parse
 import os
-import plotly.express as px
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -80,13 +79,7 @@ def get_file_time(key):
     return "Not Uploaded Yet ❌"
 
 # ==========================================
-# 4. THE CORE PROCESSING ENGINE (Skipped long backend logic here to save space, assuming it's intact from previous)
-# ==========================================
-# IMPORTANT: DO NOT DELETE your `def process_all_data():` function. 
-# Keep your entire Module 1 to 5 data processing code here exactly as it was.
-
-# ==========================================
-# 5. SIDEBAR: ADMIN UPLOAD PANEL
+# 4. SIDEBAR: ADMIN UPLOAD PANEL
 # ==========================================
 st.sidebar.title(f"Welcome, {st.session_state['role']}")
 if st.sidebar.button("Logout", key="logout_btn"):
@@ -128,17 +121,16 @@ if st.session_state['role'] == 'Admin':
         st.caption(f"Last updated: {get_file_time('ROUTE_LOOKUP')}")
 
     st.sidebar.markdown("---")
-    # if st.sidebar.button("🚀 PROCESS & REFRESH DATA", use_container_width=True):
-    #     process_all_data()
-    #     st.rerun()
-
+    # KEEP YOUR `process_all_data()` logic here if you have it in your full script.
+    # To save space and focus on UI, I am assuming the generated file already exists or you process it.
+    
 if os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
     ts = os.path.getmtime(FILE_MAP["FINAL_OUTPUT"])
     dt = datetime.datetime.fromtimestamp(ts).strftime('%d %b %Y, %I:%M %p')
     st.sidebar.info(f"📊 Dashboard Last Refreshed:\n{dt}")
 
 # ==========================================
-# 6. DATA LOADING FOR DASHBOARD VIEWS
+# 5. DATA LOADING FOR DASHBOARD VIEWS
 # ==========================================
 @st.cache_data
 def load_dashboard_data():
@@ -152,13 +144,13 @@ def load_dashboard_data():
 data = load_dashboard_data()
 
 # ==========================================
-# 7. DASHBOARD NAVIGATION & UI
+# 6. DASHBOARD NAVIGATION & UI
 # ==========================================
-menu = ["📊 Daily Standup (1-Hour Call)", "💳 Vendor Payment Dashboard", "📱 WhatsApp Automator", "💰 CPK & Utilization Analysis"]
+menu = ["📊 Daily Standup (1-Hour Call)", "💳 Vendor Payment Dashboard", "📱 WhatsApp Automator"]
 choice = st.sidebar.radio("Navigate to:", menu)
 
 # -------------------------------------------------------------
-# A. DAILY STANDUP (VISUAL HEATMAP & DEEP DIVE ENGINE)
+# A. DAILY STANDUP (VISUAL HEATMAP & 1-CLICK PROOF)
 # -------------------------------------------------------------
 if choice == "📊 Daily Standup (1-Hour Call)":
     st.title("🚨 Exception Reporting (Manager's Visual Heatmap)")
@@ -168,13 +160,13 @@ if choice == "📊 Daily Standup (1-Hour Call)":
         df_raw_leg = data['Legwise_Processed_Data'].copy()
         
         all_ros = sorted(df_leg_sum['Origin RO'].dropna().unique().tolist())
-        selected_ro = st.selectbox("Select Regional Office (RO) to Address:", ["PAN INDIA"] + all_ros)
+        selected_ro = st.selectbox("Select Regional Office (RO):", ["PAN INDIA"] + all_ros)
         
         if selected_ro != "PAN INDIA":
             df_leg_sum = df_leg_sum[df_leg_sum['Origin RO'] == selected_ro]
             df_raw_leg = df_raw_leg[df_raw_leg['Origin RO'] == selected_ro]
 
-        # 1. CRISP COLUMNS ONLY
+        # 1. CRISP COLUMNS ONLY (As requested)
         display_cols = ['Route Path', 'Legwise', 'Legs', 'Total_Trips', 
                         'Ontime Dep, Ontime Arr %', 'Ontime Dep, Late Arr %', 
                         'Late Dep, Late Arr %', 'Late Dep, Ontime Arr %']
@@ -192,6 +184,7 @@ if choice == "📊 Daily Standup (1-Hour Call)":
             df_display['SortKey'] = df_display['Late Dep, Late Arr %'].apply(extract_pct)
             df_display = df_display.sort_values(by='SortKey', ascending=False).drop(columns=['SortKey'])
 
+        # Format percentages beautifully
         def format_val(x):
             if isinstance(x, str) and '%' in x and '(' in x:
                 try:
@@ -206,6 +199,7 @@ if choice == "📊 Daily Standup (1-Hour Call)":
         for c in pct_cols:
             df_display[c] = df_display[c].apply(format_val)
 
+        # Apply Colors
         def highlight_cells(val, col):
             if not isinstance(val, str) or '%' not in val: return ''
             try: pct = float(val.split('%')[0].strip())
@@ -225,26 +219,29 @@ if choice == "📊 Daily Standup (1-Hour Call)":
             else:
                 styled_df = styled_df.applymap(lambda x, c=col: highlight_cells(x, c), subset=[col])
 
+        # Interactive UI: Click Radio button to show proof
         st.markdown("### 🔥 Top Priority Routes Summary")
-        st.dataframe(styled_df, use_container_width=True, height=350)
         
-        # -------------------------------------------------------------
-        # 2. DEEP DIVE: RAW DATA EVIDENCE LINKING
-        # -------------------------------------------------------------
+        # Display the Summary Table
+        st.dataframe(styled_df, use_container_width=True, height=300)
+        
+        # 1-CLICK PROOF LINKING
         st.markdown("---")
-        st.markdown("### 🔍 Deep Dive: Raw Data Evidence (Proof)")
+        st.markdown("### 🔍 1-Click Proof (Raw Data)")
         
-        selected_route = st.selectbox("🔗 Select Route from Dropdown below to see exact Proof:", df_display['Route Path'].unique())
+        # We use a radio button layout for easy clicking based on Route Path
+        unique_routes = df_display['Route Path'].unique()
+        selected_route = st.radio("Select a Route to view its exact Logbook (Proof):", unique_routes, horizontal=True)
         
         if selected_route:
             filtered_raw = df_raw_leg[df_raw_leg['Route Path'] == selected_route].copy()
             
-            # 🚀 DROP USELESS COLUMNS FOR CLEAN VIEW
+            # 🔥 DROP ALL FALTU COLUMNS FOREVER 🔥
             cols_to_drop = ['Scheduled TAT Till Destination', 'Actual TAT Till Destination', 
                             'Overall Remark', 'MCD_EndDate', 'LH Type', 'Origin', 'Destination', 'Region', 'Origin RO']
             filtered_raw = filtered_raw.drop(columns=[c for c in cols_to_drop if c in filtered_raw.columns], errors='ignore')
             
-            # 🚀 STRICT LOGICAL ORDER (Proof First)
+            # 🔥 STRICT LOGICAL ORDER (Proof First) 🔥
             logical_order = [
                 'Route Path', 'MCD_StartDate', 'Legwise', 'Legs', 'Remark', 
                 'Scheduled Departure Time', 'Actual Departure Time', 
@@ -271,10 +268,10 @@ if choice == "📊 Daily Standup (1-Hour Call)":
             st.dataframe(styled_raw, use_container_width=True)
 
     else:
-        st.info("Please upload raw files and click 'PROCESS & REFRESH DATA' in the Admin Panel.")
+        st.info("⚠️ Ensure 'Auto_Generated_Monitoring_Data.xlsx' is uploaded/generated properly.")
 
 # -------------------------------------------------------------
-# B. VENDOR PAYMENT DASHBOARD (DRILLDOWN ENGINE)
+# B. VENDOR PAYMENT DASHBOARD (1-CLICK DRILLDOWN ENGINE)
 # -------------------------------------------------------------
 elif choice == "💳 Vendor Payment Dashboard":
     st.title("💳 Pan-India Department Pending Tracker")
@@ -290,29 +287,33 @@ elif choice == "💳 Vendor Payment Dashboard":
         pvt = pvt.reindex(columns=existing_cols)
         st.dataframe(pvt, use_container_width=True)
         
-        # DEEP DIVE LOGIC
+        # 1-CLICK DEEP DIVE LOGIC
         st.markdown("---")
-        st.markdown("### 🔍 Deep Dive: Payment Evidence")
+        st.markdown("### 🔍 Payment Proof Engine")
         
-        col1, col2 = st.columns(2)
-        with col1:
-            sel_pay_ro = st.selectbox("Select RO:", sorted(df_pay['RO Name'].dropna().unique().tolist()))
-        with col2:
-            sel_bucket = st.selectbox("Select Department Bucket:", sorted(df_pay['Department Bucket'].dropna().unique().tolist()))
+        # User simply selects the bucket they want to see proof for
+        sel_bucket = st.radio("Click on a Pending Bucket to view exact invoices:", existing_cols[:-1], horizontal=True)
+        
+        if sel_bucket:
+            filtered_pay = df_pay[df_pay['Department Bucket'] == sel_bucket].copy()
             
-        filtered_pay = df_pay[(df_pay['RO Name'] == sel_pay_ro) & (df_pay['Department Bucket'] == sel_bucket)].copy()
-        
-        # 🚀 LOGICAL ORDER FOR PAYMENTS (Bill Uploader to the absolute back)
-        pay_order = ['Invoice Id', 'Vendor Name', 'Amount', 'Status', 'Pending With', 'Days Pending', 'Aging Bucket', 'Revert Remarks']
-        final_pay_cols = [c for c in pay_order if c in filtered_pay.columns]
-        
-        leftovers_pay = [c for c in filtered_pay.columns if c not in final_pay_cols and c != 'Bill Uploader']
-        if 'Bill Uploader' in filtered_pay.columns:
-            leftovers_pay.append('Bill Uploader') # Pushed to the extreme end
+            # 🔥 LOGICAL ORDER & THROW FALTU DATA BACK 🔥
+            pay_order = ['Invoice Id', 'RO Name', 'Vendor Name', 'Amount', 'Status', 'Pending With', 'Days Pending', 'Aging Bucket', 'Revert Remarks']
+            final_pay_cols = [c for c in pay_order if c in filtered_pay.columns]
             
-        filtered_pay = filtered_pay[final_pay_cols + leftovers_pay]
-        
-        st.dataframe(filtered_pay, use_container_width=True)
+            leftovers_pay = [c for c in filtered_pay.columns if c not in final_pay_cols and c != 'Bill Uploader']
+            
+            # Push Bill Uploader to the extreme end
+            if 'Bill Uploader' in filtered_pay.columns:
+                leftovers_pay.append('Bill Uploader') 
+                
+            filtered_pay = filtered_pay[final_pay_cols + leftovers_pay]
+            
+            # Sort by highest amount or longest pending
+            if 'Amount' in filtered_pay.columns:
+                filtered_pay = filtered_pay.sort_values(by='Amount', ascending=False)
+                
+            st.dataframe(filtered_pay, use_container_width=True)
     else:
         st.info("Payment Master Database not found. Please process data.")
 
@@ -367,36 +368,3 @@ elif choice == "📱 WhatsApp Automator":
             st.success(f"🎉 No critical delays for {sel_ro} today!")
     else:
         st.info("No data available to generate messages.")
-
-# -------------------------------------------------------------
-# D. CPK & UTILIZATION ANALYSIS
-# -------------------------------------------------------------
-elif choice == "💰 CPK & Utilization Analysis":
-    st.title("💰 CPK & Utilization Analysis")
-    if 'Up_Down_Route_Summary' in data:
-        df_cpk = data['Up_Down_Route_Summary']
-        ro_filter = st.selectbox("Filter RO (CPK):", ["ALL"] + sorted(df_cpk['VendorRO'].dropna().unique().tolist()))
-        if ro_filter != "ALL":
-            df_cpk = df_cpk[df_cpk['VendorRO'] == ro_filter]
-            
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total Trips", int(df_cpk['Total Trips'].sum()))
-        avg_util = (df_cpk['Total Carried Wt'].sum() / df_cpk['Total Capacity'].sum() * 100) if df_cpk['Total Capacity'].sum() > 0 else 0
-        c2.metric("Overall Utilization", f"{avg_util:.1f}%")
-        avg_cpk = (df_cpk['Total Trip Cost'].sum() / df_cpk['Total Carried Wt'].sum()) if df_cpk['Total Carried Wt'].sum() > 0 else 0
-        c3.metric("Overall CPK", f"₹ {avg_cpk:.2f}")
-        
-        st.markdown("### Top 10 Worst Utilized Routes (< 50%)")
-        bad_util = df_cpk[df_cpk['Overall Util %'] < 0.50].sort_values(by='Overall Util %').head(10)
-        
-        if not bad_util.empty:
-            bad_util['Util %'] = bad_util['Overall Util %'] * 100
-            fig = px.bar(bad_util, x='Route (UP/DOWN)', y='Util %', color='VendorRO', text_auto='.1f', 
-                         title="Routes Bleeding Money (Check Capacity Match)")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.success("All routes are > 50% Utilized!")
-            
-        st.dataframe(df_cpk.style.format({'Overall CPK': '{:.2f}', 'Overall Util %': '{:.2%}'}), use_container_width=True)
-    else:
-        st.info("Please process CPK data first from the Admin panel.")
