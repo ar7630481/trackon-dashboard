@@ -14,12 +14,10 @@ warnings.filterwarnings('ignore')
 # ==========================================
 st.set_page_config(page_title="Trackon Command Center", page_icon="🚀", layout="wide")
 
-# Create a folder to store uploaded raw files
 DATA_DIR = "uploaded_raw_data"
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
-# File Paths for internal storage
 FILE_MAP = {
     "PAYMENT": os.path.join(DATA_DIR, "payment_data.xlsx"),
     "LEGWISE": os.path.join(DATA_DIR, "legwise_data.xlsx"),
@@ -94,8 +92,7 @@ def format_hrs_safe(hrs):
     hrs = abs(hrs)
     h = int(hrs)
     m = int(round((hrs - h) * 60))
-    if m == 60: 
-        h += 1; m = 0
+    if m == 60: h += 1; m = 0
     return f"{sign}{h}:{m:02d}"
 
 def extract_orig_dest(route_str):
@@ -133,7 +130,7 @@ def format_pct_cnt(count, total):
     return f"{pct:.1f}% ({int(count)})"
 
 # ==========================================
-# 4. THE CORE PROCESSING ENGINE 
+# 4. THE CORE PROCESSING ENGINE
 # ==========================================
 def process_all_data():
     progress = st.progress(0)
@@ -149,7 +146,6 @@ def process_all_data():
             df_rte = pd.read_excel(FILE_MAP["ROUTE_MASTER"], sheet_name="RoutePathReportModel")
             df_brn = pd.read_excel(FILE_MAP["BRANCH_MASTER"], sheet_name="Sheet1")
             
-            # TAT Logic
             df_rte_tat = df_rte.copy()
             df_rte_tat['Dep_Hrs'] = df_rte_tat['Schedule Departure Time'].apply(time_to_hrs)
             df_rte_tat['Arr_Hrs'] = df_rte_tat['Schedule Arrival Time'].apply(time_to_hrs)
@@ -172,7 +168,6 @@ def process_all_data():
             df_leg['Legs'] = df_leg['CD_FromBranch'].astype(str) + " to " + df_leg['CD_ToBranch'].astype(str)
             df_leg.rename(columns={'Min_CD_StartDatetime': 'Actual Departure Time', 'Max_CD_EndDatetime': 'Actual Arrival Time', 'Route': 'Route Path'}, inplace=True)
             
-            # Origin RO VLOOKUP
             df_leg['CD_FromBranch_Clean'] = df_leg['CD_FromBranch'].astype(str).str.strip().str.upper()
             df_brn.columns = df_brn.columns.astype(str).str.strip()
             brn_col = next((c for c in df_brn.columns if 'branchcode' in c.lower().replace(' ', '')), 'RPTBranchcode')
@@ -261,18 +256,55 @@ def process_all_data():
                 df_valid['LL_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Late Dep, Late Arr' in str(x) else 0)
                 df_valid['LO_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Late Dep, Ontime Arr' in str(x) else 0)
                 df_valid['OL_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Ontime Dep, Late Arr' in str(x) else 0)
+                df_valid['Ontime_Dep_IT_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Ontime Dep, In-Transit' in str(x) else 0)
+                df_valid['Late_Dep_IT_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Late Dep, In-Transit' in str(x) else 0)
                 
-                agg_dict = {'MasterCDNo': 'count', 'OO_Cnt': 'sum', 'LO_Cnt': 'sum', 'OL_Cnt': 'sum', 'LL_Cnt': 'sum'}
+                agg_dict = {'MasterCDNo': 'count', 'OO_Cnt': 'sum', 'LO_Cnt': 'sum', 'OL_Cnt': 'sum', 'LL_Cnt': 'sum', 'Ontime_Dep_IT_Cnt': 'sum', 'Late_Dep_IT_Cnt': 'sum'}
                 summary = df_valid.groupby(group_cols).agg(agg_dict).reset_index()
                 summary.rename(columns={'MasterCDNo': trip_col}, inplace=True)
                 
                 summary['Ontime Dep, Ontime Arr %'] = summary.apply(lambda r: format_pct_cnt(r['OO_Cnt'], r[trip_col]), axis=1)
                 summary['Late Dep, Late Arr %'] = summary.apply(lambda r: format_pct_cnt(r['LL_Cnt'], r[trip_col]), axis=1)
+                summary['Late Dep, Ontime Arr %'] = summary.apply(lambda r: format_pct_cnt(r['LO_Cnt'], r[trip_col]), axis=1)
+                summary['Ontime Dep, Late Arr %'] = summary.apply(lambda r: format_pct_cnt(r['OL_Cnt'], r[trip_col]), axis=1)
+                summary['Ontime Dep, In-Transit'] = summary.apply(lambda r: format_pct_cnt(r['Ontime_Dep_IT_Cnt'], r[trip_col]), axis=1)
+                summary['Late Dep, In-Transit'] = summary.apply(lambda r: format_pct_cnt(r['Late_Dep_IT_Cnt'], r[trip_col]), axis=1)
                 
-                return summary.sort_values(by=['LH Type', 'E2E_Pair', 'Origin', 'Route Path', 'Leg_Num'])
+                def get_insight(row):
+                    total = row[trip_col]
+                    if total == 0: return "No Data"
+                    oo_pct = row['OO_Cnt']/total
+                    ll_pct = row['LL_Cnt']/total
+                    ol_pct = row['OL_Cnt']/total
+                    lo_pct = row['LO_Cnt']/total
+                    arr_total = row['OO_Cnt'] + row['LO_Cnt'] + row['OL_Cnt'] + row['LL_Cnt']
+                    if arr_total == 0: return "Currently Running / In-Transit"
+                    if oo_pct >= 0.80: return "Smooth Operations - Excellent TAT"
+                    elif ll_pct >= 0.40: return "Critical Lag - Fails at Route & Origin"
+                    elif ol_pct >= 0.30: return "Transit Delay - Route Lag"
+                    elif lo_pct >= 0.30: return "Origin Delay - Covered in Transit"
+                    elif (ol_pct + ll_pct) >= 0.50: return "High Arrival Failures"
+                    else: return "Mixed Performance - Monitor"
+                    
+                summary['Operations Insight'] = summary.apply(get_insight, axis=1)
                 
-            leg_sum = generate_summary(df_leg, ['Region', 'LH Type', 'E2E_Pair', 'Origin RO', 'Route Path', 'Origin', 'Destination', 'Leg_Num', 'Legwise', 'Legs'])
+                # Keep scheduled times
+                summary['Scheduled Dep (HH:MM)'] = summary['Sch_Dep_Time_Raw'].apply(lambda x: pd.to_datetime(x).strftime('%H:%M') if pd.notnull(x) else '')
+                summary['Scheduled Arr (HH:MM)'] = summary['Sch_Arr_Time_Raw'].apply(lambda x: pd.to_datetime(x).strftime('%H:%M') if pd.notnull(x) else '')
+                
+                final_cols = ['Region', 'Origin RO', 'Route Path', 'Legwise', 'Legs', trip_col, 'Ontime Dep, Ontime Arr %', 'Ontime Dep, Late Arr %', 'Late Dep, Late Arr %', 'Late Dep, Ontime Arr %', 'Ontime Dep, In-Transit', 'Late Dep, In-Transit', 'LH Type', 'Origin', 'Destination', 'Scheduled Dep (HH:MM)', 'Given Driving Hours', 'Scheduled Arr (HH:MM)', 'Operations Insight']
+                return summary.sort_values(by=['LH Type', 'E2E_Pair', 'Origin', 'Route Path', 'Leg_Num'])[final_cols]
+                
+            leg_sum = generate_summary(df_leg, ['Region', 'LH Type', 'E2E_Pair', 'Origin RO', 'Route Path', 'Origin', 'Destination', 'Leg_Num', 'Legwise', 'Legs', 'Sch_Dep_Time_Raw', 'Sch_Arr_Time_Raw', 'Given Driving Hours'])
             leg_sum.to_excel(writer, sheet_name='Legwise_Route_Summary', index=False)
+            
+            # Legwise Processed Data
+            dt_cols = ['Scheduled Departure Time', 'Actual Departure Time', 'Scheduled Arrival Time', 'Actual Arrival Time']
+            for c in dt_cols: df_leg[c] = df_leg[c].dt.strftime('%d-%m-%Y %H:%M').fillna('')
+            df_leg['MCD_StartDate'] = pd.to_datetime(df_leg['MCD_StartDate_DT']).dt.strftime('%d-%m-%Y')
+            df_leg_final = df_leg.drop(columns=['Leg_Num', 'E2E_Pair'], errors='ignore')
+            df_leg_final.to_excel(writer, sheet_name='Legwise_Processed_Data', index=False)
+
         else:
             st.warning("⚠️ Operations files missing. Skipping Operations module.")
 
@@ -290,7 +322,6 @@ def process_all_data():
             
             df_raw.columns = df_raw.columns.astype(str).str.strip()
             df_lookup.columns = df_lookup.columns.astype(str).str.strip()
-            
             if 'VehicleUsageType' in df_raw.columns:
                 df_raw = df_raw[df_raw['VehicleUsageType'] != 'VehicleUsageType']
 
@@ -432,6 +463,10 @@ def process_all_data():
                 fdr_final = fdr_final.sort_values(by=['VendorRO', 'Overall Util %', 'Overall CPK'], ascending=[True, False, False])
                 fdr_final.to_excel(writer, sheet_name='Overall_Feeder_Usage', index=False)
 
+            # --- MASTER DATABASE RAW ---
+            if 'Master_Database' not in [s.sheet_name for s in writer.sheets.values()]:
+                df_raw.to_excel(writer, sheet_name='Master_Database', index=False)
+
         else:
             st.warning("⚠️ CPK files missing. Skipping CPK & Util module.")
             
@@ -441,7 +476,6 @@ def process_all_data():
         progress.progress(100)
         status_text.success("✅ Master Data Generated Successfully!")
         
-        # 🔥 CLEAR CACHE AUTOMATICALLY SO APP INSTANTLY RELOADS 🔥
         st.cache_data.clear()
     
     except Exception as e:
@@ -459,7 +493,7 @@ if st.sidebar.button("Logout", key="logout_btn"):
 st.sidebar.markdown("---")
 
 if st.session_state['role'] == 'Admin':
-    st.sidebar.header("🛠️ Admin Data Management")
+    st.sidebar.header("🛠️️ Admin Data Management")
     with st.sidebar.expander("📂 Upload Raw Files", expanded=False):
         f1 = st.file_uploader("1. Payment Data", type=['xlsx'])
         if save_file(f1, "PAYMENT"): st.success("Saved!")
@@ -489,13 +523,11 @@ if st.session_state['role'] == 'Admin':
         if save_file(f7, "ROUTE_LOOKUP"): st.success("Saved!")
         st.caption(f"Last updated: {get_file_time('ROUTE_LOOKUP')}")
 
-    # The Magic Button
     st.sidebar.markdown("---")
     if st.sidebar.button("🚀 PROCESS & REFRESH DATA", use_container_width=True):
         process_all_data()
-        st.rerun()  # Forces entire app to reload with fresh cache!
+        st.rerun()
 
-# Show Last Processed Time
 if os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
     ts = os.path.getmtime(FILE_MAP["FINAL_OUTPUT"])
     dt = datetime.datetime.fromtimestamp(ts).strftime('%d %b %Y, %I:%M %p')
@@ -510,12 +542,9 @@ else:
 def load_dashboard_data():
     if not os.path.exists(FILE_MAP["FINAL_OUTPUT"]): return {}
     xls = pd.ExcelFile(FILE_MAP["FINAL_OUTPUT"])
-    sheets = xls.sheet_names
     data = {}
-    if 'Legwise_Route_Summary' in sheets: data['leg_sum'] = pd.read_excel(xls, sheet_name='Legwise_Route_Summary')
-    if 'Actionable_Notes' in sheets: data['notes'] = pd.read_excel(xls, sheet_name='Actionable_Notes')
-    if 'Up_Down_Route_Summary' in sheets: data['cpk_updn'] = pd.read_excel(xls, sheet_name='Up_Down_Route_Summary')
-    if 'Overall_Feeder_Usage' in sheets: data['cpk_fdr'] = pd.read_excel(xls, sheet_name='Overall_Feeder_Usage')
+    for sheet in xls.sheet_names:
+        data[sheet] = pd.read_excel(xls, sheet_name=sheet)
     return data
 
 data = load_dashboard_data()
@@ -523,38 +552,93 @@ data = load_dashboard_data()
 # ==========================================
 # 7. DASHBOARD NAVIGATION & UI
 # ==========================================
-menu = ["📊 Daily Standup (1-Hour Call)", "📱 WhatsApp Automator", "💰 CPK & Utilization Analysis"]
+menu = ["📊 Daily Standup (1-Hour Call)", "📱 WhatsApp Automator", "💰 CPK & Utilization Analysis", "📁 One-Click Raw Data Vault"]
 choice = st.sidebar.radio("Navigate to:", menu)
 
+# -------------------------------------------------------------
+# A. DAILY STANDUP (VISUAL HEATMAP ENGINE)
+# -------------------------------------------------------------
 if choice == "📊 Daily Standup (1-Hour Call)":
-    st.title("🚨 Exception Reporting (Focus on what's failing)")
+    st.title("🚨 Exception Reporting (Manager's Visual Heatmap)")
     
-    if 'notes' in data:
-        df_notes = data['notes']
-        all_ros = sorted(df_notes['Origin RO'].dropna().unique().tolist())
+    if 'Legwise_Route_Summary' in data:
+        df_leg_sum = data['Legwise_Route_Summary'].copy()
+        
+        all_ros = sorted(df_leg_sum['Origin RO'].dropna().unique().tolist())
         selected_ro = st.selectbox("Select Regional Office (RO) to Address:", ["PAN INDIA"] + all_ros)
         
         if selected_ro != "PAN INDIA":
-            df_notes = df_notes[df_notes['Origin RO'] == selected_ro]
+            df_leg_sum = df_leg_sum[df_leg_sum['Origin RO'] == selected_ro]
+
+        # Hide unnecessary column
+        if 'Operations Insight' in df_leg_sum.columns:
+            df_leg_sum = df_leg_sum.drop(columns=['Operations Insight'])
             
-        critical = df_notes[df_notes['Status'].str.contains("Critical", na=False, case=False)]
-        warning = df_notes[df_notes['Status'].str.contains("Warning", na=False, case=False)]
-        
-        col1, col2, col3 = st.columns(3)
-        col1.metric("🔴 Critical Failures", len(critical))
-        col2.metric("🟠 Warnings", len(warning))
-        col3.metric("🟢 Smooth Legs", len(df_notes) - len(critical) - len(warning))
-        
-        st.subheader("🔥 Top Priority Routes (Late Dep & Late Arr)")
-        st.dataframe(critical[['Route Path', 'Legs', 'Actionable Note']], use_container_width=True)
+        # Extract percentage to dynamically sort worst routes to the top
+        def extract_pct(x):
+            if isinstance(x, str) and '%' in x:
+                try: return float(x.split('%')[0].strip())
+                except: return 0.0
+            return 0.0
+            
+        df_leg_sum['SortKey'] = df_leg_sum['Late Dep, Late Arr %'].apply(extract_pct)
+        df_leg_sum = df_leg_sum.sort_values(by='SortKey', ascending=False).drop(columns=['SortKey'])
+
+        # Smart Data Parsing (Convert '12.5% (1)' to '12.5% | 🚚 1')
+        def format_val(x):
+            if isinstance(x, str) and '%' in x and '(' in x:
+                try:
+                    pct = x.split('%')[0] + '%'
+                    count = x.split('(')[1].replace(')', '')
+                    if count == '0': return "0%"
+                    return f"{pct} | 🚚 {count}"
+                except: return x
+            return x
+            
+        pct_cols = [c for c in df_leg_sum.columns if '%' in c]
+        for c in pct_cols:
+            df_leg_sum[c] = df_leg_sum[c].apply(format_val)
+
+        # Dynamic Color Heatmap Function
+        def highlight_cells(val, col):
+            if not isinstance(val, str) or '%' not in val: return ''
+            try: pct = float(val.split('%')[0].strip())
+            except: return ''
+            
+            # Fade out 0% values
+            if pct == 0: return 'color: #B0BEC5;' 
+            
+            # Apply exact color codes based on metric
+            if 'Late Dep, Late Arr' in col:
+                return 'background-color: #ffebee; color: #d32f2f; font-weight: bold;'
+            elif 'Ontime Dep, Ontime Arr' in col:
+                return 'background-color: #e8f5e9; color: #388e3c; font-weight: bold;'
+            elif 'Ontime Dep, Late Arr' in col:
+                return 'background-color: #fff8e1; color: #f57f17; font-weight: bold;'
+            elif 'Late Dep, Ontime Arr' in col:
+                return 'background-color: #f3e5f5; color: #7b1fa2; font-weight: bold;' # Purple (Questionable)
+            return ''
+
+        # Apply Pandas Styler with compatibility for all versions
+        styled_df = df_leg_sum.style
+        for col in pct_cols:
+            if hasattr(styled_df, 'map'):
+                styled_df = styled_df.map(lambda x, c=col: highlight_cells(x, c), subset=[col])
+            else:
+                styled_df = styled_df.applymap(lambda x, c=col: highlight_cells(x, c), subset=[col])
+
+        st.markdown("### 🔥 Top Priority Routes (Sorted by Worst 'Late Dep, Late Arr')")
+        st.dataframe(styled_df, use_container_width=True, height=600)
     else:
         st.info("Please upload raw files and click 'PROCESS & REFRESH DATA' in the Admin Panel.")
 
+# -------------------------------------------------------------
+# B. WHATSAPP AUTOMATOR
+# -------------------------------------------------------------
 elif choice == "📱 WhatsApp Automator":
     st.title("📱 WhatsApp Automator")
     st.markdown("Select an RO to generate a pre-formatted WhatsApp report for the Vendor Group.")
     
-    # 📌 TUNE APNE GROUP NAMES YAHAN ADD KAR SAKTA HAI
     ro_group_map = {
         "DELRO": "Delhi Vendors Official 🚛",
         "MUMRO": "Mumbai Operations Sync 🚚",
@@ -563,8 +647,8 @@ elif choice == "📱 WhatsApp Automator":
         "AMDRO": "Ahmedabad Logistics 🚛",
     }
     
-    if 'notes' in data:
-        df_notes = data['notes']
+    if 'Actionable_Notes' in data:
+        df_notes = data['Actionable_Notes']
         all_ros = sorted(df_notes['Origin RO'].dropna().unique().tolist())
         sel_ro = st.selectbox("Select RO:", all_ros)
         
@@ -600,10 +684,13 @@ elif choice == "📱 WhatsApp Automator":
     else:
         st.info("No data available to generate messages.")
 
+# -------------------------------------------------------------
+# C. CPK & UTILIZATION ANALYSIS
+# -------------------------------------------------------------
 elif choice == "💰 CPK & Utilization Analysis":
     st.title("💰 CPK & Utilization Analysis")
-    if 'cpk_updn' in data:
-        df_cpk = data['cpk_updn']
+    if 'Up_Down_Route_Summary' in data:
+        df_cpk = data['Up_Down_Route_Summary']
         ro_filter = st.selectbox("Filter RO (CPK):", ["ALL"] + sorted(df_cpk['VendorRO'].dropna().unique().tolist()))
         if ro_filter != "ALL":
             df_cpk = df_cpk[df_cpk['VendorRO'] == ro_filter]
@@ -629,3 +716,18 @@ elif choice == "💰 CPK & Utilization Analysis":
         st.dataframe(df_cpk.style.format({'Overall CPK': '{:.2f}', 'Overall Util %': '{:.2%}'}), use_container_width=True)
     else:
         st.info("Please process CPK data first from the Admin panel.")
+
+# -------------------------------------------------------------
+# D. ONE-CLICK RAW DATA VAULT
+# -------------------------------------------------------------
+elif choice == "📁 One-Click Raw Data Vault":
+    st.title("📁 One-Click Raw Data Vault")
+    st.markdown("Instantly access and inspect all underlying master data tables generated by the engine.")
+    
+    if data:
+        sheet_names = list(data.keys())
+        selected_sheet = st.selectbox("Select Table to View:", sheet_names)
+        
+        st.dataframe(data[selected_sheet], use_container_width=True, height=600)
+    else:
+        st.info("No raw data available. Please process files in the Admin panel.")
