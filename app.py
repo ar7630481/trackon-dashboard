@@ -9,6 +9,7 @@ import shutil
 import warnings
 import traceback
 import threading
+import json
 from playwright.sync_api import sync_playwright
 import pdfplumber
 
@@ -32,7 +33,8 @@ FILE_MAP = {
     "CPK_UTIL": os.path.join(DATA_DIR, "cpk_util.xlsx"),
     "ROUTE_LOOKUP": os.path.join(DATA_DIR, "route_lookup.xlsx"),
     "FINAL_OUTPUT": os.path.join(DATA_DIR, "Auto_Generated_Monitoring_Data.xlsx"),
-    "FLEET_CACHE": os.path.join(DATA_DIR, "live_fleet_cache.csv") # New local cache file
+    "FLEET_CACHE": os.path.join(DATA_DIR, "live_fleet_cache.csv"),
+    "SYNC_STATUS": os.path.join(DATA_DIR, "sync_status.json") # Stores start/end times and errors
 }
 
 # ==========================================
@@ -136,7 +138,7 @@ def format_pct_cnt(count, total):
     return f"{pct:.1f}% ({int(count)})"
 
 # ==========================================
-# 4. FLEET SCRAPER LOGIC (Background Safe)
+# 4. FLEET SCRAPER LOGIC (Incremental Overwrite)
 # ==========================================
 FLEET_ACCOUNTS = [
     {"email": "anand.joshi@trackon.in", "password": "Trackon@123"},
@@ -166,11 +168,75 @@ def clear_pre_modal_popups(page):
         if svg_close.is_visible(timeout=1000): svg_close.click()
     except: pass
 
-def run_scraper(p_bar=None, s_txt=None):
+def get_sync_status():
+    if os.path.exists(FILE_MAP["SYNC_STATUS"]):
+        try:
+            with open(FILE_MAP["SYNC_STATUS"], 'r') as f:
+                return json.load(f)
+        except: pass
+    return {"start": "Not Started", "end": "Not Started", "status": "idle", "errors": []}
+
+def set_sync_status(start, end, status, errors):
+    try:
+        with open(FILE_MAP["SYNC_STATUS"], 'w') as f:
+            json.dump({"start": start, "end": end, "status": status, "errors": errors}, f)
+    except: pass
+
+def clean_account_data(raw_data, account_email):
+    if not raw_data: return pd.DataFrame()
+    max_cols = max(len(row) for row in raw_data)
+    normalized_data = [row + [""] * (max_cols - len(row)) for row in raw_data]
+    df = pd.DataFrame(normalized_data[1:], columns=normalized_data[0])
+    df.columns = [str(c).replace('\n', ' ').strip() if c else f"Col_{i}" for i, c in enumerate(df.columns)]
+    
+    veh_col = next((c for c in df.columns if 'Vehicle' in str(c) or 'Name' in str(c)), None)
+    if veh_col:
+        raw_str = df[veh_col].astype(str).str.replace(r'\n', ' ', regex=True)
+        df['Vehicle_Code'] = raw_str.str.extract(r'(?i)(?:Name:)?\s*(\d{4})', expand=False).fillna("-")
+        df['Full_Number'] = raw_str.str.extract(r'(?i)No:\s*([A-Z0-9]+)', expand=False).fillna("-")
+    else:
+        df['Vehicle_Code'] = "-"
+        df['Full_Number'] = "-"
+        
+    status_col = next((c for c in df.columns if 'Status' in str(c) and 'Job' not in str(c)), None)
+    df['Status'] = df[status_col].astype(str).str.replace(r'\n', ' ', regex=True).str.strip() if status_col else "-"
+        
+    speed_col = next((c for c in df.columns if 'Spee' in str(c) or 'Speed' in str(c)), None)
+    df['Speed'] = df[speed_col].astype(str).str.replace(r'\n', ' ', regex=True).str.strip() if speed_col else "-"
+        
+    nearest_col = next((c for c in df.columns if 'Nearest' in str(c)), None)
+    df['Remaining_KMS'] = df[nearest_col].astype(str).str.replace(r'\n', ' ', regex=True).str.strip() if nearest_col else "-"
+        
+    loc_col = next((c for c in df.columns if 'Location' in str(c)), None)
+    df['Location'] = df[loc_col].astype(str).str.replace(r'\n', ' ', regex=True).str.strip() if loc_col else "-"
+        
+    time_col = next((c for c in df.columns if 'Last' in str(c) or 'dated' in str(c)), None)
+    df['Last_Updated'] = df[time_col].astype(str).str.replace(r'\n', ' ', regex=True).str.strip() if time_col else "-"
+
+    final_cols = ['Vehicle_Code', 'Full_Number', 'Status', 'Speed', 'Remaining_KMS', 'Location', 'Last_Updated']
+    for col in final_cols:
+        if col not in df.columns: df[col] = "-"
+            
+    df_clean = df[final_cols]
+    df_clean = df_clean.drop_duplicates(subset=['Full_Number'], keep='first')
+    df_clean['Account_Source'] = account_email # Secretly track the source account
+    return df_clean
+
+def run_scraper(p_bar=None, s_txt=None, df_placeholder=None):
     setup_playwright() 
     base_dir = os.getcwd() 
-    all_raw_data = []
-    error_logs = [] 
+    cache_file = FILE_MAP["FLEET_CACHE"]
+    
+    # Load old data so screen doesn't go blank
+    if os.path.exists(cache_file):
+        try: master_df = pd.read_csv(cache_file)
+        except: master_df = pd.DataFrame()
+    else:
+        master_df = pd.DataFrame()
+        
+    error_logs = []
+    start_time = datetime.datetime.now().strftime('%I:%M %p, %d %b %Y')
+    set_sync_status(start_time, "In Progress...", "running", error_logs)
     
     try:
         with sync_playwright() as p:
@@ -189,8 +255,11 @@ def run_scraper(p_bar=None, s_txt=None):
             
             total_accs = len(FLEET_ACCOUNTS)
             for idx, acc in enumerate(FLEET_ACCOUNTS):
-                if s_txt: s_txt.text(f"📡 Fetching data for {acc['email']} ({idx+1}/{total_accs})... Please wait!")
+                acc_email = acc['email']
+                if s_txt: s_txt.text(f"📡 Fetching data for {acc_email} ({idx+1}/{total_accs})... Please wait!")
+                
                 context = None
+                acc_raw_data = []
                 try:
                     context = browser.new_context(
                         accept_downloads=True,
@@ -198,11 +267,11 @@ def run_scraper(p_bar=None, s_txt=None):
                     )
                     page = context.new_page()
                     
-                    safe_email = acc['email'].replace('@', '_').replace('.', '_')
+                    safe_email = acc_email.replace('@', '_').replace('.', '_')
                     pdf_path = os.path.join(base_dir, f"temp_{safe_email}.pdf")
                     
                     page.goto("https://app.fleetx.io/users/login", timeout=60000, wait_until="domcontentloaded")
-                    page.fill('input[data-testid="email"]', acc['email'])
+                    page.fill('input[data-testid="email"]', acc_email)
                     page.fill('input[data-testid="password"]', acc['password'])
                     page.click('button[type="submit"]')
 
@@ -239,80 +308,57 @@ def run_scraper(p_bar=None, s_txt=None):
                                 if table:
                                     for row in table:
                                         if any(cell and str(cell).strip() for cell in row):
-                                            all_raw_data.append(row)
+                                            acc_raw_data.append(row)
                         try: os.remove(pdf_path)
                         except: pass
                     else:
-                        error_logs.append(f"Account {acc['email']}: PDF khali mili ya save nahi hui.")
+                        error_logs.append(f"{acc_email}: PDF khali mili ya save nahi hui.")
                         
                 except Exception as e:
-                    error_logs.append(f"Account {acc['email']} error: {str(e)}")
+                    error_logs.append(f"{acc_email} ERROR: {str(e)}")
                 finally:
-                    if p_bar: p_bar.progress(int(((idx+1)/total_accs)*100))
                     if context:
                         try: context.close()
                         except: pass
+                        
+                # INCREMENTAL OVERWRITE LOGIC
+                df_acc = clean_account_data(acc_raw_data, acc_email)
+                if not df_acc.empty:
+                    # Remove old data of THIS specific account so we don't duplicate
+                    if not master_df.empty and 'Account_Source' in master_df.columns:
+                        master_df = master_df[master_df['Account_Source'] != acc_email]
                     
+                    # Add fresh data for this account
+                    master_df = pd.concat([master_df, df_acc], ignore_index=True)
+                    
+                    # Save immediately so background reads are updated account-by-account
+                    master_df.to_csv(cache_file, index=False)
+                    
+                    # Update manual UI immediately if present
+                    if df_placeholder:
+                        display_df = master_df.drop(columns=['Account_Source'], errors='ignore')
+                        df_placeholder.dataframe(display_df, hide_index=True, use_container_width=True)
+
+                if p_bar: p_bar.progress(int(((idx+1)/total_accs)*100))
+                # Update status JSON to reflect current errors dynamically
+                set_sync_status(start_time, "In Progress...", "running", error_logs)
+                
             browser.close()
             
     except Exception as overall_e:
-        error_logs.append(f"Playwright Master Error: {str(overall_e)}\n\n{traceback.format_exc()}")
+        error_logs.append(f"Playwright Master Error: {str(overall_e)}")
 
-    if 'scraper_errors' not in st.session_state:
-        st.session_state['scraper_errors'] = []
-    st.session_state['scraper_errors'] = error_logs
+    end_time = datetime.datetime.now().strftime('%I:%M %p, %d %b %Y')
+    set_sync_status(start_time, end_time, "completed", error_logs)
+    return master_df
 
-    if all_raw_data:
-        max_cols = max(len(row) for row in all_raw_data)
-        normalized_data = [row + [""] * (max_cols - len(row)) for row in all_raw_data]
-        df = pd.DataFrame(normalized_data[1:], columns=normalized_data[0])
-        df.columns = [str(c).replace('\n', ' ').strip() if c else f"Col_{i}" for i, c in enumerate(df.columns)]
-        
-        veh_col = next((c for c in df.columns if 'Vehicle' in str(c) or 'Name' in str(c)), None)
-        if veh_col:
-            raw_str = df[veh_col].astype(str).str.replace(r'\n', ' ', regex=True)
-            df['Vehicle_Code'] = raw_str.str.extract(r'(?i)(?:Name:)?\s*(\d{4})', expand=False).fillna("-")
-            df['Full_Number'] = raw_str.str.extract(r'(?i)No:\s*([A-Z0-9]+)', expand=False).fillna("-")
-        else:
-            df['Vehicle_Code'] = "-"
-            df['Full_Number'] = "-"
-            
-        status_col = next((c for c in df.columns if 'Status' in str(c) and 'Job' not in str(c)), None)
-        df['Status'] = df[status_col].astype(str).str.replace(r'\n', ' ', regex=True).str.strip() if status_col else "-"
-            
-        speed_col = next((c for c in df.columns if 'Spee' in str(c) or 'Speed' in str(c)), None)
-        df['Speed'] = df[speed_col].astype(str).str.replace(r'\n', ' ', regex=True).str.strip() if speed_col else "-"
-            
-        nearest_col = next((c for c in df.columns if 'Nearest' in str(c)), None)
-        df['Remaining_KMS'] = df[nearest_col].astype(str).str.replace(r'\n', ' ', regex=True).str.strip() if nearest_col else "-"
-            
-        loc_col = next((c for c in df.columns if 'Location' in str(c)), None)
-        df['Location'] = df[loc_col].astype(str).str.replace(r'\n', ' ', regex=True).str.strip() if loc_col else "-"
-            
-        time_col = next((c for c in df.columns if 'Last' in str(c) or 'dated' in str(c)), None)
-        df['Last_Updated'] = df[time_col].astype(str).str.replace(r'\n', ' ', regex=True).str.strip() if time_col else "-"
-
-        final_cols = ['Vehicle_Code', 'Full_Number', 'Status', 'Speed', 'Remaining_KMS', 'Location', 'Last_Updated']
-        for col in final_cols:
-            if col not in df.columns:
-                df[col] = "-"
-                
-        df_clean = df[final_cols]
-        df_clean = df_clean.drop_duplicates(subset=['Full_Number'], keep='first')
-        return df_clean
-    else:
-        return pd.DataFrame()
-
-# Background Worker Setup
 def bg_task():
     lock_file = os.path.join(DATA_DIR, "scraping.lock")
     if os.path.exists(lock_file): return
     with open(lock_file, 'w') as f: f.write("locked")
     
     try:
-        df_new = run_scraper(None, None) # Run completely silently
-        if not df_new.empty:
-            df_new.to_csv(FILE_MAP["FLEET_CACHE"], index=False)
+        run_scraper(None, None, None) # Run completely silently
     except Exception as e:
         print(f"Background Update Error: {e}")
     finally:
@@ -1172,58 +1218,67 @@ elif choice == "📍 Live Fleet Tracker":
     st.markdown("<h1>📍 Live Fleet Tracker</h1>", unsafe_allow_html=True)
     
     cache_file = FILE_MAP["FLEET_CACHE"]
-    lock_file = os.path.join(DATA_DIR, "scraping.lock")
+    status_data = get_sync_status()
     
-    # Check Last Updated Time & Auto-Background Sync (Runs silently if 15 mins passed)
+    # 1. DISPLAY TIMESTAMPS
+    c1, c2 = st.columns(2)
+    c1.success(f"**▶️ Refresh Started At:** {status_data.get('start', 'Not Started')}")
+    if status_data.get('status') == 'running':
+        c2.warning("**🔄 Status:** Background Sync in Progress...")
+    else:
+        c2.info(f"**⏹️ Refresh Ended At:** {status_data.get('end', 'Not Started')}")
+
+    # Display partial or old data if it exists
     if os.path.exists(cache_file):
-        last_mtime = os.path.getmtime(cache_file)
-        last_time_str = datetime.datetime.fromtimestamp(last_mtime).strftime('%I:%M %p, %d %b %Y')
-        st.success(f"**🕒 Last Updated:** {last_time_str}")
-        
-        df_fleet = pd.read_csv(cache_file)
-        df_fleet = df_fleet.replace({np.nan: "-"}) # Clean empty cells
-        
-        # Check if 15 minutes (900 seconds) have passed
-        if time.time() - last_mtime > 900:
-            if not os.path.exists(lock_file):
-                trigger_bg_update()
+        try:
+            df_fleet = pd.read_csv(cache_file)
+            df_fleet = df_fleet.drop(columns=['Account_Source'], errors='ignore')
+            df_fleet = df_fleet.replace({np.nan: "-"}) 
+        except:
+            df_fleet = pd.DataFrame()
     else:
         df_fleet = pd.DataFrame()
-        st.warning("⚠️ No data available yet. Admin needs to run the first manual sync.")
+        
+    # Auto-trigger background update if 15 minutes passed and not already running
+    if status_data.get('start') != 'Not Started':
+        try:
+            last_run_time = datetime.datetime.strptime(status_data['start'], '%I:%M %p, %d %b %Y')
+            if (datetime.datetime.now() - last_run_time).total_seconds() > 900 and status_data.get('status') != 'running':
+                trigger_bg_update()
+        except: pass
 
     # Show small background warning to let user know data is fetching
-    if os.path.exists(lock_file):
-        st.caption("🔄 Data is currently being updated in the background... (Previous data is shown below)")
+    if status_data.get('status') == 'running':
+        st.caption("🔄 Data is currently being updated in the background. Naya data aate hi table mein add ho jayega (Please refresh view to see updates).")
 
-    # ADMIN CONTROLS (Progress Bar only for Admin)
+    # ADMIN CONTROLS (Progress Bar and Error Logs only for Admin)
     if st.session_state.get('role') == 'Admin':
-        with st.expander("🛠️ Admin Controls: Manual Data Sync"):
-            st.info("Manual Sync forces the scraper to run right now and shows progress.")
+        with st.expander("🛠️ Admin Controls: Manual Data Sync & Error Logs"):
+            st.info("Manual Sync se data seedha screen par ek-ek karke load hoga.")
             if st.button("🔄 Force Manual Sync (With Progress)", use_container_width=True):
-                if os.path.exists(lock_file):
-                    st.error("❌ A background sync is already running. Please wait for it to finish.")
+                if status_data.get('status') == 'running':
+                    st.error("❌ A background sync is already running. Please wait.")
                 else:
                     p_bar = st.progress(0)
                     s_txt = st.empty()
+                    df_placeholder = st.empty()
                     
-                    df_new = run_scraper(p_bar, s_txt)
+                    df_new = run_scraper(p_bar, s_txt, df_placeholder)
                     if not df_new.empty:
-                        df_new.to_csv(cache_file, index=False)
-                        s_txt.success("✅ Update Complete! Refreshing page...")
+                        s_txt.success("✅ Update Complete! All accounts verified.")
                         time.sleep(2)
                         st.rerun()
                     else:
                         s_txt.error("❌ Failed to fetch data.")
             
-            # Show errors if any
-            if 'scraper_errors' in st.session_state and st.session_state['scraper_errors']:
-                with st.expander("🚨 Show Error Logs"):
-                    for err in st.session_state['scraper_errors']:
-                        st.code(err)
+            if status_data.get('errors'):
+                st.markdown("🚨 **Recent Errors (Agar koi account fail hua):**")
+                for err in status_data['errors']:
+                    st.code(err)
 
-    # DISPLAY THE FLEET DATA (Keeps old data visible while updating)
+    # DISPLAY THE FLEET DATA
     if not df_fleet.empty:
-        st.info(f"📊 **Total Vehicles Scraped:** {len(df_fleet)}")
+        st.info(f"📊 **Total Vehicles Scraped Currently:** {len(df_fleet)}")
         
         st.markdown("### 🔍 Search Vehicle & View Map")
         search_query = st.text_input("Enter 4-digit code or Full Number:", placeholder="Example: 3389")
@@ -1247,7 +1302,7 @@ elif choice == "📍 Live Fleet Tracker":
                         st.divider()
                         loc = str(vehicle.get('Location', '-'))
                         st.info(f"**🌍 Current Location:**\n\n{loc}")
-                        st.warning(f"**🛣️️ Bacha Hua Rasta (Distance):**\n\n{str(vehicle.get('Remaining_KMS', '-'))}")
+                        st.warning(f"**🛣 Bacha Hua Rasta (Distance):**\n\n{str(vehicle.get('Remaining_KMS', '-'))}")
                         
                         if loc != "-":
                             loc_parts = [p.strip() for p in loc.split(',')]
@@ -1261,3 +1316,5 @@ elif choice == "📍 Live Fleet Tracker":
         st.markdown("---")
         st.markdown("### 📋 Full Fleet Database")
         st.dataframe(df_fleet, hide_index=True, use_container_width=True)
+    else:
+        st.warning("⚠️ No data available yet. Admin needs to run the first manual sync.")
