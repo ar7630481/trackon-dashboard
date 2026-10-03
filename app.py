@@ -7,7 +7,6 @@ import os
 import time
 import shutil
 import warnings
-import subprocess
 import traceback
 from playwright.sync_api import sync_playwright
 import pdfplumber
@@ -144,13 +143,12 @@ FLEET_ACCOUNTS = [
     {"email": "9712339060", "password": "Boss@9918"}
 ]
 
-@st.cache_resource(show_spinner="⚙️ Initializing Cloud Browser... (This happens only once)")
+@st.cache_resource(show_spinner=False)
 def setup_playwright():
     try:
         os.system("playwright install chromium")
-        os.system("playwright install-deps") # CRITICAL FOR LINUX CLOUD
     except Exception as e:
-        print(f"Setup Error: {e}")
+        pass 
 
 def clear_pre_modal_popups(page):
     try:
@@ -171,7 +169,7 @@ def fetch_fleet_data():
     setup_playwright() 
     base_dir = os.getcwd() 
     all_raw_data = []
-    error_logs = [] # To capture exact errors for debugging
+    error_logs = [] 
     
     try:
         with sync_playwright() as p:
@@ -183,14 +181,13 @@ def fetch_fleet_data():
                     '--disable-dev-shm-usage', # Crucial for Streamlit Cloud
                     '--disable-gpu',           
                     '--single-process',
-                    '--disable-blink-features=AutomationControlled' # Hides automation from website
+                    '--disable-blink-features=AutomationControlled'
                 ]
             ) 
             
             for acc in FLEET_ACCOUNTS:
                 context = None
                 try:
-                    # Fake User Agent to prevent bot detection
                     context = browser.new_context(
                         accept_downloads=True,
                         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -228,7 +225,6 @@ def fetch_fleet_data():
                         download = download_info.value
                         download.save_as(pdf_path)
                     except Exception as e:
-                         # Fallback approach
                          page.evaluate("Array.from(document.querySelectorAll('span')).find(el => el.textContent.includes('Download'))?.click()")
                          page.wait_for_timeout(10000)
 
@@ -258,7 +254,6 @@ def fetch_fleet_data():
     except Exception as overall_e:
         error_logs.append(f"Playwright Master Engine Error: {str(overall_e)}\n\n{traceback.format_exc()}")
 
-    # Agar error hai toh session_state mein save kar lenge taaki screen pe dikha sakein
     if 'scraper_errors' not in st.session_state:
         st.session_state['scraper_errors'] = []
     st.session_state['scraper_errors'] = error_logs
