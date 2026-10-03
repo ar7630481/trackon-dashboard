@@ -375,7 +375,6 @@ def process_all_data():
             date_col = get_col(df_raw, ['date', 'mcd_startdate']) or 'Date'
             df_raw['Date'] = df_raw.get(date_col, pd.Series(['']*len(df_raw))).fillna('')
             
-            # VLOOKUP: RefNumber -> MasterCDNo
             raw_key_col = get_col(df_raw, ['refnumber', 'mastercdno', 'mcdno']) or 'RefNumber'
             lkp_key_col = get_col(df_lookup, ['mastercdno', 'mcdno']) or 'MasterCDNo'
             
@@ -796,7 +795,7 @@ elif choice == "📱 WhatsApp Alerts":
         st.info("No data available.")
 
 # -------------------------------------------------------------
-# D. CPK & UTILIZATION (EXACT MULTI-CONDITION MATCHING FOR RAW TRIPS)
+# D. CPK & UTILIZATION (WITH GRAND TOTAL & ACCURATE PROOF FILTERING)
 # -------------------------------------------------------------
 elif choice == "💰 CPK & Utilization":
     st.markdown("<h1>💰 CPK & Utilization</h1>", unsafe_allow_html=True)
@@ -804,7 +803,7 @@ elif choice == "💰 CPK & Utilization":
         df_cpk_master = data['Up_Down_Route_Summary'].copy()
         df_cpk_raw = data['CPK_Raw_Data'].copy()
         
-        # Keep ONLY MCD-National and MCD-Zonal
+        # Keep ONLY National and Zonal
         df_cpk_master = df_cpk_master[df_cpk_master['Type'].isin(['MCD-National LH', 'MCD-Zonal LH', 'National LH', 'Zonal LH'])]
         df_cpk_master['Type'] = df_cpk_master['Type'].replace({'MCD-National LH': 'National', 'MCD-Zonal LH': 'Zonal', 'National LH': 'National', 'Zonal LH': 'Zonal'})
         
@@ -832,21 +831,50 @@ elif choice == "💰 CPK & Utilization":
         avg_cpk = (df_cpk_view['Total Trip Cost'].sum() / df_cpk_view['Total Carried Wt'].sum()) if df_cpk_view['Total Carried Wt'].sum() > 0 else 0
         c3.metric("Overall CPK", f"₹ {avg_cpk:.2f}")
         
-        st.markdown("### Top Priority Utilization")
+        st.markdown("### Top Priority Utilization (Lowest on Top)")
         
         # SORTING: Lowest Utilization on Top (Ascending Order)
         df_cpk_view = df_cpk_view.sort_values(by='Overall Util %', ascending=True)
         
         disp_df = df_cpk_view.copy()
-        for col in ['Overall CPK', 'Avg Trip Cost']: 
-            if col in disp_df.columns: disp_df[col] = disp_df[col].apply(lambda x: f"₹{x:.2f}")
+        
+        # Helper to calculate and append Total row
+        def add_total_row(df):
+            if df.empty: return df
+            tot_trips = df['Total Trips'].sum() if 'Total Trips' in df.columns else 0
+            tot_cap = df['Total Capacity'].sum() if 'Total Capacity' in df.columns else 0
+            tot_wt = df['Total Carried Wt'].sum() if 'Total Carried Wt' in df.columns else 0
+            tot_cost = df['Total Trip Cost'].sum() if 'Total Trip Cost' in df.columns else 0
+            
+            tot_cpk = tot_cost / tot_wt if tot_wt > 0 else 0
+            tot_util = tot_wt / tot_cap if tot_cap > 0 else 0
+            tot_avg_cost = tot_cost / tot_trips if tot_trips > 0 else 0
+            
+            tot_dict = {c: '-' for c in df.columns}
+            tot_dict['VendorRO'] = 'TOTAL'
+            if 'Total Trips' in df.columns: tot_dict['Total Trips'] = tot_trips
+            if 'Total Capacity' in df.columns: tot_dict['Total Capacity'] = tot_cap
+            if 'Total Carried Wt' in df.columns: tot_dict['Total Carried Wt'] = tot_wt
+            if 'Total Trip Cost' in df.columns: tot_dict['Total Trip Cost'] = tot_cost
+            if 'Overall CPK' in df.columns: tot_dict['Overall CPK'] = tot_cpk
+            if 'Overall Util %' in df.columns: tot_dict['Overall Util %'] = tot_util
+            if 'Avg Trip Cost' in df.columns: tot_dict['Avg Trip Cost'] = tot_avg_cost
+            
+            return pd.concat([df, pd.DataFrame([tot_dict])], ignore_index=True)
+
+        disp_df = add_total_row(disp_df)
+        
+        # Format numeric columns with correct percentage multiplier (* 100)
+        for col in ['Overall CPK', 'Avg Trip Cost', 'Total Trip Cost']: 
+            if col in disp_df.columns: 
+                disp_df[col] = disp_df[col].apply(lambda x: f"₹{x:.2f}" if isinstance(x, (int, float)) else x)
         if 'Overall Util %' in disp_df.columns:
-            disp_df['Overall Util %'] = disp_df['Overall Util %'].apply(lambda x: f"{x:.2f}%")
+            disp_df['Overall Util %'] = disp_df['Overall Util %'].apply(lambda x: f"{x * 100:.2f}%" if isinstance(x, (int, float)) else x)
             
         view_df = disp_df.drop(columns=['SortKey', 'Super_SortKey'], errors='ignore')
         
         def highlight_cpk_util(val, col):
-            if pd.isna(val): return ''
+            if pd.isna(val) or val == '-': return ''
             if col == 'Overall Util %':
                 try:
                     pct = float(str(val).replace('%', '').strip())
@@ -869,62 +897,64 @@ elif choice == "💰 CPK & Utilization":
         selection_cpk = st.dataframe(
             styled_view, 
             use_container_width=True, 
+            height=300, 
             on_select="rerun", 
             selection_mode="single-row"
         )
         
         if selection_cpk and selection_cpk.get('selection', {}).get('rows'):
             selected_idx = selection_cpk['selection']['rows'][0]
-            selected_super_sortkey = df_cpk_view.iloc[selected_idx]['Super_SortKey']
-            selected_route_name = df_cpk_view.iloc[selected_idx]['Route (UP/DOWN)']
-            selected_vendor = df_cpk_view.iloc[selected_idx]['Vendor(s)']
-            selected_ro_val = df_cpk_view.iloc[selected_idx]['VendorRO']
             
-            st.markdown("---")
-            st.markdown(f"### 🔗 UP-DOWN Network Connected View")
-            
-            network_df = df_cpk_master[df_cpk_master['Super_SortKey'] == selected_super_sortkey].copy()
-            network_df = network_df.drop(columns=['SortKey', 'Super_SortKey'], errors='ignore')
-            
-            for col in ['Overall CPK', 'Avg Trip Cost']: 
-                if col in network_df.columns: network_df[col] = network_df[col].apply(lambda x: f"₹{x:.2f}")
-            if 'Overall Util %' in network_df.columns:
-                network_df['Overall Util %'] = network_df['Overall Util %'].apply(lambda x: f"{x:.2f}%")
-            
-            st.data_editor(
-                network_df,
-                use_container_width=True,
-                disabled=True,
-                column_config={
-                    "Vendor(s)": st.column_config.TextColumn("Vendor(s)", width="large"),
-                    "Route (UP/DOWN)": st.column_config.TextColumn("Route", width="large")
-                },
-                hide_index=True
-            )
-            
-            # --- VIEW EXACT MATCH RAW TRIPS ---
-            st.markdown("---")
-            st.markdown(f"### 📄 Raw Trip Logs (Exact Proof for {selected_vendor})")
-            
-            # 🔥 STRICT MULTI-CONDITION FILTERING TO PREVENT FAKE ENTRIES 🔥
-            raw_trips = df_cpk_raw[
-                (df_cpk_raw['Final_Route'].astype(str).str.strip().str.upper() == str(selected_route_name).strip().upper()) & 
-                (df_cpk_raw['VendorName'].astype(str).str.strip().str.upper() == str(selected_vendor).strip().upper()) &
-                (df_cpk_raw['RO_Clean'].astype(str).str.strip().str.upper() == str(selected_ro_val).strip().upper())
-            ].copy()
-            
-            if raw_trips.empty:
-                # Fallback matching if exact string differs slightly
+            # Prevent clicking the TOTAL row
+            if selected_idx >= len(df_cpk_view):
+                st.warning("Please click a valid route row, not the TOTAL row.")
+            else:
+                selected_super_sortkey = df_cpk_view.iloc[selected_idx]['Super_SortKey']
+                selected_route_name = df_cpk_view.iloc[selected_idx]['Route (UP/DOWN)']
+                selected_vendor = df_cpk_view.iloc[selected_idx]['Vendor(s)']
+                selected_ro_val = df_cpk_view.iloc[selected_idx]['VendorRO']
+                
+                st.markdown("---")
+                st.markdown(f"### 🔗 UP-DOWN Network Connected View")
+                
+                network_df = df_cpk_master[df_cpk_master['Super_SortKey'] == selected_super_sortkey].copy()
+                network_df = network_df.drop(columns=['SortKey', 'Super_SortKey'], errors='ignore')
+                
+                # Add Total row for Network View as well
+                network_df = add_total_row(network_df)
+                
+                for col in ['Overall CPK', 'Avg Trip Cost', 'Total Trip Cost']: 
+                    if col in network_df.columns: network_df[col] = network_df[col].apply(lambda x: f"₹{x:.2f}" if isinstance(x, (int, float)) else x)
+                if 'Overall Util %' in network_df.columns:
+                    network_df['Overall Util %'] = network_df['Overall Util %'].apply(lambda x: f"{x * 100:.2f}%" if isinstance(x, (int, float)) else x)
+                
+                st.data_editor(
+                    network_df,
+                    use_container_width=True,
+                    disabled=True,
+                    column_config={
+                        "Vendor(s)": st.column_config.TextColumn("Vendor(s)", width="large"),
+                        "Route (UP/DOWN)": st.column_config.TextColumn("Route", width="large")
+                    },
+                    hide_index=True
+                )
+                
+                # --- VIEW EXACT MATCH RAW TRIPS ---
+                st.markdown("---")
+                st.markdown(f"### 📄 Raw Trip Logs (Exact Proof for {selected_vendor})")
+                
+                # 🔥 STRICT 100% ACCURATE FILTERING TO AVOID WRONG VENDOR MATCHES 🔥
                 raw_trips = df_cpk_raw[
+                    (df_cpk_raw['Final_Route'].astype(str).str.strip().str.upper() == str(selected_route_name).strip().upper()) & 
                     (df_cpk_raw['VendorName'].astype(str).str.strip().str.upper() == str(selected_vendor).strip().upper()) &
                     (df_cpk_raw['RO_Clean'].astype(str).str.strip().str.upper() == str(selected_ro_val).strip().upper())
                 ].copy()
 
-            raw_cols = ['RO_Clean', 'Final_Route', 'Final_Type', 'VendorName', 'Vehicle No', 'Date', 'Cap', 'Wt', 'Trips', 'Cost']
-            raw_cols = [c for c in raw_cols if c in raw_trips.columns]
-            raw_trips = raw_trips[raw_cols]
-            
-            st.dataframe(raw_trips, use_container_width=True)
+                raw_cols = ['RO_Clean', 'Final_Route', 'Final_Type', 'VendorName', 'Vehicle No', 'Date', 'Cap', 'Wt', 'Trips', 'Cost']
+                raw_cols = [c for c in raw_cols if c in raw_trips.columns]
+                raw_trips = raw_trips[raw_cols]
+                
+                st.dataframe(raw_trips, use_container_width=True)
 
         else:
             st.info("👆 Click any row above to view its complete UP & DOWN network & Raw Trips combined.")
