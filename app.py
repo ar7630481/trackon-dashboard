@@ -4,7 +4,11 @@ import numpy as np
 import datetime
 import urllib.parse
 import os
+import time
+import shutil
 import warnings
+from playwright.sync_api import sync_playwright
+import pdfplumber
 
 warnings.filterwarnings('ignore')
 
@@ -27,6 +31,13 @@ FILE_MAP = {
     "ROUTE_LOOKUP": os.path.join(DATA_DIR, "route_lookup.xlsx"),
     "FINAL_OUTPUT": os.path.join(DATA_DIR, "Auto_Generated_Monitoring_Data.xlsx")
 }
+
+FLEET_ACCOUNTS = [
+    {"email": "anand.joshi@trackon.in", "password": "Trackon@123"},
+    {"email": "lh.fleetops@trackon.in", "password": "i7F0TYVh@"},
+    {"email": "amar.vandanamotors@gmail.com", "password": "Amar@123"},
+    {"email": "9712339060", "password": "Boss@9918"}
+]
 
 # ==========================================
 # 2. AUTHENTICATION
@@ -129,7 +140,184 @@ def format_pct_cnt(count, total):
     return f"{pct:.1f}% ({int(count)})"
 
 # ==========================================
-# 4. PROCESSING ENGINE (Auto-Generation)
+# 4. FLEET SCRAPER LOGIC
+# ==========================================
+def clear_pre_modal_popups(page):
+    try:
+        close_btn = page.locator('span.ant-tour-close-icon')
+        if close_btn.is_visible(timeout=1000): close_btn.click()
+    except: pass
+    try:
+        next_btn = page.locator("span", has_text="Next")
+        if next_btn.is_visible(timeout=1000): next_btn.click()
+    except: pass
+    try:
+        svg_close = page.locator('svg[data-icon="close"]')
+        if svg_close.is_visible(timeout=1000): svg_close.click()
+    except: pass
+
+@st.cache_data(ttl=900, show_spinner="⏳ Tracking Active: Sabhi accounts se live data fetch ho raha hai...")
+def fetch_fleet_data():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    all_raw_data = []
+    
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=False,
+            args=['--no-sandbox', '--disable-setuid-sandbox']
+        ) 
+        
+        for acc in FLEET_ACCOUNTS:
+            context = browser.new_context(accept_downloads=True)
+            page = context.new_page()
+            
+            safe_email = acc['email'].replace('@', '_').replace('.', '_')
+            pdf_path = os.path.join(script_dir, f"temp_{safe_email}.pdf")
+            
+            try:
+                page.goto("https://app.fleetx.io/users/login", timeout=90000, wait_until="domcontentloaded")
+                page.fill('input[data-testid="email"]', acc['email'])
+                page.fill('input[data-testid="password"]', acc['password'])
+                page.click('button[type="submit"]')
+
+                page.wait_for_selector('img[title="Realtime Vehicle Report"]', timeout=90000)
+                page.wait_for_timeout(2000)
+
+                clear_pre_modal_popups(page)
+
+                page.evaluate("document.querySelector('img[title=\"Realtime Vehicle Report\"]').click()")
+                page.wait_for_timeout(2000) 
+                
+                page.evaluate("Array.from(document.querySelectorAll('span')).find(el => el.textContent.trim() === 'Download PDF')?.click()")
+                page.wait_for_timeout(2000) 
+
+                if os.path.exists(pdf_path): 
+                    try: os.remove(pdf_path)
+                    except: pass
+
+                if "anand.joshi" in acc['email'] or "lh.fleetops" in acc['email']:
+                    captured_urls = []
+                    def handle_new_page(new_page):
+                        new_page.wait_for_timeout(3000)
+                        captured_urls.append(new_page.url)
+
+                    context.on("page", handle_new_page)
+                    page.evaluate("Array.from(document.querySelectorAll('span')).find(el => el.textContent.trim() === 'Download')?.click()")
+                    
+                    pdf_url = ""
+                    for _ in range(40):
+                        for url in captured_urls:
+                            if "amazonaws.com" in url or ".pdf" in url.lower():
+                                pdf_url = url
+                                break
+                        if not pdf_url:
+                            for p_tab in context.pages:
+                                if "amazonaws.com" in p_tab.url or ".pdf" in p_tab.url.lower():
+                                    pdf_url = p_tab.url
+                                    break
+                        if pdf_url: break
+                        page.wait_for_timeout(1000)
+                        
+                    if pdf_url:
+                        urllib.request.urlretrieve(pdf_url, pdf_path)
+
+                else:
+                    dl_folder = os.path.join(script_dir, f"dl_{safe_email}")
+                    os.makedirs(dl_folder, exist_ok=True)
+                    
+                    for f in os.listdir(dl_folder):
+                        try: os.remove(os.path.join(dl_folder, f))
+                        except: pass
+
+                    client = context.new_cdp_session(page)
+                    client.send("Page.setDownloadBehavior", {
+                        "behavior": "allow",
+                        "downloadPath": dl_folder
+                    })
+
+                    page.evaluate("Array.from(document.querySelectorAll('span')).find(el => el.textContent.trim() === 'Download')?.click()")
+                    
+                    for _ in range(60): 
+                        files = os.listdir(dl_folder)
+                        if not files:
+                            time.sleep(1)
+                            continue
+                        if any(f.lower().endswith(('.tmp', '.crdownload')) for f in files):
+                            time.sleep(1)
+                            continue
+                        pdf_files = [f for f in files if f.lower().endswith('.pdf')]
+                        if pdf_files:
+                            downloaded_file = os.path.join(dl_folder, pdf_files[0])
+                            shutil.move(downloaded_file, pdf_path)
+                            break
+                        time.sleep(1)
+
+                    try: shutil.rmtree(dl_folder)
+                    except: pass
+
+                if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0:
+                    with pdfplumber.open(pdf_path) as pdf:
+                        for page_obj in pdf.pages:
+                            table = page_obj.extract_table()
+                            if table:
+                                for row in table:
+                                    if any(cell and str(cell).strip() for cell in row):
+                                        all_raw_data.append(row)
+                    try: os.remove(pdf_path)
+                    except: pass
+                else:
+                    print(f"Bhai CDP wale method se bhi file save nahi hui for {acc['email']}")
+
+            except Exception as e:
+                print(f"Error fetching {acc['email']}: {e}")
+            finally:
+                context.close()
+                
+        browser.close()
+
+    if all_raw_data:
+        max_cols = max(len(row) for row in all_raw_data)
+        normalized_data = [row + [""] * (max_cols - len(row)) for row in all_raw_data]
+        df = pd.DataFrame(normalized_data[1:], columns=normalized_data[0])
+        df.columns = [str(c).replace('\n', ' ').strip() if c else f"Col_{i}" for i, c in enumerate(df.columns)]
+        
+        veh_col = next((c for c in df.columns if 'Vehicle' in str(c) or 'Name' in str(c)), None)
+        if veh_col:
+            raw_str = df[veh_col].astype(str).str.replace(r'\n', ' ', regex=True)
+            df['Vehicle_Code'] = raw_str.str.extract(r'(?i)(?:Name:)?\s*(\d{4})', expand=False).fillna("-")
+            df['Full_Number'] = raw_str.str.extract(r'(?i)No:\s*([A-Z0-9]+)', expand=False).fillna("-")
+        else:
+            df['Vehicle_Code'] = "-"
+            df['Full_Number'] = "-"
+            
+        status_col = next((c for c in df.columns if 'Status' in str(c) and 'Job' not in str(c)), None)
+        df['Status'] = df[status_col].astype(str).str.replace(r'\n', ' ', regex=True).str.strip() if status_col else "-"
+            
+        speed_col = next((c for c in df.columns if 'Spee' in str(c) or 'Speed' in str(c)), None)
+        df['Speed'] = df[speed_col].astype(str).str.replace(r'\n', ' ', regex=True).str.strip() if speed_col else "-"
+            
+        nearest_col = next((c for c in df.columns if 'Nearest' in str(c)), None)
+        df['Remaining_KMS'] = df[nearest_col].astype(str).str.replace(r'\n', ' ', regex=True).str.strip() if nearest_col else "-"
+            
+        loc_col = next((c for c in df.columns if 'Location' in str(c)), None)
+        df['Location'] = df[loc_col].astype(str).str.replace(r'\n', ' ', regex=True).str.strip() if loc_col else "-"
+            
+        time_col = next((c for c in df.columns if 'Last' in str(c) or 'dated' in str(c)), None)
+        df['Last_Updated'] = df[time_col].astype(str).str.replace(r'\n', ' ', regex=True).str.strip() if time_col else "-"
+
+        final_cols = ['Vehicle_Code', 'Full_Number', 'Status', 'Speed', 'Remaining_KMS', 'Location', 'Last_Updated']
+        for col in final_cols:
+            if col not in df.columns:
+                df[col] = "-"
+                
+        df_clean = df[final_cols]
+        df_clean = df_clean.drop_duplicates(subset=['Full_Number'], keep='first')
+        return df_clean
+    else:
+        return pd.DataFrame()
+
+# ==========================================
+# 5. MAIN PROCESSING ENGINE
 # ==========================================
 def process_all_data():
     progress = st.progress(0)
@@ -139,7 +327,7 @@ def process_all_data():
         writer = pd.ExcelWriter(FILE_MAP["FINAL_OUTPUT"], engine='xlsxwriter')
         
         # --- MODULE 0: PAYMENT DATA ---
-        status_text.text("⚙️️ Processing Payment Data...")
+        status_text.text("⚙️ Processing Payment Data...")
         if os.path.exists(FILE_MAP["PAYMENT"]):
             df_pay = pd.read_excel(FILE_MAP["PAYMENT"])
             df_pay.columns = df_pay.columns.astype(str).str.strip().str.upper().str.replace(" ", "").str.replace("_", "")
@@ -500,7 +688,7 @@ def process_all_data():
         status_text.error(f"❌ Error during processing: {e}")
 
 # ==========================================
-# 5. SIDEBAR: ADMIN PANEL
+# 6. SIDEBAR: ADMIN PANEL
 # ==========================================
 st.sidebar.title(f"Welcome, {st.session_state['role']}")
 if st.sidebar.button("Logout", key="logout_btn"):
@@ -552,7 +740,7 @@ if os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
     st.sidebar.info(f"📊 Dashboard Refreshed:\n{dt}")
 
 # ==========================================
-# 6. DATA LOADING 
+# 7. DATA LOADING 
 # ==========================================
 @st.cache_data
 def load_dashboard_data():
@@ -569,7 +757,7 @@ if not data:
     st.warning("⚠ No data found! Admin must upload raw files and process data.")
     st.stop()
     
-menu = ["📊 Daily Standup", "💳 Vendor Payment", "📱 WhatsApp Alerts", "💰 CPK & Utilization"]
+menu = ["📊 Daily Standup", "💳 Vendor Payment", "📱 WhatsApp Alerts", "💰 CPK & Utilization", "📍 Live Fleet Tracker"]
 choice = st.sidebar.radio("Navigate to:", menu)
 
 # -------------------------------------------------------------
@@ -683,10 +871,6 @@ if choice == "📊 Daily Standup":
                 else: styled_raw = styled_raw.applymap(highlight_remarks, subset=['Remark'])
                     
             st.dataframe(styled_raw, use_container_width=True)
-            
-            # COPY DATA FRIENDLY HELPER
-            csv_data = filtered_raw.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Copy / Download Raw Logs as CSV", data=csv_data, file_name=f"Raw_Logs_{selected_route}_{selected_leg}.csv", mime="text/csv")
         else:
             st.info("👆 Click any row in the table above to view its detailed proof data.")
 
@@ -802,7 +986,7 @@ elif choice == "📱 WhatsApp Alerts":
         st.info("No data available.")
 
 # -------------------------------------------------------------
-# D. CPK & UTILIZATION (WITH GRAND TOTAL & ACCURATE PROOF FILTERING)
+# D. CPK & UTILIZATION 
 # -------------------------------------------------------------
 elif choice == "💰 CPK & Utilization":
     st.markdown("<h1>💰 CPK & Utilization</h1>", unsafe_allow_html=True)
@@ -810,7 +994,6 @@ elif choice == "💰 CPK & Utilization":
         df_cpk_master = data['Up_Down_Route_Summary'].copy()
         df_cpk_raw = data['CPK_Raw_Data'].copy()
         
-        # Keep ONLY National and Zonal
         df_cpk_master = df_cpk_master[df_cpk_master['Type'].isin(['MCD-National LH', 'MCD-Zonal LH', 'National LH', 'Zonal LH'])]
         df_cpk_master['Type'] = df_cpk_master['Type'].replace({'MCD-National LH': 'National', 'MCD-Zonal LH': 'Zonal', 'National LH': 'National', 'Zonal LH': 'Zonal'})
         
@@ -840,12 +1023,10 @@ elif choice == "💰 CPK & Utilization":
         
         st.markdown("### Top Priority Utilization (Lowest on Top)")
         
-        # SORTING: Lowest Utilization on Top (Ascending Order)
         df_cpk_view = df_cpk_view.sort_values(by='Overall Util %', ascending=True)
         
         disp_df = df_cpk_view.copy()
         
-        # Helper to calculate and append Total row
         def add_total_row(df):
             if df.empty: return df
             tot_trips = df['Total Trips'].sum() if 'Total Trips' in df.columns else 0
@@ -871,7 +1052,6 @@ elif choice == "💰 CPK & Utilization":
 
         disp_df = add_total_row(disp_df)
         
-        # Format numeric columns with correct percentage multiplier (* 100)
         for col in ['Overall CPK', 'Avg Trip Cost', 'Total Trip Cost']: 
             if col in disp_df.columns: 
                 disp_df[col] = disp_df[col].apply(lambda x: f"₹{x:.2f}" if isinstance(x, (int, float)) else x)
@@ -912,7 +1092,6 @@ elif choice == "💰 CPK & Utilization":
         if selection_cpk and selection_cpk.get('selection', {}).get('rows'):
             selected_idx = selection_cpk['selection']['rows'][0]
             
-            # Prevent clicking the TOTAL row
             if selected_idx >= len(df_cpk_view):
                 st.warning("Please click a valid route row, not the TOTAL row.")
             else:
@@ -927,7 +1106,6 @@ elif choice == "💰 CPK & Utilization":
                 network_df = df_cpk_master[df_cpk_master['Super_SortKey'] == selected_super_sortkey].copy()
                 network_df = network_df.drop(columns=['SortKey', 'Super_SortKey'], errors='ignore')
                 
-                # Add Total row for Network View
                 network_df = add_total_row(network_df)
                 
                 for col in ['Overall CPK', 'Avg Trip Cost', 'Total Trip Cost']: 
@@ -935,7 +1113,6 @@ elif choice == "💰 CPK & Utilization":
                 if 'Overall Util %' in network_df.columns:
                     network_df['Overall Util %'] = network_df['Overall Util %'].apply(lambda x: f"{x * 100:.2f}%" if isinstance(x, (int, float)) else x)
                 
-                # Apply color styling to Network View as well
                 styled_network = network_df.style
                 if hasattr(styled_network, 'map'):
                     styled_network = styled_network.map(lambda x: highlight_cpk_util(x, 'Overall Util %'), subset=['Overall Util %'])
@@ -969,3 +1146,66 @@ elif choice == "💰 CPK & Utilization":
             st.info("👆 Click any row above to view its complete UP & DOWN network & Raw Trips combined.")
     else:
         st.info("Please process CPK data first.")
+
+# -------------------------------------------------------------
+# E. LIVE FLEET TRACKER
+# -------------------------------------------------------------
+elif choice == "📍 Live Fleet Tracker":
+    st.markdown("<h1>📍 Live Fleet Tracker</h1>", unsafe_allow_html=True)
+    st.markdown("##### 🛰️ VIP Daily Execution & Fleet Tracker")
+    st.divider()
+
+    df_fleet = fetch_fleet_data()
+
+    if not df_fleet.empty:
+        col1, col2 = st.columns([3, 1])
+        col1.success("✅ Sabhi accounts se data successfully fetch ho gaya!")
+        
+        if col2.button("🔄 Force Manual Refresh", use_container_width=True):
+            fetch_fleet_data.clear() 
+            st.rerun()
+
+        st.info(f"📊 **Total Vehicles Scraped:** {len(df_fleet)}")
+        
+        st.markdown("### 🔍 Search Vehicle & View Map")
+        search_query = st.text_input("Enter 4-digit code or Full Number:", placeholder="Example: 3389")
+        
+        if search_query:
+            sq = search_query.strip()
+            mask = (df_fleet['Vehicle_Code'].str.contains(sq, case=False, na=False) | 
+                    df_fleet['Full_Number'].str.contains(sq, case=False, na=False))
+            result = df_fleet[mask]
+            
+            if not result.empty:
+                st.success(f"✅ {len(result)} Vehicle(s) found!")
+                for index, vehicle in result.iterrows():
+                    full_no = vehicle.get('Full_Number', '-')
+                    with st.container(border=True):
+                        st.markdown(f"### 🚛 Vehicle No: {full_no}")
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric(label="🚦 Status", value=str(vehicle.get('Status', '-')).upper())
+                        c2.metric(label="⚡ Speed", value=str(vehicle.get('Speed', '-')))
+                        c3.metric(label="🕒 Last Updated", value=str(vehicle.get('Last_Updated', '-')))
+                        st.divider()
+                        loc = str(vehicle.get('Location', '-'))
+                        st.info(f"**🌍 Current Location:**\n\n{loc}")
+                        st.warning(f"**🛣️ Bacha Hua Rasta (Distance):**\n\n{str(vehicle.get('Remaining_KMS', '-'))}")
+                        
+                        if loc != "-":
+                            loc_parts = [p.strip() for p in loc.split(',')]
+                            optimized_loc = ", ".join(loc_parts[-3:]) if len(loc_parts) >= 3 else loc
+                            safe_location = urllib.parse.quote(optimized_loc)
+                            gmaps_url = f"https://www.google.com/maps/dir/?api=1&destination={safe_location}"
+                            st.link_button(f"📍 {full_no} Ka Rasta Maps Par Dekhein", gmaps_url, type="primary", use_container_width=True)
+            else:
+                st.error(f"❌ No vehicle found matching '{sq}'.")
+                
+        st.markdown("---")
+        st.markdown("### 📋 Full Fleet Database")
+        st.dataframe(df_fleet, hide_index=True, use_container_width=True)
+
+    else:
+        st.error("⚠️ Failed to load data from accounts.")
+        if st.button("🔄 Retry Sync", use_container_width=True):
+            fetch_fleet_data.clear()
+            st.rerun()
