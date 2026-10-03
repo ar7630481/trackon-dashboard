@@ -9,7 +9,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# 1. PAGE SETUP & THEME (Dark Theme)
+# 1. PAGE SETUP
 # ==========================================
 st.set_page_config(page_title="Trackon Command Center", page_icon="🚀", layout="wide")
 
@@ -138,9 +138,6 @@ def load_dashboard_data():
 
 data = load_dashboard_data()
 
-# ==========================================
-# 5. DASHBOARD NAVIGATION
-# ==========================================
 if not data:
     st.warning("⚠ No data found! Admin must upload raw files and process data.")
     st.stop()
@@ -371,48 +368,51 @@ elif choice == "📱 WhatsApp Alerts":
         st.info("No data available.")
 
 # -------------------------------------------------------------
-# D. CPK & UTILIZATION (THE ULTIMATE UP-DOWN MATRIX)
+# D. CPK & UTILIZATION 
 # -------------------------------------------------------------
 elif choice == "💰 CPK & Utilization":
     st.markdown("<h1>💰 CPK & Utilization</h1>", unsafe_allow_html=True)
     if 'Up_Down_Route_Summary' in data:
-        df_cpk = data['Up_Down_Route_Summary'].copy()
+        df_cpk_master = data['Up_Down_Route_Summary'].copy()
         
-        # Keep ONLY MCD-National and MCD-Zonal
-        df_cpk = df_cpk[df_cpk['Type'].isin(['MCD-National LH', 'MCD-Zonal LH', 'National LH', 'Zonal LH'])]
-        df_cpk['Type'] = df_cpk['Type'].replace({'MCD-National LH': 'National', 'MCD-Zonal LH': 'Zonal', 'National LH': 'National', 'Zonal LH': 'Zonal'})
+        # Keep ONLY MCD-National and MCD-Zonal in MASTER
+        df_cpk_master = df_cpk_master[df_cpk_master['Type'].isin(['MCD-National LH', 'MCD-Zonal LH', 'National LH', 'Zonal LH'])]
+        df_cpk_master['Type'] = df_cpk_master['Type'].replace({'MCD-National LH': 'National', 'MCD-Zonal LH': 'Zonal', 'National LH': 'National', 'Zonal LH': 'Zonal'})
         
-        ro_filter = st.selectbox("Filter RO (CPK):", ["ALL"] + sorted(df_cpk['VendorRO'].dropna().unique().tolist()))
-        if ro_filter != "ALL": df_cpk = df_cpk[df_cpk['VendorRO'] == ro_filter]
-            
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total Trips", int(df_cpk['Total Trips'].sum()))
-        avg_util = (df_cpk['Total Carried Wt'].sum() / df_cpk['Total Capacity'].sum() * 100) if df_cpk['Total Capacity'].sum() > 0 else 0
-        c2.metric("Overall Utilization", f"{avg_util:.1f}%")
-        avg_cpk = (df_cpk['Total Trip Cost'].sum() / df_cpk['Total Carried Wt'].sum()) if df_cpk['Total Carried Wt'].sum() > 0 else 0
-        c3.metric("Overall CPK", f"₹ {avg_cpk:.2f}")
-        
-        st.markdown("### Top Priority Utilization")
-        
-        disp_df = df_cpk.copy()
-        for col in ['Overall CPK', 'Avg Trip Cost']: 
-            if col in disp_df.columns: disp_df[col] = disp_df[col].apply(lambda x: f"₹{x:.2f}")
-        if 'Overall Util %' in disp_df.columns:
-            disp_df['Overall Util %'] = disp_df['Overall Util %'].apply(lambda x: f"{x:.2f}%")
-            
-        # 🔥 SUPER_SORTKEY LOGIC: Ignorning middle stops to match all UP/DOWN paths
+        # 🔥 SUPER_SORTKEY LOGIC ON MASTER: Matches both up and down ignoring intermediate nodes 🔥
         def create_super_key(route):
             parts = str(route).split('-')
             if len(parts) >= 2:
                 start = parts[0].strip().upper()
                 end = parts[-1].strip().upper()
-                return "-".join(sorted([start, end])) # E.g., BKLH and DELAP sorted = BKLH-DELAP
+                return "-".join(sorted([start, end]))
             return str(route).upper()
             
-        disp_df['Super_SortKey'] = disp_df['Route (UP/DOWN)'].apply(create_super_key)
-        df_cpk['Super_SortKey'] = df_cpk['Route (UP/DOWN)'].apply(create_super_key)
+        df_cpk_master['Super_SortKey'] = df_cpk_master['Route (UP/DOWN)'].apply(create_super_key)
+
+        ro_filter = st.selectbox("Filter RO (CPK):", ["ALL"] + sorted(df_cpk_master['VendorRO'].dropna().unique().tolist()))
         
-        # Hide SortKeys
+        # Filter for the top view based on user selection
+        if ro_filter != "ALL": 
+            df_cpk_view = df_cpk_master[df_cpk_master['VendorRO'] == ro_filter].copy()
+        else:
+            df_cpk_view = df_cpk_master.copy()
+            
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total Trips", int(df_cpk_view['Total Trips'].sum()))
+        avg_util = (df_cpk_view['Total Carried Wt'].sum() / df_cpk_view['Total Capacity'].sum() * 100) if df_cpk_view['Total Capacity'].sum() > 0 else 0
+        c2.metric("Overall Utilization", f"{avg_util:.1f}%")
+        avg_cpk = (df_cpk_view['Total Trip Cost'].sum() / df_cpk_view['Total Carried Wt'].sum()) if df_cpk_view['Total Carried Wt'].sum() > 0 else 0
+        c3.metric("Overall CPK", f"₹ {avg_cpk:.2f}")
+        
+        st.markdown("### Top Priority Utilization")
+        
+        disp_df = df_cpk_view.copy()
+        for col in ['Overall CPK', 'Avg Trip Cost']: 
+            if col in disp_df.columns: disp_df[col] = disp_df[col].apply(lambda x: f"₹{x:.2f}")
+        if 'Overall Util %' in disp_df.columns:
+            disp_df['Overall Util %'] = disp_df['Overall Util %'].apply(lambda x: f"{x:.2f}%")
+            
         view_df = disp_df.drop(columns=['SortKey', 'Super_SortKey'], errors='ignore')
         
         selection_cpk = st.dataframe(
@@ -426,17 +426,16 @@ elif choice == "💰 CPK & Utilization":
             selected_idx = selection_cpk['selection']['rows'][0]
             
             # The MAGIC: Grab the Super_SortKey of the clicked row
-            selected_super_sortkey = disp_df.iloc[selected_idx]['Super_SortKey']
+            selected_super_sortkey = df_cpk_view.iloc[selected_idx]['Super_SortKey']
             
             st.markdown("---")
             st.markdown(f"### 🔗 UP-DOWN Network Connected View")
-            st.info("Showing ALL connecting/returning legs for this route pair (regardless of intermediate stops):")
             
-            # Filter original dataframe by that Super_SortKey!
-            network_df = df_cpk[df_cpk['Super_SortKey'] == selected_super_sortkey].copy()
+            # 🔥 BYPASS THE RO FILTER: Query against the MASTER dataframe! 🔥
+            network_df = df_cpk_master[df_cpk_master['Super_SortKey'] == selected_super_sortkey].copy()
             network_df = network_df.drop(columns=['SortKey', 'Super_SortKey'], errors='ignore')
             
-            # Formatting
+            # Format and Display
             for col in ['Overall CPK', 'Avg Trip Cost']: 
                 if col in network_df.columns: network_df[col] = network_df[col].apply(lambda x: f"₹{x:.2f}")
             if 'Overall Util %' in network_df.columns:
