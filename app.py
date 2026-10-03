@@ -370,7 +370,6 @@ def process_all_data():
             if 'VehicleUsageType' in df_raw.columns:
                 df_raw = df_raw[df_raw['VehicleUsageType'] != 'VehicleUsageType']
 
-            # Extract necessary info for Raw Trips Verification
             vno_col = get_col(df_raw, ['vehicleno', 'vehicle']) or 'VehicleNo'
             df_raw['Vehicle No'] = df_raw.get(vno_col, pd.Series(['Unlisted']*len(df_raw))).fillna('Unlisted')
             date_col = get_col(df_raw, ['date', 'mcd_startdate']) or 'Date'
@@ -464,15 +463,13 @@ def process_all_data():
             target_keys = df_updn[df_updn['RO_Clean'].isin(target_ros)]['SortKey'].unique()
             df_updn = df_updn[df_updn['SortKey'].isin(target_keys)]
             
-            # Save Raw Data for Trip Verification Before Aggregation
             df_updn.to_excel(writer, sheet_name='CPK_Raw_Data', index=False)
 
             if not df_updn.empty:
-                agg_updn = df_updn.groupby(['RO_Clean', 'Final_Route', 'Final_Type', 'Cap', 'SortKey']).agg(
+                agg_updn = df_updn.groupby(['RO_Clean', 'Final_Route', 'Final_Type', 'Cap', 'SortKey', 'VendorName']).agg(
                     Total_Trips=('Trips', 'sum'),
                     Total_Carried_Wt=('Wt', 'sum'),
-                    Total_Trip_Cost=('Cost', 'sum'),
-                    Vendors=('VendorName', lambda x: ', '.join(sorted(set([str(v) for v in x if pd.notna(v) and str(v).strip() != '']))))
+                    Total_Trip_Cost=('Cost', 'sum')
                 ).reset_index()
 
                 agg_updn['Total Capacity'] = agg_updn['Cap'] * agg_updn['Total_Trips']
@@ -480,7 +477,7 @@ def process_all_data():
                 agg_updn['Overall Util %'] = np.where(agg_updn['Total Capacity'] > 0, agg_updn['Total_Carried_Wt'] / agg_updn['Total Capacity'], 0)
                 agg_updn['Avg Trip Cost'] = np.where(agg_updn['Total_Trips'] > 0, agg_updn['Total_Trip_Cost'] / agg_updn['Total_Trips'], 0)
                 
-                updn_final = agg_updn[['RO_Clean', 'Final_Route', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Cap', 'Total Capacity', 'Total_Carried_Wt', 'Avg Trip Cost', 'Total_Trip_Cost', 'Total_Trips', 'Vendors', 'SortKey']]
+                updn_final = agg_updn[['RO_Clean', 'Final_Route', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Cap', 'Total Capacity', 'Total_Carried_Wt', 'Avg Trip Cost', 'Total_Trip_Cost', 'Total_Trips', 'VendorName', 'SortKey']]
                 updn_final.columns = ["VendorRO", "Route (UP/DOWN)", "Type", "Overall CPK", "Overall Util %", "VehCap (Base)", "Total Capacity", "Total Carried Wt", "Avg Trip Cost", "Total Trip Cost", "Total Trips", "Vendor(s)", "SortKey"]
 
                 type_order = {"MCD-National LH":1, "MCD-Zonal LH":2, "MCD-Regional LH":3, "MCD-Feeder":4, "CO-LOADER":5}
@@ -799,7 +796,7 @@ elif choice == "📱 WhatsApp Alerts":
         st.info("No data available.")
 
 # -------------------------------------------------------------
-# D. CPK & UTILIZATION (UP-DOWN MATRIX + RAW TRIPS PROOF)
+# D. CPK & UTILIZATION (EXACT MULTI-CONDITION MATCHING FOR RAW TRIPS)
 # -------------------------------------------------------------
 elif choice == "💰 CPK & Utilization":
     st.markdown("<h1>💰 CPK & Utilization</h1>", unsafe_allow_html=True)
@@ -848,18 +845,17 @@ elif choice == "💰 CPK & Utilization":
             
         view_df = disp_df.drop(columns=['SortKey', 'Super_SortKey'], errors='ignore')
         
-        # LOGICAL COLORS FOR UTILIZATION AND CPK
         def highlight_cpk_util(val, col):
             if pd.isna(val): return ''
             if col == 'Overall Util %':
                 try:
                     pct = float(str(val).replace('%', '').strip())
-                    if pct < 50: return 'color: #ff5252; font-weight: bold;' # Red
-                    elif pct < 80: return 'color: #ffd740; font-weight: bold;' # Yellow
-                    else: return 'color: #69f0ae; font-weight: bold;' # Green
+                    if pct < 50: return 'color: #ff5252; font-weight: bold;' 
+                    elif pct < 80: return 'color: #ffd740; font-weight: bold;'
+                    else: return 'color: #69f0ae; font-weight: bold;'
                 except: return ''
             elif col == 'Overall CPK':
-                return 'color: #40c4ff; font-weight: bold;' # Cyan/Blue for CPK
+                return 'color: #40c4ff; font-weight: bold;'
             return ''
 
         styled_view = view_df.style
@@ -880,7 +876,9 @@ elif choice == "💰 CPK & Utilization":
         if selection_cpk and selection_cpk.get('selection', {}).get('rows'):
             selected_idx = selection_cpk['selection']['rows'][0]
             selected_super_sortkey = df_cpk_view.iloc[selected_idx]['Super_SortKey']
-            selected_route_pair = df_cpk_view.iloc[selected_idx]['Route (UP/DOWN)']
+            selected_route_name = df_cpk_view.iloc[selected_idx]['Route (UP/DOWN)']
+            selected_vendor = df_cpk_view.iloc[selected_idx]['Vendor(s)']
+            selected_ro_val = df_cpk_view.iloc[selected_idx]['VendorRO']
             
             st.markdown("---")
             st.markdown(f"### 🔗 UP-DOWN Network Connected View")
@@ -904,13 +902,24 @@ elif choice == "💰 CPK & Utilization":
                 hide_index=True
             )
             
-            # --- VIEW RAW TRIPS OPTION ---
+            # --- VIEW EXACT MATCH RAW TRIPS ---
             st.markdown("---")
-            st.markdown(f"### 📄 Raw Trip Logs (Verify Total Trips)")
+            st.markdown(f"### 📄 Raw Trip Logs (Exact Proof for {selected_vendor})")
             
-            df_cpk_raw['Super_SortKey'] = df_cpk_raw['Final_Route'].apply(create_super_key)
-            raw_trips = df_cpk_raw[df_cpk_raw['Super_SortKey'] == selected_super_sortkey].copy()
+            # 🔥 STRICT MULTI-CONDITION FILTERING TO PREVENT FAKE ENTRIES 🔥
+            raw_trips = df_cpk_raw[
+                (df_cpk_raw['Final_Route'].astype(str).str.strip().str.upper() == str(selected_route_name).strip().upper()) & 
+                (df_cpk_raw['VendorName'].astype(str).str.strip().str.upper() == str(selected_vendor).strip().upper()) &
+                (df_cpk_raw['RO_Clean'].astype(str).str.strip().str.upper() == str(selected_ro_val).strip().upper())
+            ].copy()
             
+            if raw_trips.empty:
+                # Fallback matching if exact string differs slightly
+                raw_trips = df_cpk_raw[
+                    (df_cpk_raw['VendorName'].astype(str).str.strip().str.upper() == str(selected_vendor).strip().upper()) &
+                    (df_cpk_raw['RO_Clean'].astype(str).str.strip().str.upper() == str(selected_ro_val).strip().upper())
+                ].copy()
+
             raw_cols = ['RO_Clean', 'Final_Route', 'Final_Type', 'VendorName', 'Vehicle No', 'Date', 'Cap', 'Wt', 'Trips', 'Cost']
             raw_cols = [c for c in raw_cols if c in raw_trips.columns]
             raw_trips = raw_trips[raw_cols]
