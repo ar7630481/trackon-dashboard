@@ -8,6 +8,7 @@ import time
 import shutil
 import warnings
 import traceback
+import threading
 from playwright.sync_api import sync_playwright
 import pdfplumber
 
@@ -30,7 +31,8 @@ FILE_MAP = {
     "MCD_VENDOR": os.path.join(DATA_DIR, "mcd_vendor.xlsx"),
     "CPK_UTIL": os.path.join(DATA_DIR, "cpk_util.xlsx"),
     "ROUTE_LOOKUP": os.path.join(DATA_DIR, "route_lookup.xlsx"),
-    "FINAL_OUTPUT": os.path.join(DATA_DIR, "Auto_Generated_Monitoring_Data.xlsx")
+    "FINAL_OUTPUT": os.path.join(DATA_DIR, "Auto_Generated_Monitoring_Data.xlsx"),
+    "FLEET_CACHE": os.path.join(DATA_DIR, "live_fleet_cache.csv") # New local cache file
 }
 
 # ==========================================
@@ -134,7 +136,7 @@ def format_pct_cnt(count, total):
     return f"{pct:.1f}% ({int(count)})"
 
 # ==========================================
-# 4. FLEET SCRAPER LOGIC (Cloud Crash-Proof)
+# 4. FLEET SCRAPER LOGIC (Background Safe)
 # ==========================================
 FLEET_ACCOUNTS = [
     {"email": "anand.joshi@trackon.in", "password": "Trackon@123"},
@@ -164,8 +166,7 @@ def clear_pre_modal_popups(page):
         if svg_close.is_visible(timeout=1000): svg_close.click()
     except: pass
 
-@st.cache_data(ttl=900, show_spinner="⏳ Tracking Active: Sabhi accounts se live data fetch ho raha hai...")
-def fetch_fleet_data():
+def run_scraper(p_bar=None, s_txt=None):
     setup_playwright() 
     base_dir = os.getcwd() 
     all_raw_data = []
@@ -173,19 +174,22 @@ def fetch_fleet_data():
     
     try:
         with sync_playwright() as p:
+            if s_txt: s_txt.text("⚙️ Launching Secure Cloud Browser...")
             browser = p.chromium.launch(
                 headless=True,
                 args=[
                     '--no-sandbox', 
                     '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage', # Crucial for Streamlit Cloud
+                    '--disable-dev-shm-usage',
                     '--disable-gpu',           
                     '--single-process',
                     '--disable-blink-features=AutomationControlled'
                 ]
             ) 
             
-            for acc in FLEET_ACCOUNTS:
+            total_accs = len(FLEET_ACCOUNTS)
+            for idx, acc in enumerate(FLEET_ACCOUNTS):
+                if s_txt: s_txt.text(f"📡 Fetching data for {acc['email']} ({idx+1}/{total_accs})... Please wait!")
                 context = None
                 try:
                     context = browser.new_context(
@@ -239,12 +243,12 @@ def fetch_fleet_data():
                         try: os.remove(pdf_path)
                         except: pass
                     else:
-                        error_logs.append(f"Account {acc['email']}: PDF Downloaded par file khali mili ya save nahi hui.")
+                        error_logs.append(f"Account {acc['email']}: PDF khali mili ya save nahi hui.")
                         
                 except Exception as e:
-                    err_msg = f"Account {acc['email']} par error aaya: {str(e)}"
-                    error_logs.append(err_msg)
+                    error_logs.append(f"Account {acc['email']} error: {str(e)}")
                 finally:
+                    if p_bar: p_bar.progress(int(((idx+1)/total_accs)*100))
                     if context:
                         try: context.close()
                         except: pass
@@ -252,7 +256,7 @@ def fetch_fleet_data():
             browser.close()
             
     except Exception as overall_e:
-        error_logs.append(f"Playwright Master Engine Error: {str(overall_e)}\n\n{traceback.format_exc()}")
+        error_logs.append(f"Playwright Master Error: {str(overall_e)}\n\n{traceback.format_exc()}")
 
     if 'scraper_errors' not in st.session_state:
         st.session_state['scraper_errors'] = []
@@ -298,6 +302,26 @@ def fetch_fleet_data():
         return df_clean
     else:
         return pd.DataFrame()
+
+# Background Worker Setup
+def bg_task():
+    lock_file = os.path.join(DATA_DIR, "scraping.lock")
+    if os.path.exists(lock_file): return
+    with open(lock_file, 'w') as f: f.write("locked")
+    
+    try:
+        df_new = run_scraper(None, None) # Run completely silently
+        if not df_new.empty:
+            df_new.to_csv(FILE_MAP["FLEET_CACHE"], index=False)
+    except Exception as e:
+        print(f"Background Update Error: {e}")
+    finally:
+        if os.path.exists(lock_file):
+            os.remove(lock_file)
+
+def trigger_bg_update():
+    t = threading.Thread(target=bg_task)
+    t.start()
 
 # ==========================================
 # 5. MAIN PROCESSING ENGINE
@@ -1147,16 +1171,58 @@ elif choice == "💰 CPK & Utilization":
 elif choice == "📍 Live Fleet Tracker":
     st.markdown("<h1>📍 Live Fleet Tracker</h1>", unsafe_allow_html=True)
     
-    df_fleet = fetch_fleet_data()
-
-    if not df_fleet.empty:
-        col1, col2 = st.columns([3, 1])
-        col1.success("✅ Sabhi accounts se data successfully fetch ho gaya!")
+    cache_file = FILE_MAP["FLEET_CACHE"]
+    lock_file = os.path.join(DATA_DIR, "scraping.lock")
+    
+    # Check Last Updated Time & Auto-Background Sync (Runs silently if 15 mins passed)
+    if os.path.exists(cache_file):
+        last_mtime = os.path.getmtime(cache_file)
+        last_time_str = datetime.datetime.fromtimestamp(last_mtime).strftime('%I:%M %p, %d %b %Y')
+        st.success(f"**🕒 Last Updated:** {last_time_str}")
         
-        if col2.button("🔄 Force Manual Refresh", use_container_width=True):
-            fetch_fleet_data.clear() 
-            st.rerun()
+        df_fleet = pd.read_csv(cache_file)
+        df_fleet = df_fleet.replace({np.nan: "-"}) # Clean empty cells
+        
+        # Check if 15 minutes (900 seconds) have passed
+        if time.time() - last_mtime > 900:
+            if not os.path.exists(lock_file):
+                trigger_bg_update()
+    else:
+        df_fleet = pd.DataFrame()
+        st.warning("⚠️ No data available yet. Admin needs to run the first manual sync.")
 
+    # Show small background warning to let user know data is fetching
+    if os.path.exists(lock_file):
+        st.caption("🔄 Data is currently being updated in the background... (Previous data is shown below)")
+
+    # ADMIN CONTROLS (Progress Bar only for Admin)
+    if st.session_state.get('role') == 'Admin':
+        with st.expander("🛠️ Admin Controls: Manual Data Sync"):
+            st.info("Manual Sync forces the scraper to run right now and shows progress.")
+            if st.button("🔄 Force Manual Sync (With Progress)", use_container_width=True):
+                if os.path.exists(lock_file):
+                    st.error("❌ A background sync is already running. Please wait for it to finish.")
+                else:
+                    p_bar = st.progress(0)
+                    s_txt = st.empty()
+                    
+                    df_new = run_scraper(p_bar, s_txt)
+                    if not df_new.empty:
+                        df_new.to_csv(cache_file, index=False)
+                        s_txt.success("✅ Update Complete! Refreshing page...")
+                        time.sleep(2)
+                        st.rerun()
+                    else:
+                        s_txt.error("❌ Failed to fetch data.")
+            
+            # Show errors if any
+            if 'scraper_errors' in st.session_state and st.session_state['scraper_errors']:
+                with st.expander("🚨 Show Error Logs"):
+                    for err in st.session_state['scraper_errors']:
+                        st.code(err)
+
+    # DISPLAY THE FLEET DATA (Keeps old data visible while updating)
+    if not df_fleet.empty:
         st.info(f"📊 **Total Vehicles Scraped:** {len(df_fleet)}")
         
         st.markdown("### 🔍 Search Vehicle & View Map")
@@ -1164,8 +1230,8 @@ elif choice == "📍 Live Fleet Tracker":
         
         if search_query:
             sq = search_query.strip()
-            mask = (df_fleet['Vehicle_Code'].str.contains(sq, case=False, na=False) | 
-                    df_fleet['Full_Number'].str.contains(sq, case=False, na=False))
+            mask = (df_fleet['Vehicle_Code'].astype(str).str.contains(sq, case=False, na=False) | 
+                    df_fleet['Full_Number'].astype(str).str.contains(sq, case=False, na=False))
             result = df_fleet[mask]
             
             if not result.empty:
@@ -1181,7 +1247,7 @@ elif choice == "📍 Live Fleet Tracker":
                         st.divider()
                         loc = str(vehicle.get('Location', '-'))
                         st.info(f"**🌍 Current Location:**\n\n{loc}")
-                        st.warning(f"**🛣️ Bacha Hua Rasta (Distance):**\n\n{str(vehicle.get('Remaining_KMS', '-'))}")
+                        st.warning(f"**🛣️️ Bacha Hua Rasta (Distance):**\n\n{str(vehicle.get('Remaining_KMS', '-'))}")
                         
                         if loc != "-":
                             loc_parts = [p.strip() for p in loc.split(',')]
@@ -1195,14 +1261,3 @@ elif choice == "📍 Live Fleet Tracker":
         st.markdown("---")
         st.markdown("### 📋 Full Fleet Database")
         st.dataframe(df_fleet, hide_index=True, use_container_width=True)
-
-    else:
-        st.error("⚠️ Failed to load data from accounts.")
-        if 'scraper_errors' in st.session_state and st.session_state['scraper_errors']:
-            with st.expander("🛠️ Click here to see the exact Technical Error (Bhai ye error mujhe bhejna)"):
-                for err in st.session_state['scraper_errors']:
-                    st.code(err)
-        
-        if st.button("🔄 Retry Sync", use_container_width=True):
-            fetch_fleet_data.clear()
-            st.rerun()
