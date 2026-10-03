@@ -149,7 +149,7 @@ menu = ["📊 Daily Standup", "💳 Vendor Payment", "📱 WhatsApp Alerts", "�
 choice = st.sidebar.radio("Navigate to:", menu)
 
 # -------------------------------------------------------------
-# A. DAILY STANDUP 
+# A. DAILY STANDUP
 # -------------------------------------------------------------
 if choice == "📊 Daily Standup":
     st.markdown("<h1>🚨 Exception Reporting</h1>", unsafe_allow_html=True)
@@ -371,23 +371,14 @@ elif choice == "📱 WhatsApp Alerts":
         st.info("No data available.")
 
 # -------------------------------------------------------------
-# D. CPK & UTILIZATION (UP-DOWN MATRIX FIX)
+# D. CPK & UTILIZATION (THE ULTIMATE UP-DOWN MATRIX)
 # -------------------------------------------------------------
 elif choice == "💰 CPK & Utilization":
     st.markdown("<h1>💰 CPK & Utilization</h1>", unsafe_allow_html=True)
     if 'Up_Down_Route_Summary' in data:
         df_cpk = data['Up_Down_Route_Summary'].copy()
         
-        # 1. Fallback SortKey Generator (If old file without SortKey is loaded)
-        if 'SortKey' not in df_cpk.columns:
-            def generate_fallback_key(r):
-                pts = str(r).replace(' TO ', '-').split('-')
-                if len(pts) >= 2:
-                    return f"{min(pts[0].strip().upper(), pts[-1].strip().upper())}-{max(pts[0].strip().upper(), pts[-1].strip().upper())}"
-                return str(r).upper()
-            df_cpk['SortKey'] = df_cpk['Route (UP/DOWN)'].apply(generate_fallback_key)
-
-        # 2. Filter Only National and Zonal LH
+        # Keep ONLY MCD-National and MCD-Zonal
         df_cpk = df_cpk[df_cpk['Type'].isin(['MCD-National LH', 'MCD-Zonal LH', 'National LH', 'Zonal LH'])]
         df_cpk['Type'] = df_cpk['Type'].replace({'MCD-National LH': 'National', 'MCD-Zonal LH': 'Zonal', 'National LH': 'National', 'Zonal LH': 'Zonal'})
         
@@ -408,9 +399,21 @@ elif choice == "💰 CPK & Utilization":
             if col in disp_df.columns: disp_df[col] = disp_df[col].apply(lambda x: f"₹{x:.2f}")
         if 'Overall Util %' in disp_df.columns:
             disp_df['Overall Util %'] = disp_df['Overall Util %'].apply(lambda x: f"{x:.2f}%")
+            
+        # 🔥 SUPER_SORTKEY LOGIC: Ignorning middle stops to match all UP/DOWN paths
+        def create_super_key(route):
+            parts = str(route).split('-')
+            if len(parts) >= 2:
+                start = parts[0].strip().upper()
+                end = parts[-1].strip().upper()
+                return "-".join(sorted([start, end])) # E.g., BKLH and DELAP sorted = BKLH-DELAP
+            return str(route).upper()
+            
+        disp_df['Super_SortKey'] = disp_df['Route (UP/DOWN)'].apply(create_super_key)
+        df_cpk['Super_SortKey'] = df_cpk['Route (UP/DOWN)'].apply(create_super_key)
         
-        # Safely drop SortKey with errors='ignore' so it never crashes
-        view_df = disp_df.drop(columns=['SortKey'], errors='ignore')
+        # Hide SortKeys
+        view_df = disp_df.drop(columns=['SortKey', 'Super_SortKey'], errors='ignore')
         
         selection_cpk = st.dataframe(
             view_df, 
@@ -421,14 +424,19 @@ elif choice == "💰 CPK & Utilization":
         
         if selection_cpk and selection_cpk.get('selection', {}).get('rows'):
             selected_idx = selection_cpk['selection']['rows'][0]
-            selected_sortkey = df_cpk.iloc[selected_idx]['SortKey']
+            
+            # The MAGIC: Grab the Super_SortKey of the clicked row
+            selected_super_sortkey = disp_df.iloc[selected_idx]['Super_SortKey']
             
             st.markdown("---")
             st.markdown(f"### 🔗 UP-DOWN Network Connected View")
+            st.info("Showing ALL connecting/returning legs for this route pair (regardless of intermediate stops):")
             
-            network_df = df_cpk[df_cpk['SortKey'] == selected_sortkey].copy()
-            network_df = network_df.drop(columns=['SortKey'], errors='ignore')
+            # Filter original dataframe by that Super_SortKey!
+            network_df = df_cpk[df_cpk['Super_SortKey'] == selected_super_sortkey].copy()
+            network_df = network_df.drop(columns=['SortKey', 'Super_SortKey'], errors='ignore')
             
+            # Formatting
             for col in ['Overall CPK', 'Avg Trip Cost']: 
                 if col in network_df.columns: network_df[col] = network_df[col].apply(lambda x: f"₹{x:.2f}")
             if 'Overall Util %' in network_df.columns:
@@ -445,6 +453,6 @@ elif choice == "💰 CPK & Utilization":
                 hide_index=True
             )
         else:
-            st.info("👆 Click any row above to view its UP & DOWN network combined.")
+            st.info("👆 Click any row above to view its complete UP & DOWN network combined.")
     else:
         st.info("Please process CPK data first.")
