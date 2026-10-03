@@ -37,6 +37,11 @@ FILE_MAP = {
     "SYNC_STATUS": os.path.join(DATA_DIR, "sync_status.json")
 }
 
+# --- IST Time Helper ---
+def get_ist_now():
+    # Streamlit Cloud runs in UTC, adding 5 hours 30 mins for IST
+    return datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
+
 # ==========================================
 # 2. AUTHENTICATION
 # ==========================================
@@ -84,6 +89,7 @@ def get_file_time(key):
     path = FILE_MAP[key]
     if os.path.exists(path):
         ts = os.path.getmtime(path)
+        # Using Local timezone representation here based on file save time
         return datetime.datetime.fromtimestamp(ts).strftime('%d %b %Y, %I:%M %p')
     return "Not Uploaded Yet ❌"
 
@@ -138,7 +144,7 @@ def format_pct_cnt(count, total):
     return f"{pct:.1f}% ({int(count)})"
 
 # ==========================================
-# 4. FLEET SCRAPER LOGIC (With Original AWS Code Restored)
+# 4. FLEET SCRAPER LOGIC
 # ==========================================
 FLEET_ACCOUNTS = [
     {"email": "anand.joshi@trackon.in", "password": "Trackon@123"},
@@ -151,7 +157,7 @@ FLEET_ACCOUNTS = [
 def setup_playwright():
     try:
         os.system("playwright install chromium")
-    except Exception as e:
+    except Exception:
         pass 
 
 def clear_pre_modal_popups(page):
@@ -234,7 +240,7 @@ def run_scraper(p_bar=None, s_txt=None, df_placeholder=None):
         master_df = pd.DataFrame()
         
     error_logs = []
-    start_time_str = datetime.datetime.now().strftime('%I:%M %p, %d %b %Y')
+    start_time_str = get_ist_now().strftime('%I:%M %p, %d %b %Y') # IST Time applied
     set_sync_status(start_time_str, "In Progress...", "running", error_logs)
     
     try:
@@ -259,7 +265,7 @@ def run_scraper(p_bar=None, s_txt=None, df_placeholder=None):
                 
                 acc_start_time = time.time()
                 def check_timeout(step=""):
-                    if time.time() - acc_start_time > 150: # Extended to 150s for heavy accounts
+                    if time.time() - acc_start_time > 150: 
                         raise Exception(f"⏱️ Timeout at '{step}'. Skipping.")
 
                 context = None
@@ -290,7 +296,6 @@ def run_scraper(p_bar=None, s_txt=None, df_placeholder=None):
                     page.evaluate("document.querySelector('img[title=\"Realtime Vehicle Report\"]').click()")
                     page.wait_for_timeout(2000) 
                     
-                    # Click initial 'Download PDF' button
                     page.evaluate("Array.from(document.querySelectorAll('span')).find(el => el.textContent.trim() === 'Download PDF')?.click()")
                     page.wait_for_timeout(2000)
 
@@ -298,7 +303,6 @@ def run_scraper(p_bar=None, s_txt=None, df_placeholder=None):
                         try: os.remove(pdf_path)
                         except: pass
 
-                    # 🔥 YOUR ORIGINAL AWS URL LOGIC RESTORED HERE 🔥
                     if "anand.joshi" in acc_email or "lh.fleetops" in acc_email:
                         check_timeout("Setting up AWS Intercept")
                         captured_urls = []
@@ -310,7 +314,6 @@ def run_scraper(p_bar=None, s_txt=None, df_placeholder=None):
 
                         context.on("page", handle_new_page)
                         
-                        # Click Final 'Download' button inside modal
                         page.evaluate("Array.from(document.querySelectorAll('span')).find(el => el.textContent.trim() === 'Download')?.click()")
                         
                         pdf_url = ""
@@ -329,10 +332,14 @@ def run_scraper(p_bar=None, s_txt=None, df_placeholder=None):
                             page.wait_for_timeout(1000)
                             
                         if pdf_url:
-                            check_timeout("Downloading via Urllib")
-                            req = urllib.request.Request(pdf_url, headers={'User-Agent': 'Mozilla/5.0'})
-                            with urllib.request.urlopen(req) as response, open(pdf_path, 'wb') as out_file:
-                                shutil.copyfileobj(response, out_file)
+                            check_timeout("Downloading via Request")
+                            import requests
+                            response = requests.get(pdf_url, stream=True, timeout=30)
+                            if response.status_code == 200:
+                                with open(pdf_path, 'wb') as out_file:
+                                    shutil.copyfileobj(response.raw, out_file)
+                            else:
+                                raise Exception(f"AWS Link returned status code {response.status_code}")
                         else:
                             raise Exception("AWS S3 Link trigger nahi hua.")
                     else:
@@ -374,7 +381,6 @@ def run_scraper(p_bar=None, s_txt=None, df_placeholder=None):
                         try: context.close()
                         except: pass
                         
-                # INCREMENTAL OVERWRITE LOGIC
                 df_acc = clean_account_data(acc_raw_data, acc_email)
                 if not df_acc.empty:
                     if not master_df.empty and 'Account_Source' in master_df.columns:
@@ -395,7 +401,7 @@ def run_scraper(p_bar=None, s_txt=None, df_placeholder=None):
     except Exception as overall_e:
         error_logs.append(f"Playwright Master Engine Error: {str(overall_e)}")
 
-    end_time_str = datetime.datetime.now().strftime('%I:%M %p, %d %b %Y')
+    end_time_str = get_ist_now().strftime('%I:%M %p, %d %b %Y')
     set_sync_status(start_time_str, end_time_str, "completed", error_logs)
     return master_df
 
@@ -777,7 +783,7 @@ def process_all_data():
             st.warning("⚠️ CPK files missing. Skipping CPK module.")
             
         progress.progress(90)
-        status_text.text("⚙️️ Finalizing Dashboard Data...")
+        status_text.text("⚙️ Finalizing Dashboard Data...")
         writer.close()
         progress.progress(100)
         status_text.success("✅ Data Processed Successfully!")
@@ -836,8 +842,9 @@ if st.session_state['role'] == 'Admin':
     
 if os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
     ts = os.path.getmtime(FILE_MAP["FINAL_OUTPUT"])
-    dt = datetime.datetime.fromtimestamp(ts).strftime('%d %b %Y, %I:%M %p')
-    st.sidebar.info(f"📊 Dashboard Refreshed:\n{dt}")
+    # Convert file save time to IST for display
+    dt = (datetime.datetime.fromtimestamp(ts) + datetime.timedelta(hours=5, minutes=30)).strftime('%d %b %Y, %I:%M %p')
+    st.sidebar.info(f"📊 Dashboard Refreshed:\n{dt} (IST)")
 
 # ==========================================
 # 7. DATA LOADING 
@@ -1290,7 +1297,8 @@ elif choice == "📍 Live Fleet Tracker":
     if status_data.get('start') != 'Not Started':
         try:
             last_run_time = datetime.datetime.strptime(status_data['start'], '%I:%M %p, %d %b %Y')
-            if (datetime.datetime.now() - last_run_time).total_seconds() > 900 and status_data.get('status') != 'running':
+            # Check against IST
+            if (get_ist_now() - last_run_time).total_seconds() > 900 and status_data.get('status') != 'running':
                 trigger_bg_update()
         except: pass
 
@@ -1301,22 +1309,27 @@ elif choice == "📍 Live Fleet Tracker":
     # ADMIN CONTROLS (Progress Bar and Error Logs only for Admin)
     if st.session_state.get('role') == 'Admin':
         with st.expander("🛠 Admin Controls: Manual Data Sync & Error Logs"):
-            st.info("Manual Sync se data seedha screen par ek-ek karke load hoga.")
-            if st.button("🔄 Force Manual Sync (With Progress)", use_container_width=True):
-                if status_data.get('status') == 'running':
-                    st.error("❌ A background sync is already running. Please wait.")
+            st.info("Manual Sync dabane se background lock override ho jayega, aur turant scraping chalu hogi.")
+            
+            # --- OVERRIDE BUTTON LOGIC ---
+            if st.button("🔄 Force Manual Sync (Override Lock)", use_container_width=True):
+                # FORCE KILL BACKGROUND LOCK
+                lock_file = os.path.join(DATA_DIR, "scraping.lock")
+                if os.path.exists(lock_file):
+                    try: os.remove(lock_file)
+                    except: pass
+                
+                p_bar = st.progress(0)
+                s_txt = st.empty()
+                df_placeholder = st.empty()
+                
+                df_new = run_scraper(p_bar, s_txt, df_placeholder)
+                if not df_new.empty:
+                    s_txt.success("✅ Update Complete! All accounts verified.")
+                    time.sleep(2)
+                    st.rerun()
                 else:
-                    p_bar = st.progress(0)
-                    s_txt = st.empty()
-                    df_placeholder = st.empty()
-                    
-                    df_new = run_scraper(p_bar, s_txt, df_placeholder)
-                    if not df_new.empty:
-                        s_txt.success("✅ Update Complete! All accounts verified.")
-                        time.sleep(2)
-                        st.rerun()
-                    else:
-                        s_txt.error("❌ Failed to fetch data.")
+                    s_txt.error("❌ Failed to fetch data.")
             
             if status_data.get('errors'):
                 st.markdown("🚨 **Recent Errors (Agar koi account fail hua ya Skip kiya gaya):**")
@@ -1364,4 +1377,4 @@ elif choice == "📍 Live Fleet Tracker":
         st.markdown("### 📋 Full Fleet Database")
         st.dataframe(df_fleet, hide_index=True, use_container_width=True)
     else:
-        st.warning("⚠️ No data available yet. Admin needs to run the first manual sync.")
+        st.warning("⚠️️ No data available yet. Admin needs to run the first manual sync.")
