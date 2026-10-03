@@ -139,7 +139,7 @@ def process_all_data():
         writer = pd.ExcelWriter(FILE_MAP["FINAL_OUTPUT"], engine='xlsxwriter')
         
         # --- MODULE 0: PAYMENT DATA ---
-        status_text.text("⚙️ Processing Payment Data...")
+        status_text.text("⚙️️ Processing Payment Data...")
         if os.path.exists(FILE_MAP["PAYMENT"]):
             df_pay = pd.read_excel(FILE_MAP["PAYMENT"])
             df_pay.columns = df_pay.columns.astype(str).str.strip().str.upper().str.replace(" ", "").str.replace("_", "")
@@ -683,6 +683,10 @@ if choice == "📊 Daily Standup":
                 else: styled_raw = styled_raw.applymap(highlight_remarks, subset=['Remark'])
                     
             st.dataframe(styled_raw, use_container_width=True)
+            
+            # COPY DATA FRIENDLY HELPER
+            csv_data = filtered_raw.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Copy / Download Raw Logs as CSV", data=csv_data, file_name=f"Raw_Logs_{selected_route}_{selected_leg}.csv", mime="text/csv")
         else:
             st.info("👆 Click any row in the table above to view its detailed proof data.")
 
@@ -756,6 +760,9 @@ elif choice == "💳 Vendor Payment":
                     "Vendor Name": st.column_config.TextColumn("Vendor Name", width="medium")
                 }
             )
+            
+            csv_pay = filtered_pay.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Copy / Download Payment Logs as CSV", data=csv_pay, file_name=f"Payment_Proof_{sel_pay_ro}.csv", mime="text/csv")
         else:
              st.info("👆 Click any RO row in the table above to view specific invoices.")
 
@@ -920,7 +927,7 @@ elif choice == "💰 CPK & Utilization":
                 network_df = df_cpk_master[df_cpk_master['Super_SortKey'] == selected_super_sortkey].copy()
                 network_df = network_df.drop(columns=['SortKey', 'Super_SortKey'], errors='ignore')
                 
-                # Add Total row for Network View as well
+                # Add Total row for Network View
                 network_df = add_total_row(network_df)
                 
                 for col in ['Overall CPK', 'Avg Trip Cost', 'Total Trip Cost']: 
@@ -928,22 +935,21 @@ elif choice == "💰 CPK & Utilization":
                 if 'Overall Util %' in network_df.columns:
                     network_df['Overall Util %'] = network_df['Overall Util %'].apply(lambda x: f"{x * 100:.2f}%" if isinstance(x, (int, float)) else x)
                 
-                st.data_editor(
-                    network_df,
-                    use_container_width=True,
-                    disabled=True,
-                    column_config={
-                        "Vendor(s)": st.column_config.TextColumn("Vendor(s)", width="large"),
-                        "Route (UP/DOWN)": st.column_config.TextColumn("Route", width="large")
-                    },
-                    hide_index=True
-                )
+                # Apply color styling to Network View as well
+                styled_network = network_df.style
+                if hasattr(styled_network, 'map'):
+                    styled_network = styled_network.map(lambda x: highlight_cpk_util(x, 'Overall Util %'), subset=['Overall Util %'])
+                    styled_network = styled_network.map(lambda x: highlight_cpk_util(x, 'Overall CPK'), subset=['Overall CPK'])
+                else:
+                    styled_network = styled_network.applymap(lambda x: highlight_cpk_util(x, 'Overall Util %'), subset=['Overall Util %'])
+                    styled_network = styled_network.applymap(lambda x: highlight_cpk_util(x, 'Overall CPK'), subset=['Overall CPK'])
+
+                st.dataframe(styled_network, use_container_width=True)
                 
                 # --- VIEW EXACT MATCH RAW TRIPS ---
                 st.markdown("---")
                 st.markdown(f"### 📄 Raw Trip Logs (Exact Proof for {selected_vendor})")
                 
-                # 🔥 STRICT 100% ACCURATE FILTERING TO AVOID WRONG VENDOR MATCHES 🔥
                 raw_trips = df_cpk_raw[
                     (df_cpk_raw['Final_Route'].astype(str).str.strip().str.upper() == str(selected_route_name).strip().upper()) & 
                     (df_cpk_raw['VendorName'].astype(str).str.strip().str.upper() == str(selected_vendor).strip().upper()) &
@@ -955,6 +961,9 @@ elif choice == "💰 CPK & Utilization":
                 raw_trips = raw_trips[raw_cols]
                 
                 st.dataframe(raw_trips, use_container_width=True)
+                
+                csv_cpk = raw_trips.to_csv(index=False).encode('utf-8')
+                st.download_button("📥 Copy / Download Trip Logs as CSV", data=csv_cpk, file_name=f"Trip_Logs_{selected_vendor}.csv", mime="text/csv")
 
         else:
             st.info("👆 Click any row above to view its complete UP & DOWN network & Raw Trips combined.")
