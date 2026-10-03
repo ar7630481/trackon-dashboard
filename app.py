@@ -158,12 +158,15 @@ def clear_pre_modal_popups(page):
 
 @st.cache_data(ttl=900, show_spinner="⏳ Tracking Active: Sabhi accounts se live data fetch ho raha hai...")
 def fetch_fleet_data():
+    # Streamlit cloud workaround to auto-install browsers if missing
+    os.system("playwright install chromium")
+    
     script_dir = os.path.dirname(os.path.abspath(__file__))
     all_raw_data = []
     
     with sync_playwright() as p:
         browser = p.chromium.launch(
-            headless=False,
+            headless=True,  # MUST BE TRUE FOR CLOUD DEPLOYMENT
             args=['--no-sandbox', '--disable-setuid-sandbox']
         ) 
         
@@ -688,7 +691,7 @@ def process_all_data():
         status_text.error(f"❌ Error during processing: {e}")
 
 # ==========================================
-# 6. SIDEBAR: ADMIN PANEL
+# 5. SIDEBAR: ADMIN PANEL
 # ==========================================
 st.sidebar.title(f"Welcome, {st.session_state['role']}")
 if st.sidebar.button("Logout", key="logout_btn"):
@@ -740,7 +743,7 @@ if os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
     st.sidebar.info(f"📊 Dashboard Refreshed:\n{dt}")
 
 # ==========================================
-# 7. DATA LOADING 
+# 6. DATA LOADING 
 # ==========================================
 @st.cache_data
 def load_dashboard_data():
@@ -871,6 +874,9 @@ if choice == "📊 Daily Standup":
                 else: styled_raw = styled_raw.applymap(highlight_remarks, subset=['Remark'])
                     
             st.dataframe(styled_raw, use_container_width=True)
+            
+            csv_raw = filtered_raw.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Copy / Download Logs as CSV", data=csv_raw, file_name=f"Raw_Logs_{selected_route}.csv", mime="text/csv")
         else:
             st.info("👆 Click any row in the table above to view its detailed proof data.")
 
@@ -1137,7 +1143,16 @@ elif choice == "💰 CPK & Utilization":
                 raw_cols = [c for c in raw_cols if c in raw_trips.columns]
                 raw_trips = raw_trips[raw_cols]
                 
-                st.dataframe(raw_trips, use_container_width=True)
+                # Apply logical colors to Raw Trips as well
+                styled_raw_trips = raw_trips.style
+                if 'Cost' in raw_trips.columns:
+                    def format_cost(val):
+                        try: return f"₹{float(val):.2f}"
+                        except: return val
+                    if hasattr(styled_raw_trips, 'format'):
+                        styled_raw_trips = styled_raw_trips.format({'Cost': format_cost})
+                
+                st.dataframe(styled_raw_trips, use_container_width=True)
                 
                 csv_cpk = raw_trips.to_csv(index=False).encode('utf-8')
                 st.download_button("📥 Copy / Download Trip Logs as CSV", data=csv_cpk, file_name=f"Trip_Logs_{selected_vendor}.csv", mime="text/csv")
@@ -1152,9 +1167,7 @@ elif choice == "💰 CPK & Utilization":
 # -------------------------------------------------------------
 elif choice == "📍 Live Fleet Tracker":
     st.markdown("<h1>📍 Live Fleet Tracker</h1>", unsafe_allow_html=True)
-    st.markdown("##### 🛰️ VIP Daily Execution & Fleet Tracker")
-    st.divider()
-
+    
     df_fleet = fetch_fleet_data()
 
     if not df_fleet.empty:
