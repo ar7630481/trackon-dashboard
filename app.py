@@ -32,13 +32,6 @@ FILE_MAP = {
     "FINAL_OUTPUT": os.path.join(DATA_DIR, "Auto_Generated_Monitoring_Data.xlsx")
 }
 
-FLEET_ACCOUNTS = [
-    {"email": "anand.joshi@trackon.in", "password": "Trackon@123"},
-    {"email": "lh.fleetops@trackon.in", "password": "i7F0TYVh@"},
-    {"email": "amar.vandanamotors@gmail.com", "password": "Amar@123"},
-    {"email": "9712339060", "password": "Boss@9918"}
-]
-
 # ==========================================
 # 2. AUTHENTICATION
 # ==========================================
@@ -140,8 +133,15 @@ def format_pct_cnt(count, total):
     return f"{pct:.1f}% ({int(count)})"
 
 # ==========================================
-# 4. FLEET SCRAPER LOGIC
+# 4. FLEET SCRAPER LOGIC (Cloud Crash Fixes Added)
 # ==========================================
+FLEET_ACCOUNTS = [
+    {"email": "anand.joshi@trackon.in", "password": "Trackon@123"},
+    {"email": "lh.fleetops@trackon.in", "password": "i7F0TYVh@"},
+    {"email": "amar.vandanamotors@gmail.com", "password": "Amar@123"},
+    {"email": "9712339060", "password": "Boss@9918"}
+]
+
 def clear_pre_modal_popups(page):
     try:
         close_btn = page.locator('span.ant-tour-close-icon')
@@ -158,26 +158,32 @@ def clear_pre_modal_popups(page):
 
 @st.cache_data(ttl=900, show_spinner="⏳ Tracking Active: Sabhi accounts se live data fetch ho raha hai...")
 def fetch_fleet_data():
-    # Streamlit cloud workaround to auto-install browsers if missing
     os.system("playwright install chromium")
     
     script_dir = os.path.dirname(os.path.abspath(__file__))
     all_raw_data = []
     
     with sync_playwright() as p:
+        # 🔥 CLOUD CRASH FIX ARGUMENTS ADDED HERE 🔥
         browser = p.chromium.launch(
-            headless=True,  # MUST BE TRUE FOR CLOUD DEPLOYMENT
-            args=['--no-sandbox', '--disable-setuid-sandbox']
+            headless=True,
+            args=[
+                '--no-sandbox', 
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage', # This prevents memory crashes in Docker/Cloud
+                '--disable-gpu',           # Disable GPU hardware acceleration
+                '--single-process'         # Keep it lightweight
+            ]
         ) 
         
         for acc in FLEET_ACCOUNTS:
-            context = browser.new_context(accept_downloads=True)
-            page = context.new_page()
-            
-            safe_email = acc['email'].replace('@', '_').replace('.', '_')
-            pdf_path = os.path.join(script_dir, f"temp_{safe_email}.pdf")
-            
             try:
+                context = browser.new_context(accept_downloads=True)
+                page = context.new_page()
+                
+                safe_email = acc['email'].replace('@', '_').replace('.', '_')
+                pdf_path = os.path.join(script_dir, f"temp_{safe_email}.pdf")
+                
                 page.goto("https://app.fleetx.io/users/login", timeout=90000, wait_until="domcontentloaded")
                 page.fill('input[data-testid="email"]', acc['email'])
                 page.fill('input[data-testid="password"]', acc['password'])
@@ -269,12 +275,13 @@ def fetch_fleet_data():
                     try: os.remove(pdf_path)
                     except: pass
                 else:
-                    print(f"Bhai CDP wale method se bhi file save nahi hui for {acc['email']}")
+                    print(f"Bhai CDP wale method se file save nahi hui for {acc['email']}")
 
             except Exception as e:
                 print(f"Error fetching {acc['email']}: {e}")
             finally:
-                context.close()
+                try: context.close()
+                except: pass
                 
         browser.close()
 
@@ -691,7 +698,7 @@ def process_all_data():
         status_text.error(f"❌ Error during processing: {e}")
 
 # ==========================================
-# 5. SIDEBAR: ADMIN PANEL
+# 6. SIDEBAR: ADMIN PANEL
 # ==========================================
 st.sidebar.title(f"Welcome, {st.session_state['role']}")
 if st.sidebar.button("Logout", key="logout_btn"):
@@ -743,7 +750,7 @@ if os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
     st.sidebar.info(f"📊 Dashboard Refreshed:\n{dt}")
 
 # ==========================================
-# 6. DATA LOADING 
+# 7. DATA LOADING 
 # ==========================================
 @st.cache_data
 def load_dashboard_data():
@@ -876,7 +883,7 @@ if choice == "📊 Daily Standup":
             st.dataframe(styled_raw, use_container_width=True)
             
             csv_raw = filtered_raw.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Copy / Download Logs as CSV", data=csv_raw, file_name=f"Raw_Logs_{selected_route}.csv", mime="text/csv")
+            st.download_button("📥 Copy / Download Logs as CSV", data=csv_raw, file_name=f"Raw_Logs_{selected_route}_{selected_leg}.csv", mime="text/csv")
         else:
             st.info("👆 Click any row in the table above to view its detailed proof data.")
 
@@ -1143,7 +1150,6 @@ elif choice == "💰 CPK & Utilization":
                 raw_cols = [c for c in raw_cols if c in raw_trips.columns]
                 raw_trips = raw_trips[raw_cols]
                 
-                # Apply logical colors to Raw Trips as well
                 styled_raw_trips = raw_trips.style
                 if 'Cost' in raw_trips.columns:
                     def format_cost(val):
