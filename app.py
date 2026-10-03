@@ -8,6 +8,7 @@ import time
 import shutil
 import warnings
 import subprocess
+import traceback
 from playwright.sync_api import sync_playwright
 import pdfplumber
 
@@ -134,7 +135,7 @@ def format_pct_cnt(count, total):
     return f"{pct:.1f}% ({int(count)})"
 
 # ==========================================
-# 4. FLEET SCRAPER LOGIC (Crash-Proof Cloud Setup)
+# 4. FLEET SCRAPER LOGIC (Cloud Crash-Proof)
 # ==========================================
 FLEET_ACCOUNTS = [
     {"email": "anand.joshi@trackon.in", "password": "Trackon@123"},
@@ -143,12 +144,13 @@ FLEET_ACCOUNTS = [
     {"email": "9712339060", "password": "Boss@9918"}
 ]
 
-@st.cache_resource(show_spinner=False)
+@st.cache_resource(show_spinner="⚙️ Initializing Cloud Browser... (This happens only once)")
 def setup_playwright():
     try:
-        subprocess.run(["playwright", "install", "chromium"], check=True)
+        os.system("playwright install chromium")
+        os.system("playwright install-deps") # CRITICAL FOR LINUX CLOUD
     except Exception as e:
-        pass # Silent fail if already installed
+        print(f"Setup Error: {e}")
 
 def clear_pre_modal_popups(page):
     try:
@@ -166,9 +168,10 @@ def clear_pre_modal_popups(page):
 
 @st.cache_data(ttl=900, show_spinner="⏳ Tracking Active: Sabhi accounts se live data fetch ho raha hai...")
 def fetch_fleet_data():
-    setup_playwright() # Ensure browser is installed without blocking
+    setup_playwright() 
     base_dir = os.getcwd() 
     all_raw_data = []
+    error_logs = [] # To capture exact errors for debugging
     
     try:
         with sync_playwright() as p:
@@ -177,16 +180,21 @@ def fetch_fleet_data():
                 args=[
                     '--no-sandbox', 
                     '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage', # Crucial for Streamlit Cloud to prevent memory crash
+                    '--disable-dev-shm-usage', # Crucial for Streamlit Cloud
                     '--disable-gpu',           
-                    '--single-process'         
+                    '--single-process',
+                    '--disable-blink-features=AutomationControlled' # Hides automation from website
                 ]
             ) 
             
             for acc in FLEET_ACCOUNTS:
                 context = None
                 try:
-                    context = browser.new_context(accept_downloads=True)
+                    # Fake User Agent to prevent bot detection
+                    context = browser.new_context(
+                        accept_downloads=True,
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    )
                     page = context.new_page()
                     
                     safe_email = acc['email'].replace('@', '_').replace('.', '_')
@@ -220,6 +228,7 @@ def fetch_fleet_data():
                         download = download_info.value
                         download.save_as(pdf_path)
                     except Exception as e:
+                         # Fallback approach
                          page.evaluate("Array.from(document.querySelectorAll('span')).find(el => el.textContent.includes('Download'))?.click()")
                          page.wait_for_timeout(10000)
 
@@ -233,8 +242,12 @@ def fetch_fleet_data():
                                             all_raw_data.append(row)
                         try: os.remove(pdf_path)
                         except: pass
+                    else:
+                        error_logs.append(f"Account {acc['email']}: PDF Downloaded par file khali mili ya save nahi hui.")
+                        
                 except Exception as e:
-                    pass # Ignore individual account errors to keep app running
+                    err_msg = f"Account {acc['email']} par error aaya: {str(e)}"
+                    error_logs.append(err_msg)
                 finally:
                     if context:
                         try: context.close()
@@ -243,9 +256,12 @@ def fetch_fleet_data():
             browser.close()
             
     except Exception as overall_e:
-        # If playwright totally crashes, catch it here and return empty instead of blank screen
-        print(f"Scraper Engine Error: {overall_e}")
-        pass 
+        error_logs.append(f"Playwright Master Engine Error: {str(overall_e)}\n\n{traceback.format_exc()}")
+
+    # Agar error hai toh session_state mein save kar lenge taaki screen pe dikha sakein
+    if 'scraper_errors' not in st.session_state:
+        st.session_state['scraper_errors'] = []
+    st.session_state['scraper_errors'] = error_logs
 
     if all_raw_data:
         max_cols = max(len(row) for row in all_raw_data)
@@ -1131,7 +1147,7 @@ elif choice == "💰 CPK & Utilization":
         st.info("Please process CPK data first.")
 
 # -------------------------------------------------------------
-# E. LIVE FLEET TRACKER (Crash-Proof Module)
+# E. LIVE FLEET TRACKER
 # -------------------------------------------------------------
 elif choice == "📍 Live Fleet Tracker":
     st.markdown("<h1>📍 Live Fleet Tracker</h1>", unsafe_allow_html=True)
@@ -1187,6 +1203,11 @@ elif choice == "📍 Live Fleet Tracker":
 
     else:
         st.error("⚠️ Failed to load data from accounts.")
+        if 'scraper_errors' in st.session_state and st.session_state['scraper_errors']:
+            with st.expander("🛠️ Click here to see the exact Technical Error (Bhai ye error mujhe bhejna)"):
+                for err in st.session_state['scraper_errors']:
+                    st.code(err)
+        
         if st.button("🔄 Retry Sync", use_container_width=True):
             fetch_fleet_data.clear()
             st.rerun()
