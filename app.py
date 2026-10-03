@@ -34,7 +34,7 @@ FILE_MAP = {
     "ROUTE_LOOKUP": os.path.join(DATA_DIR, "route_lookup.xlsx"),
     "FINAL_OUTPUT": os.path.join(DATA_DIR, "Auto_Generated_Monitoring_Data.xlsx"),
     "FLEET_CACHE": os.path.join(DATA_DIR, "live_fleet_cache.csv"),
-    "SYNC_STATUS": os.path.join(DATA_DIR, "sync_status.json") # Stores start/end times and errors
+    "SYNC_STATUS": os.path.join(DATA_DIR, "sync_status.json")
 }
 
 # ==========================================
@@ -138,7 +138,7 @@ def format_pct_cnt(count, total):
     return f"{pct:.1f}% ({int(count)})"
 
 # ==========================================
-# 4. FLEET SCRAPER LOGIC (Incremental Overwrite)
+# 4. FLEET SCRAPER LOGIC (With Original AWS Code Restored)
 # ==========================================
 FLEET_ACCOUNTS = [
     {"email": "anand.joshi@trackon.in", "password": "Trackon@123"},
@@ -219,7 +219,7 @@ def clean_account_data(raw_data, account_email):
             
     df_clean = df[final_cols]
     df_clean = df_clean.drop_duplicates(subset=['Full_Number'], keep='first')
-    df_clean['Account_Source'] = account_email # Secretly track the source account
+    df_clean['Account_Source'] = account_email 
     return df_clean
 
 def run_scraper(p_bar=None, s_txt=None, df_placeholder=None):
@@ -227,7 +227,6 @@ def run_scraper(p_bar=None, s_txt=None, df_placeholder=None):
     base_dir = os.getcwd() 
     cache_file = FILE_MAP["FLEET_CACHE"]
     
-    # Load old data so screen doesn't go blank
     if os.path.exists(cache_file):
         try: master_df = pd.read_csv(cache_file)
         except: master_df = pd.DataFrame()
@@ -235,12 +234,12 @@ def run_scraper(p_bar=None, s_txt=None, df_placeholder=None):
         master_df = pd.DataFrame()
         
     error_logs = []
-    start_time = datetime.datetime.now().strftime('%I:%M %p, %d %b %Y')
-    set_sync_status(start_time, "In Progress...", "running", error_logs)
+    start_time_str = datetime.datetime.now().strftime('%I:%M %p, %d %b %Y')
+    set_sync_status(start_time_str, "In Progress...", "running", error_logs)
     
     try:
         with sync_playwright() as p:
-            if s_txt: s_txt.text("⚙️ Launching Secure Cloud Browser...")
+            if s_txt: s_txt.text("⚙ Launching Secure Cloud Browser...")
             browser = p.chromium.launch(
                 headless=True,
                 args=[
@@ -258,6 +257,11 @@ def run_scraper(p_bar=None, s_txt=None, df_placeholder=None):
                 acc_email = acc['email']
                 if s_txt: s_txt.text(f"📡 Fetching data for {acc_email} ({idx+1}/{total_accs})... Please wait!")
                 
+                acc_start_time = time.time()
+                def check_timeout(step=""):
+                    if time.time() - acc_start_time > 150: # Extended to 150s for heavy accounts
+                        raise Exception(f"⏱️ Timeout at '{step}'. Skipping.")
+
                 context = None
                 acc_raw_data = []
                 try:
@@ -270,40 +274,89 @@ def run_scraper(p_bar=None, s_txt=None, df_placeholder=None):
                     safe_email = acc_email.replace('@', '_').replace('.', '_')
                     pdf_path = os.path.join(base_dir, f"temp_{safe_email}.pdf")
                     
-                    page.goto("https://app.fleetx.io/users/login", timeout=60000, wait_until="domcontentloaded")
+                    check_timeout("Navigating")
+                    page.goto("https://app.fleetx.io/users/login", timeout=45000, wait_until="domcontentloaded")
                     page.fill('input[data-testid="email"]', acc_email)
                     page.fill('input[data-testid="password"]', acc['password'])
                     page.click('button[type="submit"]')
 
-                    page.wait_for_selector('img[title="Realtime Vehicle Report"]', timeout=60000)
+                    check_timeout("Waiting for Report Icon")
+                    page.wait_for_selector('img[title="Realtime Vehicle Report"]', timeout=45000)
                     page.wait_for_timeout(2000)
 
+                    check_timeout("Clearing Popups")
                     clear_pre_modal_popups(page)
 
                     page.evaluate("document.querySelector('img[title=\"Realtime Vehicle Report\"]').click()")
                     page.wait_for_timeout(2000) 
                     
+                    # Click initial 'Download PDF' button
+                    page.evaluate("Array.from(document.querySelectorAll('span')).find(el => el.textContent.trim() === 'Download PDF')?.click()")
+                    page.wait_for_timeout(2000)
+
                     if os.path.exists(pdf_path): 
                         try: os.remove(pdf_path)
                         except: pass
 
-                    try:
-                        with page.expect_download(timeout=45000) as download_info:
-                            download_buttons = page.locator("span", has_text="Download")
-                            if download_buttons.count() > 0:
-                                 download_buttons.last.click()
-                            else:
-                                 page.evaluate("Array.from(document.querySelectorAll('span')).find(el => el.textContent.includes('Download'))?.click()")
-                                 
-                        download = download_info.value
-                        download.save_as(pdf_path)
-                    except Exception as e:
-                         page.evaluate("Array.from(document.querySelectorAll('span')).find(el => el.textContent.includes('Download'))?.click()")
-                         page.wait_for_timeout(10000)
+                    # 🔥 YOUR ORIGINAL AWS URL LOGIC RESTORED HERE 🔥
+                    if "anand.joshi" in acc_email or "lh.fleetops" in acc_email:
+                        check_timeout("Setting up AWS Intercept")
+                        captured_urls = []
+                        def handle_new_page(new_page):
+                            try:
+                                new_page.wait_for_timeout(3000)
+                                captured_urls.append(new_page.url)
+                            except: pass
 
+                        context.on("page", handle_new_page)
+                        
+                        # Click Final 'Download' button inside modal
+                        page.evaluate("Array.from(document.querySelectorAll('span')).find(el => el.textContent.trim() === 'Download')?.click()")
+                        
+                        pdf_url = ""
+                        for _ in range(40):
+                            check_timeout("Waiting for AWS S3 Link")
+                            for url in captured_urls:
+                                if "amazonaws.com" in url or ".pdf" in url.lower():
+                                    pdf_url = url
+                                    break
+                            if not pdf_url:
+                                for p_tab in context.pages:
+                                    if "amazonaws.com" in p_tab.url or ".pdf" in p_tab.url.lower():
+                                        pdf_url = p_tab.url
+                                        break
+                            if pdf_url: break
+                            page.wait_for_timeout(1000)
+                            
+                        if pdf_url:
+                            check_timeout("Downloading via Urllib")
+                            req = urllib.request.Request(pdf_url, headers={'User-Agent': 'Mozilla/5.0'})
+                            with urllib.request.urlopen(req) as response, open(pdf_path, 'wb') as out_file:
+                                shutil.copyfileobj(response, out_file)
+                        else:
+                            raise Exception("AWS S3 Link trigger nahi hua.")
+                    else:
+                        check_timeout("Waiting for Native Download")
+                        try:
+                            with page.expect_download(timeout=45000) as download_info:
+                                download_buttons = page.locator("span", has_text="Download")
+                                if download_buttons.count() > 0:
+                                     download_buttons.last.click()
+                                else:
+                                     page.evaluate("Array.from(document.querySelectorAll('span')).find(el => el.textContent.trim() === 'Download')?.click()")
+                                     
+                            download = download_info.value
+                            download.save_as(pdf_path)
+                        except Exception as e:
+                             check_timeout("Fallback Download")
+                             page.evaluate("Array.from(document.querySelectorAll('span')).find(el => el.textContent.trim() === 'Download')?.click()")
+                             page.wait_for_timeout(15000)
+
+                    check_timeout("Extracting PDF Data")
                     if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0:
                         with pdfplumber.open(pdf_path) as pdf:
                             for page_obj in pdf.pages:
+                                check_timeout(f"Reading Page {page_obj.page_number}")
                                 table = page_obj.extract_table()
                                 if table:
                                     for row in table:
@@ -315,7 +368,7 @@ def run_scraper(p_bar=None, s_txt=None, df_placeholder=None):
                         error_logs.append(f"{acc_email}: PDF khali mili ya save nahi hui.")
                         
                 except Exception as e:
-                    error_logs.append(f"{acc_email} ERROR: {str(e)}")
+                    error_logs.append(f"❌ {acc_email} ERROR: {str(e)}")
                 finally:
                     if context:
                         try: context.close()
@@ -324,32 +377,26 @@ def run_scraper(p_bar=None, s_txt=None, df_placeholder=None):
                 # INCREMENTAL OVERWRITE LOGIC
                 df_acc = clean_account_data(acc_raw_data, acc_email)
                 if not df_acc.empty:
-                    # Remove old data of THIS specific account so we don't duplicate
                     if not master_df.empty and 'Account_Source' in master_df.columns:
                         master_df = master_df[master_df['Account_Source'] != acc_email]
                     
-                    # Add fresh data for this account
                     master_df = pd.concat([master_df, df_acc], ignore_index=True)
-                    
-                    # Save immediately so background reads are updated account-by-account
                     master_df.to_csv(cache_file, index=False)
                     
-                    # Update manual UI immediately if present
                     if df_placeholder:
                         display_df = master_df.drop(columns=['Account_Source'], errors='ignore')
                         df_placeholder.dataframe(display_df, hide_index=True, use_container_width=True)
 
                 if p_bar: p_bar.progress(int(((idx+1)/total_accs)*100))
-                # Update status JSON to reflect current errors dynamically
-                set_sync_status(start_time, "In Progress...", "running", error_logs)
+                set_sync_status(start_time_str, "In Progress...", "running", error_logs)
                 
             browser.close()
             
     except Exception as overall_e:
-        error_logs.append(f"Playwright Master Error: {str(overall_e)}")
+        error_logs.append(f"Playwright Master Engine Error: {str(overall_e)}")
 
-    end_time = datetime.datetime.now().strftime('%I:%M %p, %d %b %Y')
-    set_sync_status(start_time, end_time, "completed", error_logs)
+    end_time_str = datetime.datetime.now().strftime('%I:%M %p, %d %b %Y')
+    set_sync_status(start_time_str, end_time_str, "completed", error_logs)
     return master_df
 
 def bg_task():
@@ -358,9 +405,9 @@ def bg_task():
     with open(lock_file, 'w') as f: f.write("locked")
     
     try:
-        run_scraper(None, None, None) # Run completely silently
+        run_scraper(None, None, None) 
     except Exception as e:
-        print(f"Background Update Error: {e}")
+        pass
     finally:
         if os.path.exists(lock_file):
             os.remove(lock_file)
@@ -730,7 +777,7 @@ def process_all_data():
             st.warning("⚠️ CPK files missing. Skipping CPK module.")
             
         progress.progress(90)
-        status_text.text("⚙️ Finalizing Dashboard Data...")
+        status_text.text("⚙️️ Finalizing Dashboard Data...")
         writer.close()
         progress.progress(100)
         status_text.success("✅ Data Processed Successfully!")
@@ -1253,7 +1300,7 @@ elif choice == "📍 Live Fleet Tracker":
 
     # ADMIN CONTROLS (Progress Bar and Error Logs only for Admin)
     if st.session_state.get('role') == 'Admin':
-        with st.expander("🛠️ Admin Controls: Manual Data Sync & Error Logs"):
+        with st.expander("🛠 Admin Controls: Manual Data Sync & Error Logs"):
             st.info("Manual Sync se data seedha screen par ek-ek karke load hoga.")
             if st.button("🔄 Force Manual Sync (With Progress)", use_container_width=True):
                 if status_data.get('status') == 'running':
@@ -1272,7 +1319,7 @@ elif choice == "📍 Live Fleet Tracker":
                         s_txt.error("❌ Failed to fetch data.")
             
             if status_data.get('errors'):
-                st.markdown("🚨 **Recent Errors (Agar koi account fail hua):**")
+                st.markdown("🚨 **Recent Errors (Agar koi account fail hua ya Skip kiya gaya):**")
                 for err in status_data['errors']:
                     st.code(err)
 
