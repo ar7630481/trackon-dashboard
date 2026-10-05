@@ -439,7 +439,7 @@ def process_all_data():
             data_for_export['Master_Database'] = df_master
             del df_pay
         else:
-            st.warning("⚠️ Payment file missing.")
+            st.warning("⚠️️ Payment file missing.")
 
         progress.progress(20)
 
@@ -1330,7 +1330,8 @@ elif choice == "📱 Vendor Communication Hub":
 
         st.markdown("---")
         
-        # --- 2. FILTERS (Including Vendor Name) ---
+        # --- 2. FILTERS & INDIVIDUAL VENDOR SEARCH ---
+        st.markdown("### 🔍 Individual Vendor Messaging")
         col1, col2, col3 = st.columns([1, 1, 2])
         
         all_zones = sorted(df_vperf_sum['Zone'].dropna().unique().tolist())
@@ -1346,54 +1347,17 @@ elif choice == "📱 Vendor Communication Hub":
             df_vperf_raw = df_vperf_raw[df_vperf_raw['Origin RO'] == selected_ro]
             
         all_vendors_filtered = sorted(df_vperf_sum['VendorName'].dropna().unique().tolist())
-        selected_vendor = col3.selectbox("Filter Vendor:", ["ALL"] + all_vendors_filtered)
+        selected_vendor = col3.selectbox("Select Vendor for Detailed View:", ["ALL"] + all_vendors_filtered)
+        
+        # Display Table for the selected individual vendor
         if selected_vendor != "ALL":
-            df_vperf_sum = df_vperf_sum[df_vperf_sum['VendorName'] == selected_vendor]
-            df_vperf_raw = df_vperf_raw[df_vperf_raw['VendorName'] == selected_vendor]
-
-        # --- 3. SUMMARY TABLE ---
-        st.markdown("### Vendor Arrival Performance Summary")
-        display_cols = ['Route Path', 'Legwise', 'Legs', 'VendorName', 'Total_Trips', 'Ontime Arrival', 'Late Arrival', 'In-Transit']
-        df_display = df_vperf_sum[display_cols].copy()
-        
-        def highlight_perf(val, col):
-            if not isinstance(val, str) or '%' not in val: return ''
-            try: pct = float(val.split('%')[0].strip())
-            except: return ''
-            if pct == 0: return 'color: #78909C;' 
-            if col == 'Late Arrival': return 'background-color: rgba(211, 47, 47, 0.15); color: #ff5252; font-weight: bold;'
-            elif col == 'Ontime Arrival': return 'background-color: rgba(56, 142, 60, 0.15); color: #69f0ae; font-weight: bold;'
-            elif col == 'In-Transit': return 'background-color: rgba(245, 127, 23, 0.15); color: #ffd740; font-weight: bold;'
-            return ''
-
-        styled_df = df_display.style
-        for col in ['Ontime Arrival', 'Late Arrival', 'In-Transit']:
-            if hasattr(styled_df, 'map'): styled_df = styled_df.map(lambda x, c=col: highlight_perf(x, c), subset=[col])
-            else: styled_df = styled_df.applymap(lambda x, c=col: highlight_perf(x, c), subset=[col])
-
-        selection = st.dataframe(styled_df, use_container_width=True, height=250, on_select="rerun", selection_mode="single-row")
-        
-        target_vendor = selected_vendor if selected_vendor != "ALL" else None
-
-        if selection and selection.get('selection', {}).get('rows'):
-            selected_idx = selection['selection']['rows'][0]
-            selected_route = df_display.iloc[selected_idx]['Route Path']
-            selected_leg = df_display.iloc[selected_idx]['Legwise']
-            target_vendor = df_display.iloc[selected_idx]['VendorName']
+            df_display_ind = df_vperf_sum[df_vperf_sum['VendorName'] == selected_vendor]
+            target_vendor = selected_vendor
             
-            st.markdown("---")
-            st.markdown(f"### 📄 Detailed Trip Records for `{target_vendor}` on `{selected_route}` - `{selected_leg}`")
-            filtered_raw = df_vperf_raw[(df_vperf_raw['Route Path'] == selected_route) & (df_vperf_raw['Legwise'] == selected_leg) & (df_vperf_raw['VendorName'] == target_vendor)].copy()
-            st.dataframe(filtered_raw.drop(columns=['Zone', 'Origin RO'], errors='ignore'), use_container_width=True)
-        else:
-            st.info("👆 Click any row in the table above to view detailed trip records for a specific route.")
+            st.markdown(f"#### Performance View: `{target_vendor}`")
+            st.dataframe(df_display_ind[['Route Path', 'Legwise', 'Legs', 'Total_Trips', 'Ontime Arrival', 'Late Arrival']], use_container_width=True, hide_index=True)
 
-        # --- 4. SEND PERFORMANCE TO VENDOR ---
-        if target_vendor:
-            st.markdown("---")
-            st.markdown(f"### 📨 Send Auto-Report to: **{target_vendor}**")
-            
-            # Re-read master file directly to avoid state sync issues
+            # Re-read master file directly
             v_master_data_live = {}
             if os.path.exists(FILE_MAP.get("VENDOR_MASTER")):
                 try:
@@ -1406,22 +1370,26 @@ elif choice == "📱 Vendor Communication Hub":
             email_id = ven_contact.get("email", "")
             
             if not wp_num and not email_id:
-                st.warning(f"⚠️ Contact details for '{target_vendor}' are not saved in the Vendor Master. Please save them above for auto-filled links.")
+                st.warning(f"⚠️ Contact details for '{target_vendor}' are not saved in the Vendor Master.")
             
-            # Filter all data for this vendor for the attachment
             ven_sum = df_vperf_sum[df_vperf_sum['VendorName'] == target_vendor].copy()
             ven_raw = df_vperf_raw[df_vperf_raw['VendorName'] == target_vendor].copy()
             
             total_trips = ven_sum['Total_Trips'].sum() if not ven_sum.empty else 0
             
-            # WhatsApp/Email Table formatting (Text Screenshot Alternative)
-            summary_text_breakdown = ""
+            # --- English Message with Plain Text Table & Emoji Highlights ---
+            summary_text_breakdown = "Route (Leg) | Trips | Ontime | Late\n"
+            summary_text_breakdown += "--------------------------------------------------------\n"
             for _, row in ven_sum.iterrows():
-                summary_text_breakdown += f"📍 *Route:* {row['Route Path']} ({row['Legwise']})\n"
-                summary_text_breakdown += f"🚚 *Trips:* {row['Total_Trips']} | ✅ *Ontime:* {row['Ontime Arrival']} | ❌ *Late:* {row['Late Arrival']}\n"
-                summary_text_breakdown += "------------------------\n"
+                summary_text_breakdown += f"{row['Route Path']} ({row['Legwise']}) | {row['Total_Trips']} | 🟢 {row['Ontime Arrival']} | 🔴 {row['Late Arrival']}\n"
+            summary_text_breakdown += "--------------------------------------------------------\n"
 
-            msg = f"Namaste *{target_vendor}*,\n\nAapki gaadiyon ki arrival performance report attach ki gayi hai.\n*Total Trips Assigned:* {total_trips}\n\n📊 *Summary Breakdown:*\n{summary_text_breakdown}\nKripya attached Excel sheet check karein jisme raw details di gayi hain. On-time arrival par dhyan dein.\n\nThanks,\nTrackon Command Center"
+            msg = f"Dear {target_vendor},\n\n"
+            msg += f"Please find attached the arrival performance report for your vehicles.\n"
+            msg += f"Total Trips Assigned: {total_trips}\n\n"
+            msg += f"Performance Summary:\n{summary_text_breakdown}\n"
+            msg += f"Kindly review the attached Excel sheet for raw details and ensure on-time arrivals.\n\n"
+            msg += "Thanks,\nAjay Singh Rawat\nFleet operation Executive"
             
             # Generate Excel with BORDERS & AUTOFIT
             output_ven = io.BytesIO()
@@ -1431,52 +1399,71 @@ elif choice == "📱 Vendor Communication Hub":
                 
                 workbook = writer.book
                 format_hdr = workbook.add_format({'bold': True, 'bg_color': '#1E3A8A', 'font_color': 'white', 'border': 1, 'text_wrap': True})
-                format_data = workbook.add_format({'border': 1}) # Data Borders Added
+                format_data = workbook.add_format({'border': 1})
                 
                 for sheet in ['Performance_Summary', 'Raw_Trip_Details']:
                     worksheet = writer.sheets[sheet]
                     df_temp = ven_sum if sheet == 'Performance_Summary' else ven_raw
-                    
-                    # Write Header
                     for col_num, value in enumerate(df_temp.columns.values):
                         worksheet.write(0, col_num, value, format_hdr)
-                        
-                    # Write Data Formatting & Autofit
                     for i, col in enumerate(df_temp.columns):
-                        # Calculate auto-fit width
                         col_width = max(df_temp[col].astype(str).map(len).max(), len(str(col))) + 2
-                        # Apply width and border to the whole column (adjusts rows automatically)
                         worksheet.set_column(i, i, min(col_width, 40), format_data)
 
             ven_file_name = f"{target_vendor}_Performance_Report.xlsx"
             
-            # Action Buttons
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2, c3 = st.columns(3)
+            c1.download_button("1️⃣ Download Excel 📊", data=output_ven.getvalue(), file_name=ven_file_name, mime="application/vnd.ms-excel", use_container_width=True)
             
-            # 1. Download
-            c1.download_button(
-                "1️⃣ Download Excel 📊", 
-                data=output_ven.getvalue(), 
-                file_name=ven_file_name, 
-                mime="application/vnd.ms-excel", 
-                use_container_width=True
-            )
-            
-            # 2. WhatsApp
             encoded_msg = urllib.parse.quote(msg)
             wp_url = f"https://api.whatsapp.com/send?phone={wp_num}&text={encoded_msg}"
             c2.markdown(f'<a href="{wp_url}" target="_blank"><button style="background-color: #25D366; color: white; padding: 10px; border: none; border-radius: 5px; width: 100%; cursor: pointer;">2️⃣ Open WhatsApp 💬</button></a>', unsafe_allow_html=True)
             
-            # 3. Direct Gmail (FIXED WITH SENDER ID)
             subject = urllib.parse.quote(f"Trackon Performance Report: {target_vendor}")
             gmail_url = f"https://mail.google.com/mail/?view=cm&fs=1&to={urllib.parse.quote(email_id)}&su={subject}&body={encoded_msg}&authuser=lh.fleetops@trackon.in"
             c3.markdown(f'<a href="{gmail_url}" target="_blank"><button style="background-color: #DB4437; color: white; padding: 10px; border: none; border-radius: 5px; width: 100%; cursor: pointer;">3️⃣ Open in Gmail 🌐</button></a>', unsafe_allow_html=True)
 
-            # 4. Default Email (Fallback)
-            mail_url = f"mailto:{email_id}?subject={subject}&body={encoded_msg}"
-            c4.markdown(f'<a href="{mail_url}" target="_blank"><button style="background-color: #5F6368; color: white; padding: 10px; border: none; border-radius: 5px; width: 100%; cursor: pointer;">4️⃣ Default Email App</button></a>', unsafe_allow_html=True)
+        st.markdown("---")
+        
+        # --- 3. BULK MESSAGING HUB ---
+        st.markdown("### 🚀 Bulk Messaging Hub (All Saved Vendors)")
+        st.caption("Fatafat sabhi saved vendors ko mail bhejne ke liye yahan se click karein.")
+        
+        v_master_data_live = {}
+        if os.path.exists(FILE_MAP.get("VENDOR_MASTER")):
+            try:
+                with open(FILE_MAP.get("VENDOR_MASTER"), 'r') as f:
+                    v_master_data_live = json.load(f)
+            except: pass
             
-            st.caption("💡 **Pro Tip:** Pehle Excel download karein (1), phir WhatsApp/Gmail open karein (2/3) aur wahan file attach kar dein! Excel file ab borders aur auto-fit ke sath aayegi.")
+        saved_vendors_in_data = [v for v in v_master_data_live.keys() if v in all_vendors_filtered]
+        
+        if not saved_vendors_in_data:
+            st.info("Koi bhi saved vendor current filtered data mein nahi mila. Vendor Master mein details save karein.")
+        else:
+            for v_name in saved_vendors_in_data:
+                v_email = v_master_data_live[v_name].get("email", "")
+                
+                v_sum = df_vperf_sum[df_vperf_sum['VendorName'] == v_name].copy()
+                if v_sum.empty: continue
+                    
+                v_total_trips = v_sum['Total_Trips'].sum()
+                v_summary_table = "Route (Leg) | Trips | Ontime | Late\n"
+                v_summary_table += "--------------------------------------------------------\n"
+                for _, row in v_sum.iterrows():
+                    v_summary_table += f"{row['Route Path']} ({row['Legwise']}) | {row['Total_Trips']} | 🟢 {row['Ontime Arrival']} | 🔴 {row['Late Arrival']}\n"
+                v_summary_table += "--------------------------------------------------------\n"
+
+                v_msg = f"Dear {v_name},\n\nPlease find attached the arrival performance report for your vehicles.\nTotal Trips Assigned: {v_total_trips}\n\nPerformance Summary:\n{v_summary_table}\nKindly review the attached Excel sheet for raw details and ensure on-time arrivals.\n\nThanks,\nAjay Singh Rawat\nFleet operation Executive"
+                
+                v_subject = urllib.parse.quote(f"Trackon Performance Report: {v_name}")
+                v_encoded_msg = urllib.parse.quote(v_msg)
+                v_gmail_url = f"https://mail.google.com/mail/?view=cm&fs=1&to={urllib.parse.quote(v_email)}&su={v_subject}&body={v_encoded_msg}&authuser=lh.fleetops@trackon.in"
+                
+                b1, b2 = st.columns([3, 1])
+                b1.markdown(f"**{v_name}** (Trips: {v_total_trips} | Email: {v_email})")
+                b2.markdown(f'<a href="{v_gmail_url}" target="_blank"><button style="background-color: #DB4437; color: white; padding: 5px 15px; border: none; border-radius: 4px; width: 100%; cursor: pointer; font-size: 14px;">✉️ Compose Gmail</button></a>', unsafe_allow_html=True)
+                st.divider()
 
     else:
         st.info("No data available. Please process the dashboard first.")
