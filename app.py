@@ -439,7 +439,7 @@ def process_all_data():
             data_for_export['Master_Database'] = df_master
             del df_pay
         else:
-            st.warning("⚠️️ Payment file missing.")
+            st.warning("⚠️ Payment file missing.")
 
         progress.progress(20)
 
@@ -535,7 +535,11 @@ def process_all_data():
             df_vperf['Actual Driving Hours'] = df_vperf['Actual Driving Hours_Raw'].apply(format_hrs_safe)
             df_vperf['Delay Hours'] = df_vperf['Delay Hours_Raw'].apply(format_hrs_safe)
             
-            perf_cols = ['Route Path', 'Legwise', 'Legs', 'Given Driving Hours', 'Actual Driving Hours', 'Delay Hours', 'Remark with 15 min waiver', 'VendorName', 'VehicleNo', 'MasterCDNo', 'RouteCode', 'Zone', 'Origin RO']
+            # Format Datetime variables for proper Excel export
+            df_vperf['Actual Departure Time'] = df_vperf['Actual Departure Time'].dt.strftime('%d-%m-%Y %H:%M').fillna('-')
+            df_vperf['Actual Arrival Time'] = df_vperf['Actual Arrival Time'].dt.strftime('%d-%m-%Y %H:%M').fillna('-')
+            
+            perf_cols = ['Route Path', 'Legwise', 'Legs', 'Actual Departure Time', 'Actual Arrival Time', 'Given Driving Hours', 'Actual Driving Hours', 'Delay Hours', 'Remark with 15 min waiver', 'VendorName', 'VehicleNo', 'MasterCDNo', 'RouteCode', 'Zone', 'Origin RO']
             df_vperf_raw = df_vperf[perf_cols + ['MCD_StartDate_DT']].copy()
             df_vperf_raw['Date'] = df_vperf_raw['MCD_StartDate_DT'].dt.strftime('%d-%m-%Y')
             df_vperf_raw = df_vperf_raw.drop(columns=['MCD_StartDate_DT'])
@@ -1297,42 +1301,42 @@ elif choice == "📱 Vendor Communication Hub":
         df_vperf_sum = data['Vendor_Perf_Summary'].copy()
         df_vperf_raw = data['Vendor_Perf_Raw'].copy()
         
-        # --- 1. VENDOR MASTER PANEL ---
-        with st.expander("🛠️ Manage Vendor Master Contacts", expanded=False):
-            st.caption("Save Vendor WhatsApp and Email IDs for quick communication.")
-            
-            # Load existing master
-            vendor_master_file = FILE_MAP.get("VENDOR_MASTER", os.path.join(DATA_DIR, "vendor_master.json"))
-            v_master_data = {}
-            if os.path.exists(vendor_master_file):
-                try:
-                    with open(vendor_master_file, 'r') as f:
-                        v_master_data = json.load(f)
-                except: pass
-            
-            with st.form("vendor_master_form"):
-                col_m1, col_m2, col_m3 = st.columns(3)
-                all_vendors_list = sorted(df_vperf_sum['VendorName'].dropna().unique().tolist())
-                vm_name = col_m1.selectbox("Select Vendor Name", all_vendors_list)
+        # --- 1. VENDOR MASTER PANEL (ADMIN ONLY) ---
+        if st.session_state.get('role') == 'Admin':
+            with st.expander("🛠️ Manage Vendor Master Contacts", expanded=False):
+                st.caption("Save Vendor WhatsApp and Email IDs for quick communication.")
                 
-                # Pre-fill if exists
-                pre_wp = v_master_data.get(vm_name, {}).get("whatsapp", "")
-                pre_em = v_master_data.get(vm_name, {}).get("email", "")
+                # Load existing master
+                vendor_master_file = FILE_MAP.get("VENDOR_MASTER", os.path.join(DATA_DIR, "vendor_master.json"))
+                v_master_data = {}
+                if os.path.exists(vendor_master_file):
+                    try:
+                        with open(vendor_master_file, 'r') as f:
+                            v_master_data = json.load(f)
+                    except: pass
                 
-                vm_wp = col_m2.text_input("WhatsApp No (with country code e.g. 9198...)", value=pre_wp)
-                vm_email = col_m3.text_input("Email ID", value=pre_em)
-                
-                if st.form_submit_button("💾 Save to Master"):
-                    v_master_data[vm_name] = {"whatsapp": vm_wp.strip(), "email": vm_email.strip()}
-                    with open(vendor_master_file, 'w') as f:
-                        json.dump(v_master_data, f)
-                    st.success(f"Contact details for {vm_name} saved successfully!")
-
-        st.markdown("---")
+                with st.form("vendor_master_form"):
+                    col_m1, col_m2, col_m3 = st.columns(3)
+                    all_vendors_list = sorted(df_vperf_sum['VendorName'].dropna().unique().tolist())
+                    vm_name = col_m1.selectbox("Select Vendor Name", all_vendors_list)
+                    
+                    # Pre-fill if exists
+                    pre_wp = v_master_data.get(vm_name, {}).get("whatsapp", "")
+                    pre_em = v_master_data.get(vm_name, {}).get("email", "")
+                    
+                    vm_wp = col_m2.text_input("WhatsApp No (with country code e.g. 9198...)", value=pre_wp)
+                    vm_email = col_m3.text_input("Email ID", value=pre_em)
+                    
+                    if st.form_submit_button("💾 Save to Master"):
+                        v_master_data[vm_name] = {"whatsapp": vm_wp.strip(), "email": vm_email.strip()}
+                        with open(vendor_master_file, 'w') as f:
+                            json.dump(v_master_data, f)
+                        st.success(f"Contact details for {vm_name} saved successfully!")
+            st.markdown("---")
         
         # --- 2. FILTERS & INDIVIDUAL VENDOR SEARCH ---
         st.markdown("### 🔍 Individual Vendor Messaging")
-        col1, col2, col3 = st.columns([1, 1, 2])
+        col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
         
         all_zones = sorted(df_vperf_sum['Zone'].dropna().unique().tolist())
         selected_zone = col1.selectbox("Filter Zone:", ["ALL"] + all_zones)
@@ -1345,9 +1349,15 @@ elif choice == "📱 Vendor Communication Hub":
         if selected_ro != "ALL":
             df_vperf_sum = df_vperf_sum[df_vperf_sum['Origin RO'] == selected_ro]
             df_vperf_raw = df_vperf_raw[df_vperf_raw['Origin RO'] == selected_ro]
+
+        all_routes = sorted(df_vperf_sum['Route Path'].dropna().unique().tolist())
+        selected_route = col3.selectbox("Filter Route:", ["ALL"] + all_routes)
+        if selected_route != "ALL":
+            df_vperf_sum = df_vperf_sum[df_vperf_sum['Route Path'] == selected_route]
+            df_vperf_raw = df_vperf_raw[df_vperf_raw['Route Path'] == selected_route]
             
         all_vendors_filtered = sorted(df_vperf_sum['VendorName'].dropna().unique().tolist())
-        selected_vendor = col3.selectbox("Select Vendor for Detailed View:", ["ALL"] + all_vendors_filtered)
+        selected_vendor = col4.selectbox("Select Vendor for Detailed View:", ["ALL"] + all_vendors_filtered)
         
         # Display Table for the selected individual vendor
         if selected_vendor != "ALL":
@@ -1357,7 +1367,87 @@ elif choice == "📱 Vendor Communication Hub":
             st.markdown(f"#### Performance View: `{target_vendor}`")
             st.dataframe(df_display_ind[['Route Path', 'Legwise', 'Legs', 'Total_Trips', 'Ontime Arrival', 'Late Arrival']], use_container_width=True, hide_index=True)
 
-            # Re-read master file directly
+            if st.session_state.get('role') == 'Admin':
+                # Re-read master file directly
+                v_master_data_live = {}
+                if os.path.exists(FILE_MAP.get("VENDOR_MASTER")):
+                    try:
+                        with open(FILE_MAP.get("VENDOR_MASTER"), 'r') as f:
+                            v_master_data_live = json.load(f)
+                    except: pass
+                    
+                ven_contact = v_master_data_live.get(target_vendor, {})
+                wp_num = ven_contact.get("whatsapp", "")
+                email_id = ven_contact.get("email", "")
+                
+                if not wp_num and not email_id:
+                    st.warning(f"⚠️ Contact details for '{target_vendor}' are not saved in the Vendor Master.")
+                
+                ven_sum = df_vperf_sum[df_vperf_sum['VendorName'] == target_vendor].copy()
+                ven_raw = df_vperf_raw[df_vperf_raw['VendorName'] == target_vendor].copy()
+                
+                total_trips = ven_sum['Total_Trips'].sum() if not ven_sum.empty else 0
+                
+                # --- Fixed Width Padded Table for Email/WhatsApp ---
+                summary_text_breakdown = "ROUTE & LEG".ljust(35) + "| TRIPS | ONTIME | LATE\n"
+                summary_text_breakdown += "-"*65 + "\n"
+                for _, row in ven_sum.iterrows():
+                    route_leg = f"{row['Route Path']} ({row['Legwise']})"
+                    route_leg = route_leg[:33].ljust(35)
+                    trips = str(row['Total_Trips']).center(5)
+                    ontime = str(row['Ontime Arrival']).ljust(8)
+                    late = str(row['Late Arrival']).ljust(8)
+                    summary_text_breakdown += f"{route_leg}| {trips} | 🟢 {ontime} | 🔴 {late}\n"
+                summary_text_breakdown += "-"*65 + "\n"
+
+                msg = f"Dear {target_vendor},\n\n"
+                msg += f"Please find attached the arrival performance report for your vehicles.\n"
+                msg += f"Total Trips Assigned: {total_trips}\n\n"
+                msg += f"Performance Summary:\n{summary_text_breakdown}\n"
+                msg += f"Kindly review the attached Excel sheet for raw details and ensure on-time arrivals.\n\n"
+                msg += "Thanks,\nAjay Singh Rawat\nFleet operation Executive"
+                
+                # Generate Excel with BORDERS, AUTOFIT & ACTUAL DATETIME COLUMNS
+                output_ven = io.BytesIO()
+                with pd.ExcelWriter(output_ven, engine='xlsxwriter') as writer:
+                    ven_sum.to_excel(writer, sheet_name='Performance_Summary', index=False)
+                    ven_raw.to_excel(writer, sheet_name='Raw_Trip_Details', index=False)
+                    
+                    workbook = writer.book
+                    format_hdr = workbook.add_format({'bold': True, 'bg_color': '#1E3A8A', 'font_color': 'white', 'border': 1, 'text_wrap': True})
+                    format_data = workbook.add_format({'border': 1})
+                    
+                    for sheet in ['Performance_Summary', 'Raw_Trip_Details']:
+                        worksheet = writer.sheets[sheet]
+                        df_temp = ven_sum if sheet == 'Performance_Summary' else ven_raw
+                        for col_num, value in enumerate(df_temp.columns.values):
+                            worksheet.write(0, col_num, value, format_hdr)
+                        for i, col in enumerate(df_temp.columns):
+                            col_width = max(df_temp[col].astype(str).map(len).max(), len(str(col))) + 2
+                            worksheet.set_column(i, i, min(col_width, 40), format_data)
+
+                ven_file_name = f"{target_vendor}_Performance_Report.xlsx"
+                
+                c1, c2, c3 = st.columns(3)
+                c1.download_button("1️⃣ Download Excel 📊", data=output_ven.getvalue(), file_name=ven_file_name, mime="application/vnd.ms-excel", use_container_width=True)
+                
+                encoded_msg = urllib.parse.quote(msg)
+                wp_url = f"https://api.whatsapp.com/send?phone={wp_num}&text={encoded_msg}"
+                c2.markdown(f'<a href="{wp_url}" target="_blank"><button style="background-color: #25D366; color: white; padding: 10px; border: none; border-radius: 5px; width: 100%; cursor: pointer;">2️⃣ Open WhatsApp 💬</button></a>', unsafe_allow_html=True)
+                
+                subject = urllib.parse.quote(f"Trackon Performance Report: {target_vendor}")
+                gmail_url = f"https://mail.google.com/mail/?view=cm&fs=1&to={urllib.parse.quote(email_id)}&su={subject}&body={encoded_msg}&authuser=lh.fleetops@trackon.in"
+                c3.markdown(f'<a href="{gmail_url}" target="_blank"><button style="background-color: #DB4437; color: white; padding: 10px; border: none; border-radius: 5px; width: 100%; cursor: pointer;">3️⃣ Open in Gmail 🌐</button></a>', unsafe_allow_html=True)
+            else:
+                st.info("🔒 Message Sending & Downloading features are restricted to Admin access.")
+
+        st.markdown("---")
+        
+        # --- 3. BULK MESSAGING HUB (ADMIN ONLY) ---
+        if st.session_state.get('role') == 'Admin':
+            st.markdown("### 🚀 Bulk Messaging Hub (All Saved Vendors)")
+            st.caption("Fatafat sabhi saved vendors ko mail bhejne ke liye yahan se click karein.")
+            
             v_master_data_live = {}
             if os.path.exists(FILE_MAP.get("VENDOR_MASTER")):
                 try:
@@ -1365,105 +1455,40 @@ elif choice == "📱 Vendor Communication Hub":
                         v_master_data_live = json.load(f)
                 except: pass
                 
-            ven_contact = v_master_data_live.get(target_vendor, {})
-            wp_num = ven_contact.get("whatsapp", "")
-            email_id = ven_contact.get("email", "")
+            saved_vendors_in_data = [v for v in v_master_data_live.keys() if v in all_vendors_filtered]
             
-            if not wp_num and not email_id:
-                st.warning(f"⚠️ Contact details for '{target_vendor}' are not saved in the Vendor Master.")
-            
-            ven_sum = df_vperf_sum[df_vperf_sum['VendorName'] == target_vendor].copy()
-            ven_raw = df_vperf_raw[df_vperf_raw['VendorName'] == target_vendor].copy()
-            
-            total_trips = ven_sum['Total_Trips'].sum() if not ven_sum.empty else 0
-            
-            # --- English Message with Plain Text Table & Emoji Highlights ---
-            summary_text_breakdown = "Route (Leg) | Trips | Ontime | Late\n"
-            summary_text_breakdown += "--------------------------------------------------------\n"
-            for _, row in ven_sum.iterrows():
-                summary_text_breakdown += f"{row['Route Path']} ({row['Legwise']}) | {row['Total_Trips']} | 🟢 {row['Ontime Arrival']} | 🔴 {row['Late Arrival']}\n"
-            summary_text_breakdown += "--------------------------------------------------------\n"
-
-            msg = f"Dear {target_vendor},\n\n"
-            msg += f"Please find attached the arrival performance report for your vehicles.\n"
-            msg += f"Total Trips Assigned: {total_trips}\n\n"
-            msg += f"Performance Summary:\n{summary_text_breakdown}\n"
-            msg += f"Kindly review the attached Excel sheet for raw details and ensure on-time arrivals.\n\n"
-            msg += "Thanks,\nAjay Singh Rawat\nFleet operation Executive"
-            
-            # Generate Excel with BORDERS & AUTOFIT
-            output_ven = io.BytesIO()
-            with pd.ExcelWriter(output_ven, engine='xlsxwriter') as writer:
-                ven_sum.to_excel(writer, sheet_name='Performance_Summary', index=False)
-                ven_raw.to_excel(writer, sheet_name='Raw_Trip_Details', index=False)
-                
-                workbook = writer.book
-                format_hdr = workbook.add_format({'bold': True, 'bg_color': '#1E3A8A', 'font_color': 'white', 'border': 1, 'text_wrap': True})
-                format_data = workbook.add_format({'border': 1})
-                
-                for sheet in ['Performance_Summary', 'Raw_Trip_Details']:
-                    worksheet = writer.sheets[sheet]
-                    df_temp = ven_sum if sheet == 'Performance_Summary' else ven_raw
-                    for col_num, value in enumerate(df_temp.columns.values):
-                        worksheet.write(0, col_num, value, format_hdr)
-                    for i, col in enumerate(df_temp.columns):
-                        col_width = max(df_temp[col].astype(str).map(len).max(), len(str(col))) + 2
-                        worksheet.set_column(i, i, min(col_width, 40), format_data)
-
-            ven_file_name = f"{target_vendor}_Performance_Report.xlsx"
-            
-            c1, c2, c3 = st.columns(3)
-            c1.download_button("1️⃣ Download Excel 📊", data=output_ven.getvalue(), file_name=ven_file_name, mime="application/vnd.ms-excel", use_container_width=True)
-            
-            encoded_msg = urllib.parse.quote(msg)
-            wp_url = f"https://api.whatsapp.com/send?phone={wp_num}&text={encoded_msg}"
-            c2.markdown(f'<a href="{wp_url}" target="_blank"><button style="background-color: #25D366; color: white; padding: 10px; border: none; border-radius: 5px; width: 100%; cursor: pointer;">2️⃣ Open WhatsApp 💬</button></a>', unsafe_allow_html=True)
-            
-            subject = urllib.parse.quote(f"Trackon Performance Report: {target_vendor}")
-            gmail_url = f"https://mail.google.com/mail/?view=cm&fs=1&to={urllib.parse.quote(email_id)}&su={subject}&body={encoded_msg}&authuser=lh.fleetops@trackon.in"
-            c3.markdown(f'<a href="{gmail_url}" target="_blank"><button style="background-color: #DB4437; color: white; padding: 10px; border: none; border-radius: 5px; width: 100%; cursor: pointer;">3️⃣ Open in Gmail 🌐</button></a>', unsafe_allow_html=True)
-
-        st.markdown("---")
-        
-        # --- 3. BULK MESSAGING HUB ---
-        st.markdown("### 🚀 Bulk Messaging Hub (All Saved Vendors)")
-        st.caption("Fatafat sabhi saved vendors ko mail bhejne ke liye yahan se click karein.")
-        
-        v_master_data_live = {}
-        if os.path.exists(FILE_MAP.get("VENDOR_MASTER")):
-            try:
-                with open(FILE_MAP.get("VENDOR_MASTER"), 'r') as f:
-                    v_master_data_live = json.load(f)
-            except: pass
-            
-        saved_vendors_in_data = [v for v in v_master_data_live.keys() if v in all_vendors_filtered]
-        
-        if not saved_vendors_in_data:
-            st.info("Koi bhi saved vendor current filtered data mein nahi mila. Vendor Master mein details save karein.")
-        else:
-            for v_name in saved_vendors_in_data:
-                v_email = v_master_data_live[v_name].get("email", "")
-                
-                v_sum = df_vperf_sum[df_vperf_sum['VendorName'] == v_name].copy()
-                if v_sum.empty: continue
+            if not saved_vendors_in_data:
+                st.info("Koi bhi saved vendor current filtered data mein nahi mila. Vendor Master mein details save karein.")
+            else:
+                for v_name in saved_vendors_in_data:
+                    v_email = v_master_data_live[v_name].get("email", "")
                     
-                v_total_trips = v_sum['Total_Trips'].sum()
-                v_summary_table = "Route (Leg) | Trips | Ontime | Late\n"
-                v_summary_table += "--------------------------------------------------------\n"
-                for _, row in v_sum.iterrows():
-                    v_summary_table += f"{row['Route Path']} ({row['Legwise']}) | {row['Total_Trips']} | 🟢 {row['Ontime Arrival']} | 🔴 {row['Late Arrival']}\n"
-                v_summary_table += "--------------------------------------------------------\n"
+                    v_sum = df_vperf_sum[df_vperf_sum['VendorName'] == v_name].copy()
+                    if v_sum.empty: continue
+                        
+                    v_total_trips = v_sum['Total_Trips'].sum()
+                    
+                    v_summary_table = "ROUTE & LEG".ljust(35) + "| TRIPS | ONTIME | LATE\n"
+                    v_summary_table += "-"*65 + "\n"
+                    for _, row in v_sum.iterrows():
+                        route_leg = f"{row['Route Path']} ({row['Legwise']})"
+                        route_leg = route_leg[:33].ljust(35)
+                        trips = str(row['Total_Trips']).center(5)
+                        ontime = str(row['Ontime Arrival']).ljust(8)
+                        late = str(row['Late Arrival']).ljust(8)
+                        v_summary_table += f"{route_leg}| {trips} | 🟢 {ontime} | 🔴 {late}\n"
+                    v_summary_table += "-"*65 + "\n"
 
-                v_msg = f"Dear {v_name},\n\nPlease find attached the arrival performance report for your vehicles.\nTotal Trips Assigned: {v_total_trips}\n\nPerformance Summary:\n{v_summary_table}\nKindly review the attached Excel sheet for raw details and ensure on-time arrivals.\n\nThanks,\nAjay Singh Rawat\nFleet operation Executive"
-                
-                v_subject = urllib.parse.quote(f"Trackon Performance Report: {v_name}")
-                v_encoded_msg = urllib.parse.quote(v_msg)
-                v_gmail_url = f"https://mail.google.com/mail/?view=cm&fs=1&to={urllib.parse.quote(v_email)}&su={v_subject}&body={v_encoded_msg}&authuser=lh.fleetops@trackon.in"
-                
-                b1, b2 = st.columns([3, 1])
-                b1.markdown(f"**{v_name}** (Trips: {v_total_trips} | Email: {v_email})")
-                b2.markdown(f'<a href="{v_gmail_url}" target="_blank"><button style="background-color: #DB4437; color: white; padding: 5px 15px; border: none; border-radius: 4px; width: 100%; cursor: pointer; font-size: 14px;">✉️ Compose Gmail</button></a>', unsafe_allow_html=True)
-                st.divider()
+                    v_msg = f"Dear {v_name},\n\nPlease find attached the arrival performance report for your vehicles.\nTotal Trips Assigned: {v_total_trips}\n\nPerformance Summary:\n{v_summary_table}\nKindly review the attached Excel sheet for raw details and ensure on-time arrivals.\n\nThanks,\nAjay Singh Rawat\nFleet operation Executive"
+                    
+                    v_subject = urllib.parse.quote(f"Trackon Performance Report: {v_name}")
+                    v_encoded_msg = urllib.parse.quote(v_msg)
+                    v_gmail_url = f"https://mail.google.com/mail/?view=cm&fs=1&to={urllib.parse.quote(v_email)}&su={v_subject}&body={v_encoded_msg}&authuser=lh.fleetops@trackon.in"
+                    
+                    b1, b2 = st.columns([3, 1])
+                    b1.markdown(f"**{v_name}** (Trips: {v_total_trips} | Email: {v_email})")
+                    b2.markdown(f'<a href="{v_gmail_url}" target="_blank"><button style="background-color: #DB4437; color: white; padding: 5px 15px; border: none; border-radius: 4px; width: 100%; cursor: pointer; font-size: 14px;">✉️ Compose Gmail</button></a>', unsafe_allow_html=True)
+                    st.divider()
 
     else:
         st.info("No data available. Please process the dashboard first.")
