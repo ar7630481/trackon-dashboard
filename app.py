@@ -6,6 +6,7 @@ import urllib.parse
 import os
 import warnings
 import io
+import json
 
 warnings.filterwarnings('ignore')
 
@@ -26,7 +27,8 @@ FILE_MAP = {
     "MCD_VENDOR": os.path.join(DATA_DIR, "mcd_vendor.xlsx"),
     "CPK_UTIL": os.path.join(DATA_DIR, "cpk_util.xlsx"),
     "ROUTE_LOOKUP": os.path.join(DATA_DIR, "route_lookup.xlsx"),
-    "FINAL_OUTPUT": os.path.join(DATA_DIR, "Auto_Generated_Monitoring_Data.xlsx")
+    "FINAL_OUTPUT": os.path.join(DATA_DIR, "Auto_Generated_Monitoring_Data.xlsx"),
+    "RATE_CORRECTIONS": os.path.join(DATA_DIR, "rate_corrections.json")
 }
 
 def get_ist_now():
@@ -359,6 +361,7 @@ def process_all_data():
                 summary['Ontime Dep, In-Transit'] = summary.apply(lambda r: format_pct_cnt(r['Ontime_Dep_IT_Cnt'], r[trip_col]), axis=1)
                 summary['Late Dep, In-Transit'] = summary.apply(lambda r: format_pct_cnt(r['Late_Dep_IT_Cnt'], r[trip_col]), axis=1)
                 
+                # Keep counts for internal logic, they will be dropped before export
                 return summary.sort_values(by=['LH Type', 'E2E_Pair', 'Origin', 'Route Path', 'Leg_Num'])
                 
             leg_sum = generate_summary(df_leg, ['Zone', 'LH Type', 'E2E_Pair', 'Origin RO', 'Route Path', 'Origin', 'Destination', 'Leg_Num', 'Legwise', 'Legs'])
@@ -371,7 +374,7 @@ def process_all_data():
             df_leg_final.to_excel(writer, sheet_name='Legwise_Processed_Data', index=False)
 
         else:
-            st.warning("⚠️ Operations files missing. Skipping Operations module.")
+            st.warning("⚠️️ Operations files missing. Skipping Operations module.")
 
         progress.progress(60)
         
@@ -481,30 +484,49 @@ def process_all_data():
             
             target_ros = ['PATRO', 'CCURO', 'BBSRO', 'GAURO', 'MUMRO', 'DELRO', 'LKORO']
             
-            df_updn = df_raw[~df_raw['Final_Type'].str.upper().str.contains('OFD|PICKUP', na=False)]
+            # --- APPLY RATE CORRECTIONS IF ANY ---
+            df_raw['Date_DT'] = pd.to_datetime(df_raw['Date'], errors='coerce', dayfirst=True)
+            if os.path.exists(FILE_MAP["RATE_CORRECTIONS"]):
+                try:
+                    with open(FILE_MAP["RATE_CORRECTIONS"], 'r') as f:
+                        corrections = json.load(f)
+                    
+                    for corr in corrections:
+                        route_mask = df_raw['Final_Route'].str.upper() == corr['route'].upper()
+                        cap_mask = df_raw['Cap'] == float(corr['capacity'])
+                        date_mask = df_raw['Date_DT'] >= pd.to_datetime(corr['eff_date'])
+                        
+                        mask = route_mask & cap_mask & date_mask
+                        df_raw.loc[mask, 'Cost'] = float(corr['new_cost']) * df_raw.loc[mask, 'Trips']
+                except Exception as e:
+                    print(f"Error applying rate corrections: {e}")
+            
+            df_updn = df_raw[~df_raw['Final_Type'].str.upper().str.contains('OFD|PICKUP', na=False)].copy()
             target_keys = df_updn[df_updn['RO_Clean'].isin(target_ros)]['SortKey'].unique()
             df_updn = df_updn[df_updn['SortKey'].isin(target_keys)]
             
             df_updn.to_excel(writer, sheet_name='CPK_Raw_Data', index=False)
 
             if not df_updn.empty:
-                # Calculate Rate per trip to ensure grouping separates differing rates
+                # Calculate Trip Rate for each raw entry before grouping
                 df_updn['Trip_Rate'] = np.where(df_updn['Trips'] > 0, df_updn['Cost'] / df_updn['Trips'], 0).round(2)
+                df_updn['Trip_Rate_Str'] = "₹" + df_updn['Trip_Rate'].astype(str)
                 
-                # Modified Groupby to group Vendors with same capacity AND same Rate
-                agg_updn = df_updn.groupby(['RO_Clean', 'Zone', 'Final_Route', 'Final_Type', 'Cap', 'SortKey', 'Trip_Rate']).agg(
+                # Group strictly by Route, Type, and Capacity (Merge all matching trips and vendors into one row)
+                agg_updn = df_updn.groupby(['RO_Clean', 'Zone', 'Final_Route', 'Final_Type', 'Cap', 'SortKey']).agg(
                     Total_Trips=('Trips', 'sum'),
                     Total_Carried_Wt=('Wt', 'sum'),
                     Total_Trip_Cost=('Cost', 'sum'),
-                    VendorName=('VendorName', lambda x: ', '.join(sorted(set(x.dropna().astype(str)))))
+                    VendorName=('VendorName', lambda x: ', '.join(sorted(set(x.dropna().astype(str))))),
+                    Avg_Trip_Cost=('Trip_Rate_Str', lambda x: ', '.join(sorted(set(x.dropna().astype(str)))))
                 ).reset_index()
 
                 agg_updn['Total Capacity'] = agg_updn['Cap'] * agg_updn['Total_Trips']
                 agg_updn['Overall CPK'] = np.where(agg_updn['Total_Carried_Wt'] > 0, agg_updn['Total_Trip_Cost'] / agg_updn['Total_Carried_Wt'], 0)
                 agg_updn['Overall Util %'] = np.where(agg_updn['Total Capacity'] > 0, agg_updn['Total_Carried_Wt'] / agg_updn['Total Capacity'], 0)
-                agg_updn['Avg Trip Cost'] = np.where(agg_updn['Total_Trips'] > 0, agg_updn['Total_Trip_Cost'] / agg_updn['Total_Trips'], 0)
                 
-                updn_final = agg_updn[['Zone', 'RO_Clean', 'Final_Route', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Cap', 'Total Capacity', 'Total_Carried_Wt', 'Avg Trip Cost', 'Total_Trip_Cost', 'Total_Trips', 'VendorName', 'SortKey']]
+                # Column selection matching the requested output format exactly
+                updn_final = agg_updn[['Zone', 'RO_Clean', 'Final_Route', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Cap', 'Total Capacity', 'Total_Carried_Wt', 'Avg_Trip_Cost', 'Total_Trip_Cost', 'Total_Trips', 'VendorName', 'SortKey']]
                 updn_final.columns = ["Zone", "VendorRO", "Route (UP/DOWN)", "Type", "Overall CPK", "Overall Util %", "VehCap (Base)", "Total Capacity", "Total Carried Wt", "Avg Trip Cost", "Total Trip Cost", "Total Trips", "Vendor(s)", "SortKey"]
 
                 type_order = {"MCD-National LH":1, "MCD-Zonal LH":2, "MCD-Regional LH":3, "MCD-Feeder":4, "CO-LOADER":5}
@@ -528,30 +550,41 @@ def process_all_data():
         status_text.error(f"❌ Error during processing: {e}")
 
 # ==========================================
-# 5. DATA LOADING & UI ROUTING
-# ==========================================
-@st.cache_data
-def load_dashboard_data():
-    if not os.path.exists(FILE_MAP["FINAL_OUTPUT"]): return {}
-    xls = pd.ExcelFile(FILE_MAP["FINAL_OUTPUT"])
-    data = {}
-    for sheet in xls.sheet_names:
-        data[sheet] = pd.read_excel(xls, sheet_name=sheet)
-    return data
-
-data = load_dashboard_data()
-
-# ==========================================
-# 6. MASTER EXCEL GENERATOR
+# 5. MASTER EXCEL GENERATOR (With VIP Formatting & Raw Data)
 # ==========================================
 @st.cache_data
 def generate_master_excel(data_dict):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        workbook = writer.book
         
+        # Professional Manager-Level Formats
+        header_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#1E3A8A', # Deep Blue
+            'font_color': 'white',
+            'border': 1,
+            'align': 'center',
+            'valign': 'vcenter',
+            'text_wrap': True
+        })
+        
+        def apply_manager_formatting(sheet_name, df_to_write):
+            worksheet = writer.sheets[sheet_name]
+            # Write custom headers
+            for col_num, value in enumerate(df_to_write.columns.values):
+                worksheet.write(0, col_num, value, header_format)
+            # Autofit logic (Max 35 wide)
+            for i, col in enumerate(df_to_write.columns):
+                col_len = max(df_to_write[col].astype(str).map(len).max(), len(str(col))) + 2
+                worksheet.set_column(i, i, min(col_len, 35))
+
         # --- 1. OPERATIONS SUMMARY ---
         if 'Legwise_Route_Summary' in data_dict:
             df_ops = data_dict['Legwise_Route_Summary'].copy()
+            # Remove requested columns permanently for export
+            cols_to_drop = ['OO_Cnt', 'LO_Cnt', 'OL_Cnt', 'LL_Cnt', 'Ontime_Dep_IT_Cnt', 'Late_Dep_IT_Cnt']
+            df_ops = df_ops.drop(columns=cols_to_drop, errors='ignore')
             
             def extract_pct(x):
                 if isinstance(x, str) and '%' in x:
@@ -583,10 +616,10 @@ def generate_master_excel(data_dict):
                 try: pct = float(val.split('%')[0].strip())
                 except: return ''
                 if pct == 0: return 'color: #6C757D' # Grey
-                if 'Late Dep, Late Arr' in col: return 'background-color: #F8D7DA; color: #721C24; font-weight: bold' # Red
-                elif 'Ontime Dep, Ontime Arr' in col: return 'background-color: #D4EDDA; color: #155724; font-weight: bold' # Green
-                elif 'Ontime Dep, Late Arr' in col: return 'background-color: #FFF3CD; color: #856404; font-weight: bold' # Yellow
-                elif 'Late Dep, Ontime Arr' in col: return 'background-color: #E2D9F3; color: #4A148C; font-weight: bold' # Purple
+                if 'Late Dep, Late Arr' in col: return 'background-color: #F8D7DA; color: #721C24' # Light Red
+                elif 'Ontime Dep, Ontime Arr' in col: return 'background-color: #D4EDDA; color: #155724' # Light Green
+                elif 'Ontime Dep, Late Arr' in col: return 'background-color: #FFF3CD; color: #856404' # Light Yellow
+                elif 'Late Dep, Ontime Arr' in col: return 'background-color: #E2D9F3; color: #4A148C' # Light Purple
                 return ''
 
             styled_ops = df_ops.style
@@ -595,6 +628,13 @@ def generate_master_excel(data_dict):
                 else: styled_ops = styled_ops.applymap(lambda x, c=col: ops_excel_color(x, c), subset=[col])
             
             styled_ops.to_excel(writer, sheet_name='Operations_Summary', index=False)
+            apply_manager_formatting('Operations_Summary', df_ops)
+            
+        # Add Operations Raw Data
+        if 'Legwise_Processed_Data' in data_dict:
+            df_ops_raw = data_dict['Legwise_Processed_Data'].copy()
+            df_ops_raw.to_excel(writer, sheet_name='Operations_Raw', index=False)
+            apply_manager_formatting('Operations_Raw', df_ops_raw)
 
         # --- 2. PAYMENT DASHBOARD ---
         if 'Master_Database' in data_dict:
@@ -617,6 +657,16 @@ def generate_master_excel(data_dict):
                 else: styled_pay = styled_pay.applymap(lambda x, c=col: pay_excel_color(x, c), subset=[col])
             
             styled_pay.to_excel(writer, sheet_name='Payment_Summary')
+            worksheet = writer.sheets['Payment_Summary']
+            # Manual headers for Pivot index
+            worksheet.write(0, 0, "RO Name", header_format)
+            for col_num, value in enumerate(pvt.columns.values):
+                worksheet.write(0, col_num + 1, value, header_format)
+            worksheet.set_column(0, len(pvt.columns), 20)
+            
+            # Add Payment Raw Data
+            df_pay.to_excel(writer, sheet_name='Payment_Raw', index=False)
+            apply_manager_formatting('Payment_Raw', df_pay)
 
         # --- 3. CPK & UTILIZATION ---
         if 'Up_Down_Route_Summary' in data_dict:
@@ -645,12 +695,12 @@ def generate_master_excel(data_dict):
                 if 'Total Trip Cost' in df.columns: tot_dict['Total Trip Cost'] = tot_cost
                 if 'Overall CPK' in df.columns: tot_dict['Overall CPK'] = tot_cpk
                 if 'Overall Util %' in df.columns: tot_dict['Overall Util %'] = tot_util
-                if 'Avg Trip Cost' in df.columns: tot_dict['Avg Trip Cost'] = tot_avg_cost
+                if 'Avg Trip Cost' in df.columns: tot_dict['Avg Trip Cost'] = f"₹{tot_avg_cost:.2f}"
                 return pd.concat([df, pd.DataFrame([tot_dict])], ignore_index=True)
                 
             df_cpk = add_total_row_cpk(df_cpk)
             
-            for col in ['Overall CPK', 'Avg Trip Cost', 'Total Trip Cost']: 
+            for col in ['Overall CPK', 'Total Trip Cost']: 
                 if col in df_cpk.columns: 
                     df_cpk[col] = df_cpk[col].apply(lambda x: f"₹{x:.2f}" if isinstance(x, (int, float)) else x)
             if 'Overall Util %' in df_cpk.columns:
@@ -680,12 +730,19 @@ def generate_master_excel(data_dict):
                 styled_cpk = styled_cpk.applymap(lambda x: cpk_excel_color(x, 'Overall CPK'), subset=['Overall CPK'])
                 
             styled_cpk.to_excel(writer, sheet_name='Network_Utilization', index=False)
+            apply_manager_formatting('Network_Utilization', df_cpk)
+
+        # Add Network Raw Data
+        if 'CPK_Raw_Data' in data_dict:
+            df_cpk_raw = data_dict['CPK_Raw_Data'].copy()
+            df_cpk_raw.to_excel(writer, sheet_name='Network_Raw', index=False)
+            apply_manager_formatting('Network_Raw', df_cpk_raw)
 
     return output.getvalue()
 
 
 # ==========================================
-# 7. SIDEBAR (Admin Panel & Master Export)
+# 6. SIDEBAR: ADMIN PANEL
 # ==========================================
 st.sidebar.title(f"Welcome, {st.session_state['role']}")
 if st.sidebar.button("Logout", key="logout_btn"):
@@ -726,25 +783,71 @@ if st.session_state['role'] == 'Admin':
         if save_file(f7, "ROUTE_LOOKUP"): st.success("Saved!")
         st.caption(f"Last updated: {get_file_time('ROUTE_LOOKUP')}")
 
+    # NEW RATE CORRECTION MASTER
+    with st.sidebar.expander("💸 Rate Correction Master"):
+        st.caption("Fix raw Vendor Rates dynamically before dashboard processes data.")
+        with st.form("rate_form"):
+            rc_route = st.text_input("Route (e.g. DELAP-PKLH-KLKH)")
+            rc_cap = st.number_input("Vehicle Capacity", min_value=0)
+            rc_cost = st.number_input("Corrected Trip Cost (₹)", min_value=0.0)
+            rc_date = st.date_input("Effective From Date")
+            submitted = st.form_submit_button("Save Rate Correction")
+            
+            if submitted:
+                rate_file = FILE_MAP["RATE_CORRECTIONS"]
+                rates = []
+                if os.path.exists(rate_file):
+                    try:
+                        with open(rate_file, 'r') as f:
+                            rates = json.load(f)
+                    except: pass
+                
+                rates.append({
+                    "route": rc_route.strip(),
+                    "capacity": rc_cap,
+                    "new_cost": rc_cost,
+                    "eff_date": rc_date.strftime('%Y-%m-%d')
+                })
+                
+                with open(rate_file, 'w') as f:
+                    json.dump(rates, f)
+                st.success("✅ Correction Saved! Press Process & Refresh below.")
+
     st.sidebar.markdown("---")
     if st.sidebar.button("🚀 PROCESS & REFRESH DATA", use_container_width=True):
         process_all_data()
         st.rerun()
 
-# --- MASTER EXCEL DOWNLOAD BUTTON IN SIDEBAR ---
+# ==========================================
+# 7. DATA LOADING & UI ROUTING
+# ==========================================
+@st.cache_data
+def load_dashboard_data():
+    if not os.path.exists(FILE_MAP["FINAL_OUTPUT"]): return {}
+    xls = pd.ExcelFile(FILE_MAP["FINAL_OUTPUT"])
+    data = {}
+    for sheet in xls.sheet_names:
+        data[sheet] = pd.read_excel(xls, sheet_name=sheet)
+    return data
+
+data = load_dashboard_data()
+
+# EXPORT MASTER BUTTON IN SIDEBAR
 if data:
     st.sidebar.markdown("---")
     st.sidebar.header("📥 Export Reports")
-    master_excel_bytes = generate_master_excel(data)
-    
-    st.sidebar.download_button(
-        label="📄 Download Executive Master Report",
-        data=master_excel_bytes,
-        file_name=f"Trackon_Executive_Master_Report_{datetime.datetime.now().strftime('%d_%b_%Y')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
-    )
-    
+    try:
+        master_excel_bytes = generate_master_excel(data)
+        st.sidebar.download_button(
+            label="📄 Download VIP Executive Report",
+            data=master_excel_bytes,
+            file_name=f"Trackon_Executive_Master_Report_{datetime.datetime.now().strftime('%d_%b_%Y')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+    except Exception as e:
+        st.sidebar.error(f"Export Error: {e}")
+
 if os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
     ts = os.path.getmtime(FILE_MAP["FINAL_OUTPUT"])
     dt = (datetime.datetime.fromtimestamp(ts) + datetime.timedelta(hours=5, minutes=30)).strftime('%d %b %Y, %I:%M %p')
@@ -791,7 +894,7 @@ if choice == "📊 Operations Summary":
                         'Ontime Dep, Ontime Arr %', 'Ontime Dep, Late Arr %', 
                         'Late Dep, Late Arr %', 'Late Dep, Ontime Arr %']
         
-        display_cols = [c for c in display_cols if c in df_leg_sum.columns]
+        # Hide the raw count columns from the UI
         df_display = df_leg_sum[display_cols].copy()
         
         if search_q:
@@ -1019,19 +1122,7 @@ elif choice == "💰 Network Utilization":
         df_cpk_master = data['Up_Down_Route_Summary'].copy()
         df_cpk_raw = data['CPK_Raw_Data'].copy()
         
-        df_cpk_master = df_cpk_master[df_cpk_master['Type'].isin(['MCD-National LH', 'MCD-Zonal LH', 'National LH', 'Zonal LH'])]
-        df_cpk_master['Type'] = df_cpk_master['Type'].replace({'MCD-National LH': 'National', 'MCD-Zonal LH': 'Zonal', 'National LH': 'National', 'Zonal LH': 'Zonal'})
-        
-        def create_super_key(route):
-            parts = str(route).split('-')
-            if len(parts) >= 2:
-                start = parts[0].strip().upper()
-                end = parts[-1].strip().upper()
-                return "-".join(sorted([start, end]))
-            return str(route).upper()
-            
-        df_cpk_master['Super_SortKey'] = df_cpk_master['Route (UP/DOWN)'].apply(create_super_key)
-
+        # We process UI view from Master Data which is already correctly grouped by Process Data Engine
         col1, col2, col3 = st.columns([1, 1, 2])
         
         all_zones = sorted(df_cpk_master['Zone'].dropna().unique().tolist())
@@ -1086,13 +1177,13 @@ elif choice == "💰 Network Utilization":
             if 'Total Trip Cost' in df.columns: tot_dict['Total Trip Cost'] = tot_cost
             if 'Overall CPK' in df.columns: tot_dict['Overall CPK'] = tot_cpk
             if 'Overall Util %' in df.columns: tot_dict['Overall Util %'] = tot_util
-            if 'Avg Trip Cost' in df.columns: tot_dict['Avg Trip Cost'] = tot_avg_cost
+            if 'Avg Trip Cost' in df.columns: tot_dict['Avg Trip Cost'] = f"₹{tot_avg_cost:.2f}"
             
             return pd.concat([df, pd.DataFrame([tot_dict])], ignore_index=True)
 
         disp_df = add_total_row(disp_df)
         
-        for col in ['Overall CPK', 'Avg Trip Cost', 'Total Trip Cost']: 
+        for col in ['Overall CPK', 'Total Trip Cost']: 
             if col in disp_df.columns: 
                 disp_df[col] = disp_df[col].apply(lambda x: f"₹{x:.2f}" if isinstance(x, (int, float)) else x)
         if 'Overall Util %' in disp_df.columns:
@@ -1135,33 +1226,10 @@ elif choice == "💰 Network Utilization":
             if selected_idx >= len(df_cpk_view):
                 st.warning("Please click a valid route row, not the TOTAL row.")
             else:
-                selected_super_sortkey = df_cpk_view.iloc[selected_idx]['Super_SortKey']
+                selected_super_sortkey = df_cpk_view.iloc[selected_idx]['SortKey']
                 selected_route_name = df_cpk_view.iloc[selected_idx]['Route (UP/DOWN)']
                 selected_vendor = df_cpk_view.iloc[selected_idx]['Vendor(s)']
                 selected_ro_val = df_cpk_view.iloc[selected_idx]['VendorRO']
-                
-                st.markdown("---")
-                st.markdown(f"### 🔗 Network Connected View (UP & DOWN)")
-                
-                network_df = df_cpk_master[df_cpk_master['Super_SortKey'] == selected_super_sortkey].copy()
-                network_df = network_df.drop(columns=['SortKey', 'Super_SortKey'], errors='ignore')
-                
-                network_df = add_total_row(network_df)
-                
-                for col in ['Overall CPK', 'Avg Trip Cost', 'Total Trip Cost']: 
-                    if col in network_df.columns: network_df[col] = network_df[col].apply(lambda x: f"₹{x:.2f}" if isinstance(x, (int, float)) else x)
-                if 'Overall Util %' in network_df.columns:
-                    network_df['Overall Util %'] = network_df['Overall Util %'].apply(lambda x: f"{x * 100:.2f}%" if isinstance(x, (int, float)) else x)
-                
-                styled_network = network_df.style
-                if hasattr(styled_network, 'map'):
-                    styled_network = styled_network.map(lambda x: highlight_cpk_util(x, 'Overall Util %'), subset=['Overall Util %'])
-                    styled_network = styled_network.map(lambda x: highlight_cpk_util(x, 'Overall CPK'), subset=['Overall CPK'])
-                else:
-                    styled_network = styled_network.applymap(lambda x: highlight_cpk_util(x, 'Overall Util %'), subset=['Overall Util %'])
-                    styled_network = styled_network.applymap(lambda x: highlight_cpk_util(x, 'Overall CPK'), subset=['Overall CPK'])
-
-                st.dataframe(styled_network, use_container_width=True)
                 
                 st.markdown("---")
                 st.markdown(f"### 📄 Details for `{selected_vendor}` on `{selected_route_name}`")
@@ -1169,7 +1237,7 @@ elif choice == "💰 Network Utilization":
                 vendors_list = [v.strip().upper() for v in str(selected_vendor).split(',')]
                 
                 raw_trips = df_cpk_raw[
-                    (df_cpk_raw['Final_Route'].astype(str).str.strip().str.upper() == str(selected_route_name).strip().upper()) & 
+                    (df_cpk_raw['SortKey'] == selected_super_sortkey) & 
                     (df_cpk_raw['VendorName'].astype(str).str.strip().str.upper().isin(vendors_list)) &
                     (df_cpk_raw['RO_Clean'].astype(str).str.strip().str.upper() == str(selected_ro_val).strip().upper())
                 ].copy()
@@ -1189,6 +1257,6 @@ elif choice == "💰 Network Utilization":
                 st.dataframe(styled_raw_trips, use_container_width=True)
 
         else:
-            st.info("👆 Click any row above to view full UP/DOWN network details.")
+            st.info("👆 Click any row above to view raw trip details.")
     else:
         st.info("Please process CPK data first.")
