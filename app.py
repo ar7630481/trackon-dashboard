@@ -19,7 +19,7 @@ import io
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# 1. PAGE SETUP
+# 1. PAGE SETUP (Professional Dark Theme)
 # ==========================================
 st.set_page_config(page_title="Trackon Command Center", page_icon="🚀", layout="wide")
 
@@ -131,12 +131,21 @@ def format_pct_cnt(count, total):
     return f"{pct:.1f}% ({int(count)})"
 
 # ==========================================
-# 4. VIP EXCEL GENERATOR
+# 4. VIP EXCEL GENERATOR (Direct to Disk)
 # ==========================================
 def generate_vip_executive_report_to_disk(data_dict, output_path=None):
     with pd.ExcelWriter(output_path or FILE_MAP["EXECUTIVE_REPORT"], engine='xlsxwriter') as writer:
         workbook = writer.book
-        header_format = workbook.add_format({'bold': True, 'bg_color': '#1E3A8A', 'font_color': 'white', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'text_wrap': True})
+        
+        header_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#1E3A8A',
+            'font_color': 'white',
+            'border': 1,
+            'align': 'center',
+            'valign': 'vcenter',
+            'text_wrap': True
+        })
         
         def apply_manager_formatting(sheet_name, df_to_write):
             worksheet = writer.sheets[sheet_name]
@@ -148,6 +157,8 @@ def generate_vip_executive_report_to_disk(data_dict, output_path=None):
 
         if 'Legwise_Route_Summary' in data_dict:
             df_ops = data_dict['Legwise_Route_Summary'].copy()
+            cols_to_drop = ['OO_Cnt', 'LO_Cnt', 'OL_Cnt', 'LL_Cnt', 'Ontime_Dep_IT_Cnt', 'Late_Dep_IT_Cnt']
+            df_ops = df_ops.drop(columns=[c for c in cols_to_drop if c in df_ops.columns], errors='ignore')
             df_ops.to_excel(writer, sheet_name='Operations_Summary', index=False)
             apply_manager_formatting('Operations_Summary', df_ops)
             
@@ -287,7 +298,6 @@ def process_all_data():
             df_leg_all['Actual Departure Time'] = pd.to_datetime(df_leg_all['Actual Departure Time'], errors='coerce')
             df_leg_all['Actual Arrival Time'] = pd.to_datetime(df_leg_all['Actual Arrival Time'], errors='coerce')
             
-            # Temporary logic to extract Given Driving hours natively from actual dataset structure
             df_leg_all['Scheduled Departure Time'] = df_leg_all['Actual Departure Time'] - pd.Timedelta(hours=1)
             df_leg_all['Scheduled Arrival Time'] = df_leg_all['Actual Arrival Time'] - pd.Timedelta(hours=2)
 
@@ -360,10 +370,6 @@ def process_all_data():
                 summary['Ontime Dep, Late Arr %'] = summary.apply(lambda r: format_pct_cnt(r['OL_Cnt'], r[trip_col]), axis=1)
                 summary['Ontime Dep, In-Transit'] = summary.apply(lambda r: format_pct_cnt(r['Ontime_Dep_IT_Cnt'], r[trip_col]), axis=1)
                 summary['Late Dep, In-Transit'] = summary.apply(lambda r: format_pct_cnt(r['Late_Dep_IT_Cnt'], r[trip_col]), axis=1)
-                
-                # Cleanup internal count columns before returning
-                cols_to_drop = ['OO_Cnt', 'LO_Cnt', 'OL_Cnt', 'LL_Cnt', 'Ontime_Dep_IT_Cnt', 'Late_Dep_IT_Cnt']
-                summary = summary.drop(columns=[c for c in cols_to_drop if c in summary.columns], errors='ignore')
                 return summary.sort_values(by=['LH Type', 'E2E_Pair', 'Origin', 'Route Path', 'Leg_Num'])
                 
             leg_sum = generate_summary(df_leg, ['Zone', 'LH Type', 'E2E_Pair', 'Origin RO', 'Route Path', 'Origin', 'Destination', 'Leg_Num', 'Legwise', 'Legs'])
@@ -615,18 +621,22 @@ if choice == "📊 Operations Summary":
         
         if search_q: df_display = df_display[df_display.astype(str).apply(lambda x: x.str.contains(search_q, case=False, regex=False, na=False)).any(axis=1)]
 
-        def highlight_cells(val, col):
-            if not isinstance(val, str) or '%' not in val: return ''
-            try: pct = float(val.split('%')[0].strip())
-            except: return ''
-            if pct == 0: return 'color: #78909C;' 
-            if 'Late Dep, Late Arr' in col: return 'background-color: rgba(211, 47, 47, 0.15); color: #ff5252; font-weight: bold;'
-            elif 'Ontime Dep, Ontime Arr' in col: return 'background-color: rgba(56, 142, 60, 0.15); color: #69f0ae; font-weight: bold;'
-            elif 'Ontime Dep, Late Arr' in col: return 'background-color: rgba(245, 127, 23, 0.15); color: #ffd740; font-weight: bold;'
-            elif 'Late Dep, Ontime Arr' in col: return 'background-color: rgba(123, 31, 162, 0.15); color: #e040fb; font-weight: bold;'
-            return ''
+        styled_df = df_display.style
+        pct_cols = [c for c in df_display.columns if '%' in c]
+        for col in pct_cols:
+            def highlight_cells(val, c=col):
+                if not isinstance(val, str) or '%' not in val: return ''
+                try: pct = float(val.split('%')[0].strip())
+                except: return ''
+                if pct == 0: return 'color: #78909C;' 
+                if 'Late Dep, Late Arr' in c: return 'background-color: rgba(211, 47, 47, 0.15); color: #ff5252; font-weight: bold;'
+                elif 'Ontime Dep, Ontime Arr' in c: return 'background-color: rgba(56, 142, 60, 0.15); color: #69f0ae; font-weight: bold;'
+                elif 'Ontime Dep, Late Arr' in c: return 'background-color: rgba(245, 127, 23, 0.15); color: #ffd740; font-weight: bold;'
+                elif 'Late Dep, Ontime Arr' in c: return 'background-color: rgba(123, 31, 162, 0.15); color: #e040fb; font-weight: bold;'
+                return ''
+            if hasattr(styled_df, 'map'): styled_df = styled_df.map(highlight_cells, subset=[col])
+            else: styled_df = styled_df.applymap(highlight_cells, subset=[col])
 
-        styled_df = df_display.style.map(lambda x, c=col: highlight_cells(x, c), subset=[c for c in df_display.columns if '%' in c])
         st.markdown("### Top Priority Routes Summary")
         selection = st.dataframe(styled_df, use_container_width=True, height=300, on_select="rerun", selection_mode="single-row")
         
@@ -669,22 +679,21 @@ elif choice == "🚚 Vendor Performance":
         df_display = df_vperf_sum[display_cols].copy()
         
         if search_q: df_display = df_display[df_display.astype(str).apply(lambda x: x.str.contains(search_q, case=False, regex=False, na=False)).any(axis=1)]
-            
-        def highlight_perf(val, col):
-            if not isinstance(val, str) or '%' not in val: return ''
-            try: pct = float(val.split('%')[0].strip())
-            except: return ''
-            if pct == 0: return 'color: #78909C;' 
-            if col == 'Late Arrival': return 'background-color: rgba(211, 47, 47, 0.15); color: #ff5252; font-weight: bold;'
-            elif col == 'Ontime Arrival': return 'background-color: rgba(56, 142, 60, 0.15); color: #69f0ae; font-weight: bold;'
-            elif col == 'In-Transit': return 'background-color: rgba(245, 127, 23, 0.15); color: #ffd740; font-weight: bold;'
-            return ''
 
         styled_df = df_display.style
         pct_cols = [c for c in ['Ontime Arrival', 'Late Arrival', 'In-Transit'] if c in df_display.columns]
         for col in pct_cols:
-            if hasattr(styled_df, 'map'): styled_df = styled_df.map(lambda x, c=col: highlight_perf(x, c), subset=[col])
-            else: styled_df = styled_df.applymap(lambda x, c=col: highlight_perf(x, c), subset=[col])
+            def highlight_perf(val, c=col):
+                if not isinstance(val, str) or '%' not in val: return ''
+                try: pct = float(val.split('%')[0].strip())
+                except: return ''
+                if pct == 0: return 'color: #78909C;' 
+                if c == 'Late Arrival': return 'background-color: rgba(211, 47, 47, 0.15); color: #ff5252; font-weight: bold;'
+                elif c == 'Ontime Arrival': return 'background-color: rgba(56, 142, 60, 0.15); color: #69f0ae; font-weight: bold;'
+                elif c == 'In-Transit': return 'background-color: rgba(245, 127, 23, 0.15); color: #ffd740; font-weight: bold;'
+                return ''
+            if hasattr(styled_df, 'map'): styled_df = styled_df.map(highlight_perf, subset=[col])
+            else: styled_df = styled_df.applymap(highlight_perf, subset=[col])
 
         st.markdown("### Vendor Arrival Performance Summary")
         selection = st.dataframe(styled_df, use_container_width=True, height=300, on_select="rerun", selection_mode="single-row")
@@ -764,7 +773,7 @@ elif choice == "📱 Vendor Communication Hub":
                             for i, vendor in enumerate(all_late_vendors):
                                 vendor_email = vendor_master_dict.get(vendor.upper(), {}).get('email', '')
                                 if not vendor_email or vendor_email == 'nan':
-                                    continue # Skip if no email found in master
+                                    continue
                                     
                                 vendor_trips = df_late[df_late['VendorName'] == vendor]
                                 top_trips = vendor_trips.head(5)
@@ -781,7 +790,6 @@ elif choice == "📱 Vendor Communication Hub":
                                 msg_email['Subject'] = f"Trackon Performance Alert: {vendor}"
                                 msg_email.attach(MIMEText(msg_body, 'plain'))
                                 
-                                # Generate Excel in memory
                                 output_ven = io.BytesIO()
                                 with pd.ExcelWriter(output_ven, engine='xlsxwriter') as v_writer:
                                     df_v_all = df_vperf_raw[df_vperf_raw['VendorName'] == vendor].copy()
@@ -870,14 +878,18 @@ elif choice == "💳 Payment Dashboard":
         existing_cols = [c for c in cols_order if c in pvt.columns]
         pvt = pvt.reindex(columns=existing_cols)
         
-        def color_payment_columns(val, col_name):
-            if pd.isna(val) or val == 0: return ''
-            if col_name == '1. USER / DRAFT PENDING': return 'background-color: rgba(211, 47, 47, 0.3); color: #ff5252; font-weight: bold;' 
-            elif col_name == '2. COST CONTROL PENDING': return 'background-color: rgba(245, 127, 23, 0.3); color: #ffd740; font-weight: bold;'
-            elif col_name == '3. FINANCE PENDING': return 'background-color: rgba(245, 127, 23, 0.1); color: #ffe57f; font-weight: bold;'
-            return ''
+        styled_pvt = pvt.style
+        pay_cols = [c for c in existing_cols if c != 'Grand Total']
+        for col in pay_cols:
+            def color_payment_columns(val, c=col):
+                if pd.isna(val) or val == 0: return ''
+                if c == '1. USER / DRAFT PENDING': return 'background-color: rgba(211, 47, 47, 0.3); color: #ff5252; font-weight: bold;' 
+                elif c == '2. COST CONTROL PENDING': return 'background-color: rgba(245, 127, 23, 0.3); color: #ffd740; font-weight: bold;'
+                elif c == '3. FINANCE PENDING': return 'background-color: rgba(245, 127, 23, 0.1); color: #ffe57f; font-weight: bold;'
+                return ''
+            if hasattr(styled_pvt, 'map'): styled_pvt = styled_pvt.map(color_payment_columns, subset=[col])
+            else: styled_pvt = styled_pvt.applymap(color_payment_columns, subset=[col])
 
-        styled_pvt = pvt.style.map(lambda x, c=col: color_payment_columns(x, c), subset=[col for col in existing_cols if col != 'Grand Total'])
         st.markdown("### RO-Wise Summary")
         pay_selection = st.dataframe(styled_pvt, use_container_width=True, on_select="rerun", selection_mode="single-row")
 
