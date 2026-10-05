@@ -839,16 +839,16 @@ if data:
     st.sidebar.header("📥 Export Reports")
     
     if "master_excel_data" not in st.session_state:
-        st.session_state.master_excel_data = None
+        st.session_state['master_excel_data'] = None
 
     if st.sidebar.button("🛠️ Prepare Executive Report"):
-        with st.spinner("Compiling Master Report... Please Wait"):
-            st.session_state.master_excel_data = generate_master_excel(data)
+        with st.spinner("Compiling Master Report... Isme 5-10 seconds lag sakte hain."):
+            st.session_state['master_excel_data'] = generate_master_excel(data)
             
-    if st.session_state.master_excel_data:
+    if st.session_state['master_excel_data'] is not None:
         st.sidebar.download_button(
             label="📄 Download VIP Executive Report",
-            data=st.session_state.master_excel_data,
+            data=st.session_state['master_excel_data'],
             file_name=f"Trackon_Executive_Master_Report_{datetime.datetime.now().strftime('%d_%b_%Y')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
