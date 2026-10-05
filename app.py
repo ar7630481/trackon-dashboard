@@ -779,29 +779,17 @@ elif choice == "📱 Vendor Communication Hub":
                                 top_trips = vendor_trips.head(5)
                                 trip_str = ""
                                 for _, row in top_trips.iterrows(): 
-                                    trip_str += f"- Route: {row['Route Path']} | Veh: {row['VehicleNo']} | Delay: {row['Delay Hours']}
-"
+                                    trip_str += f"- Route: {row['Route Path']} | Veh: {row['VehicleNo']} | Delay: {row['Delay Hours']}\n"
                                 
                                 # Fetch vendor specific summary for the text message
                                 vendor_summary_df = df_vperf_sum[df_vperf_sum['VendorName'] == vendor]
                                 sum_str = ""
                                 if not vendor_summary_df.empty:
-                                    sum_str = "
-Here is your overall Route-wise performance summary:
-"
+                                    sum_str = "\nHere is your overall Route-wise performance summary:\n"
                                     for _, s_row in vendor_summary_df.iterrows():
-                                        sum_str += f"Route: {s_row['Route Path']} ({s_row['Legs']}) | Total Trips: {s_row['Total_Trips']} | Ontime: {s_row['Ontime Arrival']} | Late: {s_row['Late Arrival']}
-"
+                                        sum_str += f"Route: {s_row['Route Path']} ({s_row['Legs']}) | Total Trips: {s_row['Total_Trips']} | Ontime: {s_row['Ontime Arrival']} | Late: {s_row['Late Arrival']}\n"
                                 
-                                msg_body = f"Dear {vendor},
-
-Please find attached the arrival performance report for your vehicles. The following trips have been consistently reported as late:
-
-{trip_str}{sum_str}
-Kindly take necessary actions to ensure on-time arrivals in the future.
-
-Best Regards,
-Trackon Command Center"
+                                msg_body = f"Dear {vendor},\n\nPlease find attached the arrival performance report for your vehicles. The following trips have been consistently reported as late:\n\n{trip_str}{sum_str}\nKindly take necessary actions to ensure on-time arrivals in the future.\n\nBest Regards,\nTrackon Command Center"
                                 
                                 msg_email = MIMEMultipart()
                                 msg_email['From'] = sender_email_bulk
@@ -854,27 +842,15 @@ Trackon Command Center"
             
             top_trips = vendor_late_trips.head(5) 
             trip_str = ""
-            for idx, row in top_trips.iterrows(): trip_str += f"- Route: {row['Route Path']} | Veh: {row['VehicleNo']} | Delay: {row['Delay Hours']}
-"
+            for idx, row in top_trips.iterrows(): trip_str += f"- Route: {row['Route Path']} | Veh: {row['VehicleNo']} | Delay: {row['Delay Hours']}\n"
             
             sum_str_manual = ""
             if not vendor_sum_manual.empty:
-                sum_str_manual = "
-Here is your overall Route-wise performance summary:
-"
+                sum_str_manual = "\nHere is your overall Route-wise performance summary:\n"
                 for _, s_row in vendor_sum_manual.iterrows():
-                    sum_str_manual += f"Route: {s_row['Route Path']} ({s_row['Legs']}) | Total Trips: {s_row['Total_Trips']} | Ontime: {s_row['Ontime Arrival']} | Late: {s_row['Late Arrival']}
-"
+                    sum_str_manual += f"Route: {s_row['Route Path']} ({s_row['Legs']}) | Total Trips: {s_row['Total_Trips']} | Ontime: {s_row['Ontime Arrival']} | Late: {s_row['Late Arrival']}\n"
 
-            msg = f"Dear {sel_vendor_manual},
-
-Please find attached the arrival performance report for your vehicles. The following trips have been consistently reported as late:
-
-{trip_str}{sum_str_manual}
-Kindly take necessary actions to ensure on-time arrivals in the future.
-
-Best Regards,
-Trackon Command Center"
+            msg = f"Dear {sel_vendor_manual},\n\nPlease find attached the arrival performance report for your vehicles. The following trips have been consistently reported as late:\n\n{trip_str}{sum_str_manual}\nKindly take necessary actions to ensure on-time arrivals in the future.\n\nBest Regards,\nTrackon Command Center"
             
             default_wp = vendor_master_dict.get(sel_vendor_manual.upper(), {}).get('whatsapp', '')
             default_email = vendor_master_dict.get(sel_vendor_manual.upper(), {}).get('email', '')
