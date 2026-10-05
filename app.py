@@ -136,13 +136,13 @@ def format_pct_cnt(count, total):
     return f"{pct:.1f}% ({int(count)})"
 
 # ==========================================
-# 4. VIP EXCEL GENERATOR (Runs completely in memory during refresh)
+# 4. VIP EXCEL GENERATOR (Runs ONLY during Processing)
 # ==========================================
-def generate_vip_executive_report(data_dict):
+def generate_vip_executive_report_to_disk(data_dict):
     with pd.ExcelWriter(FILE_MAP["EXECUTIVE_REPORT"], engine='xlsxwriter') as writer:
         workbook = writer.book
         
-        # Professional Manager-Level Formats
+        # VIP Manager-Level Formats
         header_format = workbook.add_format({
             'bold': True,
             'bg_color': '#1E3A8A', # Deep Blue
@@ -167,7 +167,7 @@ def generate_vip_executive_report(data_dict):
         # --- 1. OPERATIONS SUMMARY ---
         if 'Legwise_Route_Summary' in data_dict:
             df_ops = data_dict['Legwise_Route_Summary'].copy()
-            # Faltu Columns Hataye Gaye
+            # Faltu Columns Hataye
             cols_to_drop = ['OO_Cnt', 'LO_Cnt', 'OL_Cnt', 'LL_Cnt', 'Ontime_Dep_IT_Cnt', 'Late_Dep_IT_Cnt']
             df_ops = df_ops.drop(columns=[c for c in cols_to_drop if c in df_ops.columns], errors='ignore')
             
@@ -295,12 +295,12 @@ def generate_vip_executive_report(data_dict):
                 if col == 'Overall Util %':
                     try:
                         pct = float(str(val).replace('%', '').strip())
-                        if pct < 50: return 'color: #D32F2F; font-weight: bold' # Red
-                        elif pct < 80: return 'color: #FBC02D; font-weight: bold' # Yellow
-                        else: return 'color: #388E3C; font-weight: bold' # Green
+                        if pct < 50: return 'color: #D32F2F; font-weight: bold' 
+                        elif pct < 80: return 'color: #FBC02D; font-weight: bold' 
+                        else: return 'color: #388E3C; font-weight: bold' 
                     except: return ''
                 elif col == 'Overall CPK':
-                    return 'color: #0288D1; font-weight: bold' # Blue
+                    return 'color: #0288D1; font-weight: bold' 
                 return ''
                 
             styled_cpk = df_cpk.style
@@ -325,7 +325,6 @@ def generate_vip_executive_report(data_dict):
 def process_all_data():
     progress = st.progress(0)
     status_text = st.empty()
-    
     data_for_export = {}
     
     try:
@@ -684,7 +683,7 @@ def process_all_data():
                         mask = route_mask & cap_mask & date_mask
                         df_raw.loc[mask, 'Cost'] = float(corr['new_cost']) * df_raw.loc[mask, 'Trips']
                 except Exception as e:
-                    print(f"Error applying rate corrections: {e}")
+                    pass
             
             df_updn = df_raw[~df_raw['Final_Type'].str.upper().str.contains('OFD|PICKUP', na=False)].copy()
             target_keys = df_updn[df_updn['RO_Clean'].isin(target_ros)]['SortKey'].unique()
@@ -697,7 +696,7 @@ def process_all_data():
                 df_updn['Trip_Rate'] = np.where(df_updn['Trips'] > 0, df_updn['Cost'] / df_updn['Trips'], 0).round(2)
                 df_updn['Trip_Rate_Str'] = "₹" + df_updn['Trip_Rate'].astype(str)
                 
-                # Group strictly by Route, Type, and Capacity (Merge all matching trips and vendors into one row)
+                # Group strictly by Route, Type, and Capacity
                 agg_updn = df_updn.groupby(['RO_Clean', 'Zone', 'Final_Route', 'Final_Type', 'Cap', 'SortKey', 'Trip_Rate']).agg(
                     Total_Trips=('Trips', 'sum'),
                     Total_Carried_Wt=('Wt', 'sum'),
@@ -726,7 +725,7 @@ def process_all_data():
             
         progress.progress(80)
         
-        # 1. SAVE RAW FILE FOR DASHBOARD
+        # --- 1. SAVE RAW DB FILE ---
         status_text.text("⚙️ Saving Raw Database...")
         with pd.ExcelWriter(FILE_MAP["FINAL_OUTPUT"], engine='xlsxwriter') as writer:
             for k, v in data_for_export.items():
@@ -734,9 +733,9 @@ def process_all_data():
                 
         progress.progress(90)
         
-        # 2. GENERATE VIP EXECUTIVE EXCEL (Directly to disk)
+        # --- 2. GENERATE VIP EXECUTIVE EXCEL (DIRECTLY TO DISK) ---
         status_text.text("⚙️ Generating VIP Executive Report...")
-        generate_vip_executive_report(data_for_export)
+        generate_vip_executive_report_to_disk(data_for_export)
 
         progress.progress(100)
         status_text.success("✅ Data Processed & VIP Report Generated Successfully!")
