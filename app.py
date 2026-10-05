@@ -5,7 +5,6 @@ import datetime
 import urllib.parse
 import os
 import warnings
-import io
 import json
 
 warnings.filterwarnings('ignore')
@@ -28,6 +27,7 @@ FILE_MAP = {
     "CPK_UTIL": os.path.join(DATA_DIR, "cpk_util.xlsx"),
     "ROUTE_LOOKUP": os.path.join(DATA_DIR, "route_lookup.xlsx"),
     "FINAL_OUTPUT": os.path.join(DATA_DIR, "Auto_Generated_Monitoring_Data.xlsx"),
+    "EXECUTIVE_REPORT": os.path.join(DATA_DIR, "Trackon_VIP_Executive_Report.xlsx"), # Nayi Pre-Generated File
     "RATE_CORRECTIONS": os.path.join(DATA_DIR, "rate_corrections.json")
 }
 
@@ -135,7 +135,197 @@ def format_pct_cnt(count, total):
     return f"{pct:.1f}% ({int(count)})"
 
 # ==========================================
-# 4. MAIN PROCESSING ENGINE
+# 4. VIP EXCEL GENERATOR (Runs ONLY during Refresh)
+# ==========================================
+def generate_vip_executive_report_to_disk():
+    if not os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
+        return
+        
+    xls = pd.ExcelFile(FILE_MAP["FINAL_OUTPUT"])
+    data_dict = {sheet: pd.read_excel(xls, sheet_name=sheet) for sheet in xls.sheet_names}
+    
+    with pd.ExcelWriter(FILE_MAP["EXECUTIVE_REPORT"], engine='xlsxwriter') as writer:
+        workbook = writer.book
+        
+        # Professional Manager-Level Formats
+        header_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#1E3A8A', # Deep Blue
+            'font_color': 'white',
+            'border': 1,
+            'align': 'center',
+            'valign': 'vcenter',
+            'text_wrap': True
+        })
+        
+        def apply_manager_formatting(sheet_name, df_to_write):
+            worksheet = writer.sheets[sheet_name]
+            for col_num, value in enumerate(df_to_write.columns.values):
+                worksheet.write(0, col_num, value, header_format)
+            for i, col in enumerate(df_to_write.columns):
+                if not df_to_write.empty:
+                    col_len = max(df_to_write[col].astype(str).map(len).max(), len(str(col))) + 2
+                else:
+                    col_len = len(str(col)) + 2
+                worksheet.set_column(i, i, min(col_len, 35))
+
+        # --- 1. OPERATIONS SUMMARY ---
+        if 'Legwise_Route_Summary' in data_dict:
+            df_ops = data_dict['Legwise_Route_Summary'].copy()
+            cols_to_drop = ['OO_Cnt', 'LO_Cnt', 'OL_Cnt', 'LL_Cnt', 'Ontime_Dep_IT_Cnt', 'Late_Dep_IT_Cnt']
+            df_ops = df_ops.drop(columns=cols_to_drop, errors='ignore')
+            
+            def extract_pct(x):
+                if isinstance(x, str) and '%' in x:
+                    try: return float(x.split('%')[0].strip())
+                    except: return 0.0
+                return 0.0
+                
+            if 'Late Dep, Late Arr %' in df_ops.columns:
+                df_ops['SortKey_Temp'] = df_ops['Late Dep, Late Arr %'].apply(extract_pct)
+                df_ops['Is_Single_Trip'] = df_ops['Total_Trips'] <= 1
+                df_ops = df_ops.sort_values(by=['Is_Single_Trip', 'SortKey_Temp'], ascending=[True, False]).drop(columns=['SortKey_Temp', 'Is_Single_Trip'])
+
+            def format_val(x):
+                if isinstance(x, str) and '%' in x and '(' in x:
+                    try:
+                        pct = x.split('%')[0] + '%'
+                        count = x.split('(')[1].replace(')', '')
+                        if count == '0': return "0%"
+                        return f"{pct} | 🚚 {count}"
+                    except: return x
+                return x
+                
+            pct_cols = [c for c in df_ops.columns if '%' in c]
+            for c in pct_cols:
+                df_ops[c] = df_ops[c].apply(format_val)
+
+            def ops_excel_color(val, col):
+                if not isinstance(val, str) or '%' not in val: return ''
+                try: pct = float(val.split('%')[0].strip())
+                except: return ''
+                if pct == 0: return 'color: #6C757D' 
+                if 'Late Dep, Late Arr' in col: return 'background-color: #F8D7DA; color: #721C24' 
+                elif 'Ontime Dep, Ontime Arr' in col: return 'background-color: #D4EDDA; color: #155724' 
+                elif 'Ontime Dep, Late Arr' in col: return 'background-color: #FFF3CD; color: #856404' 
+                elif 'Late Dep, Ontime Arr' in col: return 'background-color: #E2D9F3; color: #4A148C' 
+                return ''
+
+            styled_ops = df_ops.style
+            for col in pct_cols:
+                if hasattr(styled_ops, 'map'): styled_ops = styled_ops.map(lambda x, c=col: ops_excel_color(x, c), subset=[col])
+                else: styled_ops = styled_ops.applymap(lambda x, c=col: ops_excel_color(x, c), subset=[col])
+            
+            styled_ops.to_excel(writer, sheet_name='Operations_Summary', index=False)
+            apply_manager_formatting('Operations_Summary', df_ops)
+            
+        if 'Legwise_Processed_Data' in data_dict:
+            df_ops_raw = data_dict['Legwise_Processed_Data'].copy()
+            df_ops_raw.to_excel(writer, sheet_name='Operations_Raw', index=False)
+            apply_manager_formatting('Operations_Raw', df_ops_raw)
+
+        # --- 2. PAYMENT DASHBOARD ---
+        if 'Master_Database' in data_dict:
+            df_pay = data_dict['Master_Database'].copy()
+            pvt = pd.pivot_table(df_pay, values='Invoice Id', index='RO Name', columns='Department Bucket', aggfunc='count', fill_value=0, margins=True, margins_name='Grand Total')
+            cols_order = ["1. USER / DRAFT PENDING", "2. COST CONTROL PENDING", "3. FINANCE PENDING", "4. PAYMENT PENDING", "5. OTHER PENDING", "Grand Total"]
+            existing_cols = [c for c in cols_order if c in pvt.columns]
+            pvt = pvt.reindex(columns=existing_cols)
+            
+            def pay_excel_color(val, col_name):
+                if pd.isna(val) or val == 0: return ''
+                if col_name == '1. USER / DRAFT PENDING': return 'background-color: #F8D7DA; color: #721C24; font-weight: bold' 
+                elif col_name == '2. COST CONTROL PENDING': return 'background-color: #FFF3CD; color: #856404; font-weight: bold'
+                elif col_name == '3. FINANCE PENDING': return 'background-color: #FFF8E1; color: #856404; font-weight: bold'
+                return ''
+                
+            styled_pay = pvt.style
+            for col in existing_cols:
+                if hasattr(styled_pay, 'map'): styled_pay = styled_pay.map(lambda x, c=col: pay_excel_color(x, c), subset=[col])
+                else: styled_pay = styled_pay.applymap(lambda x, c=col: pay_excel_color(x, c), subset=[col])
+            
+            styled_pay.to_excel(writer, sheet_name='Payment_Summary')
+            worksheet = writer.sheets['Payment_Summary']
+            worksheet.write(0, 0, "RO Name", header_format)
+            for col_num, value in enumerate(pvt.columns.values):
+                worksheet.write(0, col_num + 1, value, header_format)
+            worksheet.set_column(0, len(pvt.columns), 20)
+            
+            df_pay.to_excel(writer, sheet_name='Payment_Raw', index=False)
+            apply_manager_formatting('Payment_Raw', df_pay)
+
+        # --- 3. CPK & UTILIZATION ---
+        if 'Up_Down_Route_Summary' in data_dict:
+            df_cpk = data_dict['Up_Down_Route_Summary'].copy()
+            df_cpk = df_cpk[df_cpk['Type'].isin(['MCD-National LH', 'MCD-Zonal LH', 'National LH', 'Zonal LH'])]
+            df_cpk['Type'] = df_cpk['Type'].replace({'MCD-National LH': 'National', 'MCD-Zonal LH': 'Zonal', 'National LH': 'National', 'Zonal LH': 'Zonal'})
+            df_cpk = df_cpk.sort_values(by='Overall Util %', ascending=True)
+            
+            def add_total_row_cpk(df):
+                if df.empty: return df
+                tot_trips = df['Total Trips'].sum() if 'Total Trips' in df.columns else 0
+                tot_cap = df['Total Capacity'].sum() if 'Total Capacity' in df.columns else 0
+                tot_wt = df['Total Carried Wt'].sum() if 'Total Carried Wt' in df.columns else 0
+                tot_cost = df['Total Trip Cost'].sum() if 'Total Trip Cost' in df.columns else 0
+                
+                tot_cpk = tot_cost / tot_wt if tot_wt > 0 else 0
+                tot_util = tot_wt / tot_cap if tot_cap > 0 else 0
+                tot_avg_cost = tot_cost / tot_trips if tot_trips > 0 else 0
+                
+                tot_dict = {c: '-' for c in df.columns}
+                tot_dict['Zone'] = 'TOTAL'
+                tot_dict['VendorRO'] = 'TOTAL'
+                if 'Total Trips' in df.columns: tot_dict['Total Trips'] = tot_trips
+                if 'Total Capacity' in df.columns: tot_dict['Total Capacity'] = tot_cap
+                if 'Total Carried Wt' in df.columns: tot_dict['Total Carried Wt'] = tot_wt
+                if 'Total Trip Cost' in df.columns: tot_dict['Total Trip Cost'] = tot_cost
+                if 'Overall CPK' in df.columns: tot_dict['Overall CPK'] = tot_cpk
+                if 'Overall Util %' in df.columns: tot_dict['Overall Util %'] = tot_util
+                if 'Avg Trip Cost' in df.columns: tot_dict['Avg Trip Cost'] = f"₹{tot_avg_cost:.2f}"
+                return pd.concat([df, pd.DataFrame([tot_dict])], ignore_index=True)
+                
+            df_cpk = add_total_row_cpk(df_cpk)
+            
+            for col in ['Overall CPK', 'Total Trip Cost']: 
+                if col in df_cpk.columns: 
+                    df_cpk[col] = df_cpk[col].apply(lambda x: f"₹{x:.2f}" if isinstance(x, (int, float)) else x)
+            if 'Overall Util %' in df_cpk.columns:
+                df_cpk['Overall Util %'] = df_cpk['Overall Util %'].apply(lambda x: f"{x * 100:.2f}%" if isinstance(x, (int, float)) else x)
+                
+            df_cpk = df_cpk.drop(columns=['SortKey', 'Super_SortKey'], errors='ignore')
+            
+            def cpk_excel_color(val, col):
+                if pd.isna(val) or val == '-': return ''
+                if col == 'Overall Util %':
+                    try:
+                        pct = float(str(val).replace('%', '').strip())
+                        if pct < 50: return 'color: #D32F2F; font-weight: bold' # Red
+                        elif pct < 80: return 'color: #FBC02D; font-weight: bold' # Yellow
+                        else: return 'color: #388E3C; font-weight: bold' # Green
+                    except: return ''
+                elif col == 'Overall CPK':
+                    return 'color: #0288D1; font-weight: bold' # Blue
+                return ''
+                
+            styled_cpk = df_cpk.style
+            if hasattr(styled_cpk, 'map'):
+                styled_cpk = styled_cpk.map(lambda x: cpk_excel_color(x, 'Overall Util %'), subset=['Overall Util %'])
+                styled_cpk = styled_cpk.map(lambda x: cpk_excel_color(x, 'Overall CPK'), subset=['Overall CPK'])
+            else:
+                styled_cpk = styled_cpk.applymap(lambda x: cpk_excel_color(x, 'Overall Util %'), subset=['Overall Util %'])
+                styled_cpk = styled_cpk.applymap(lambda x: cpk_excel_color(x, 'Overall CPK'), subset=['Overall CPK'])
+                
+            styled_cpk.to_excel(writer, sheet_name='Network_Utilization', index=False)
+            apply_manager_formatting('Network_Utilization', df_cpk)
+
+        if 'CPK_Raw_Data' in data_dict:
+            df_cpk_raw = data_dict['CPK_Raw_Data'].copy()
+            df_cpk_raw.to_excel(writer, sheet_name='Network_Raw', index=False)
+            apply_manager_formatting('Network_Raw', df_cpk_raw)
+
+
+# ==========================================
+# 5. MAIN DATA PROCESSING
 # ==========================================
 def process_all_data():
     progress = st.progress(0)
@@ -498,7 +688,7 @@ def process_all_data():
                         mask = route_mask & cap_mask & date_mask
                         df_raw.loc[mask, 'Cost'] = float(corr['new_cost']) * df_raw.loc[mask, 'Trips']
                 except Exception as e:
-                    print(f"Error applying rate corrections: {e}")
+                    pass
             
             df_updn = df_raw[~df_raw['Final_Type'].str.upper().str.contains('OFD|PICKUP', na=False)].copy()
             target_keys = df_updn[df_updn['RO_Clean'].isin(target_ros)]['SortKey'].unique()
@@ -507,12 +697,10 @@ def process_all_data():
             df_updn.to_excel(writer, sheet_name='CPK_Raw_Data', index=False)
 
             if not df_updn.empty:
-                # Calculate Trip Rate for each raw entry before grouping
                 df_updn['Trip_Rate'] = np.where(df_updn['Trips'] > 0, df_updn['Cost'] / df_updn['Trips'], 0).round(2)
                 df_updn['Trip_Rate_Str'] = "₹" + df_updn['Trip_Rate'].astype(str)
                 
-                # Group strictly by Route, Type, and Capacity (Merge all matching trips and vendors into one row)
-                agg_updn = df_updn.groupby(['RO_Clean', 'Zone', 'Final_Route', 'Final_Type', 'Cap', 'SortKey']).agg(
+                agg_updn = df_updn.groupby(['RO_Clean', 'Zone', 'Final_Route', 'Final_Type', 'Cap', 'SortKey', 'Trip_Rate']).agg(
                     Total_Trips=('Trips', 'sum'),
                     Total_Carried_Wt=('Wt', 'sum'),
                     Total_Trip_Cost=('Cost', 'sum'),
@@ -524,7 +712,6 @@ def process_all_data():
                 agg_updn['Overall CPK'] = np.where(agg_updn['Total_Carried_Wt'] > 0, agg_updn['Total_Trip_Cost'] / agg_updn['Total_Carried_Wt'], 0)
                 agg_updn['Overall Util %'] = np.where(agg_updn['Total Capacity'] > 0, agg_updn['Total_Carried_Wt'] / agg_updn['Total Capacity'], 0)
                 
-                # Column selection matching the requested output format exactly
                 updn_final = agg_updn[['Zone', 'RO_Clean', 'Final_Route', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Cap', 'Total Capacity', 'Total_Carried_Wt', 'Avg_Trip_Cost', 'Total_Trip_Cost', 'Total_Trips', 'VendorName', 'SortKey']]
                 updn_final.columns = ["Zone", "VendorRO", "Route (UP/DOWN)", "Type", "Overall CPK", "Overall Util %", "VehCap (Base)", "Total Capacity", "Total Carried Wt", "Avg Trip Cost", "Total Trip Cost", "Total Trips", "Vendor(s)", "SortKey"]
 
@@ -538,209 +725,19 @@ def process_all_data():
             st.warning("⚠️ CPK files missing. Skipping CPK module.")
             
         progress.progress(90)
-        status_text.text("⚙️ Finalizing Dashboard Data...")
         writer.close()
+        
+        # --- GENERATE VIP EXCEL DIRECTLY TO DISK DURING PROCESSING ---
+        status_text.text("⚙️ Generating VIP Executive Report...")
+        generate_vip_executive_report_to_disk()
+        
         progress.progress(100)
-        status_text.success("✅ Data Processed Successfully!")
+        status_text.success("✅ Data Processed & VIP Report Generated Successfully!")
         
         st.cache_data.clear()
     
     except Exception as e:
         status_text.error(f"❌ Error during processing: {e}")
-
-# ==========================================
-# 5. MASTER EXCEL GENERATOR (With VIP Formatting & Raw Data)
-# ==========================================
-def generate_master_excel(data_dict):
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        workbook = writer.book
-        
-        # Professional Manager-Level Formats
-        header_format = workbook.add_format({
-            'bold': True,
-            'bg_color': '#1E3A8A', # Deep Blue
-            'font_color': 'white',
-            'border': 1,
-            'align': 'center',
-            'valign': 'vcenter',
-            'text_wrap': True
-        })
-        
-        def apply_manager_formatting(sheet_name, df_to_write):
-            worksheet = writer.sheets[sheet_name]
-            # Write custom headers
-            for col_num, value in enumerate(df_to_write.columns.values):
-                worksheet.write(0, col_num, value, header_format)
-            # Autofit logic (Max 35 wide)
-            for i, col in enumerate(df_to_write.columns):
-                if not df_to_write.empty:
-                    col_len = max(df_to_write[col].astype(str).map(len).max(), len(str(col))) + 2
-                else:
-                    col_len = len(str(col)) + 2
-                worksheet.set_column(i, i, min(col_len, 35))
-
-        # --- 1. OPERATIONS SUMMARY ---
-        if 'Legwise_Route_Summary' in data_dict:
-            df_ops = data_dict['Legwise_Route_Summary'].copy()
-            # Remove requested columns permanently for export
-            cols_to_drop = ['OO_Cnt', 'LO_Cnt', 'OL_Cnt', 'LL_Cnt', 'Ontime_Dep_IT_Cnt', 'Late_Dep_IT_Cnt']
-            df_ops = df_ops.drop(columns=cols_to_drop, errors='ignore')
-            
-            def extract_pct(x):
-                if isinstance(x, str) and '%' in x:
-                    try: return float(x.split('%')[0].strip())
-                    except: return 0.0
-                return 0.0
-                
-            if 'Late Dep, Late Arr %' in df_ops.columns:
-                df_ops['SortKey_Temp'] = df_ops['Late Dep, Late Arr %'].apply(extract_pct)
-                df_ops['Is_Single_Trip'] = df_ops['Total_Trips'] <= 1
-                df_ops = df_ops.sort_values(by=['Is_Single_Trip', 'SortKey_Temp'], ascending=[True, False]).drop(columns=['SortKey_Temp', 'Is_Single_Trip'])
-
-            def format_val(x):
-                if isinstance(x, str) and '%' in x and '(' in x:
-                    try:
-                        pct = x.split('%')[0] + '%'
-                        count = x.split('(')[1].replace(')', '')
-                        if count == '0': return "0%"
-                        return f"{pct} | 🚚 {count}"
-                    except: return x
-                return x
-                
-            pct_cols = [c for c in df_ops.columns if '%' in c]
-            for c in pct_cols:
-                df_ops[c] = df_ops[c].apply(format_val)
-
-            def ops_excel_color(val, col):
-                if not isinstance(val, str) or '%' not in val: return ''
-                try: pct = float(val.split('%')[0].strip())
-                except: return ''
-                if pct == 0: return 'color: #6C757D' # Grey
-                if 'Late Dep, Late Arr' in col: return 'background-color: #F8D7DA; color: #721C24' # Light Red
-                elif 'Ontime Dep, Ontime Arr' in col: return 'background-color: #D4EDDA; color: #155724' # Light Green
-                elif 'Ontime Dep, Late Arr' in col: return 'background-color: #FFF3CD; color: #856404' # Light Yellow
-                elif 'Late Dep, Ontime Arr' in col: return 'background-color: #E2D9F3; color: #4A148C' # Light Purple
-                return ''
-
-            styled_ops = df_ops.style
-            for col in pct_cols:
-                if hasattr(styled_ops, 'map'): styled_ops = styled_ops.map(lambda x, c=col: ops_excel_color(x, c), subset=[col])
-                else: styled_ops = styled_ops.applymap(lambda x, c=col: ops_excel_color(x, c), subset=[col])
-            
-            styled_ops.to_excel(writer, sheet_name='Operations_Summary', index=False)
-            apply_manager_formatting('Operations_Summary', df_ops)
-            
-        # Add Operations Raw Data
-        if 'Legwise_Processed_Data' in data_dict:
-            df_ops_raw = data_dict['Legwise_Processed_Data'].copy()
-            df_ops_raw.to_excel(writer, sheet_name='Operations_Raw', index=False)
-            apply_manager_formatting('Operations_Raw', df_ops_raw)
-
-        # --- 2. PAYMENT DASHBOARD ---
-        if 'Master_Database' in data_dict:
-            df_pay = data_dict['Master_Database'].copy()
-            pvt = pd.pivot_table(df_pay, values='Invoice Id', index='RO Name', columns='Department Bucket', aggfunc='count', fill_value=0, margins=True, margins_name='Grand Total')
-            cols_order = ["1. USER / DRAFT PENDING", "2. COST CONTROL PENDING", "3. FINANCE PENDING", "4. PAYMENT PENDING", "5. OTHER PENDING", "Grand Total"]
-            existing_cols = [c for c in cols_order if c in pvt.columns]
-            pvt = pvt.reindex(columns=existing_cols)
-            
-            def pay_excel_color(val, col_name):
-                if pd.isna(val) or val == 0: return ''
-                if col_name == '1. USER / DRAFT PENDING': return 'background-color: #F8D7DA; color: #721C24; font-weight: bold' 
-                elif col_name == '2. COST CONTROL PENDING': return 'background-color: #FFF3CD; color: #856404; font-weight: bold'
-                elif col_name == '3. FINANCE PENDING': return 'background-color: #FFF8E1; color: #856404; font-weight: bold'
-                return ''
-                
-            styled_pay = pvt.style
-            for col in existing_cols:
-                if hasattr(styled_pay, 'map'): styled_pay = styled_pay.map(lambda x, c=col: pay_excel_color(x, c), subset=[col])
-                else: styled_pay = styled_pay.applymap(lambda x, c=col: pay_excel_color(x, c), subset=[col])
-            
-            styled_pay.to_excel(writer, sheet_name='Payment_Summary')
-            worksheet = writer.sheets['Payment_Summary']
-            # Manual headers for Pivot index
-            worksheet.write(0, 0, "RO Name", header_format)
-            for col_num, value in enumerate(pvt.columns.values):
-                worksheet.write(0, col_num + 1, value, header_format)
-            worksheet.set_column(0, len(pvt.columns), 20)
-            
-            # Add Payment Raw Data
-            df_pay.to_excel(writer, sheet_name='Payment_Raw', index=False)
-            apply_manager_formatting('Payment_Raw', df_pay)
-
-        # --- 3. CPK & UTILIZATION ---
-        if 'Up_Down_Route_Summary' in data_dict:
-            df_cpk = data_dict['Up_Down_Route_Summary'].copy()
-            df_cpk = df_cpk[df_cpk['Type'].isin(['MCD-National LH', 'MCD-Zonal LH', 'National LH', 'Zonal LH'])]
-            df_cpk['Type'] = df_cpk['Type'].replace({'MCD-National LH': 'National', 'MCD-Zonal LH': 'Zonal', 'National LH': 'National', 'Zonal LH': 'Zonal'})
-            df_cpk = df_cpk.sort_values(by='Overall Util %', ascending=True)
-            
-            def add_total_row_cpk(df):
-                if df.empty: return df
-                tot_trips = df['Total Trips'].sum() if 'Total Trips' in df.columns else 0
-                tot_cap = df['Total Capacity'].sum() if 'Total Capacity' in df.columns else 0
-                tot_wt = df['Total Carried Wt'].sum() if 'Total Carried Wt' in df.columns else 0
-                tot_cost = df['Total Trip Cost'].sum() if 'Total Trip Cost' in df.columns else 0
-                
-                tot_cpk = tot_cost / tot_wt if tot_wt > 0 else 0
-                tot_util = tot_wt / tot_cap if tot_cap > 0 else 0
-                tot_avg_cost = tot_cost / tot_trips if tot_trips > 0 else 0
-                
-                tot_dict = {c: '-' for c in df.columns}
-                tot_dict['Zone'] = 'TOTAL'
-                tot_dict['VendorRO'] = 'TOTAL'
-                if 'Total Trips' in df.columns: tot_dict['Total Trips'] = tot_trips
-                if 'Total Capacity' in df.columns: tot_dict['Total Capacity'] = tot_cap
-                if 'Total Carried Wt' in df.columns: tot_dict['Total Carried Wt'] = tot_wt
-                if 'Total Trip Cost' in df.columns: tot_dict['Total Trip Cost'] = tot_cost
-                if 'Overall CPK' in df.columns: tot_dict['Overall CPK'] = tot_cpk
-                if 'Overall Util %' in df.columns: tot_dict['Overall Util %'] = tot_util
-                if 'Avg Trip Cost' in df.columns: tot_dict['Avg Trip Cost'] = f"₹{tot_avg_cost:.2f}"
-                return pd.concat([df, pd.DataFrame([tot_dict])], ignore_index=True)
-                
-            df_cpk = add_total_row_cpk(df_cpk)
-            
-            for col in ['Overall CPK', 'Total Trip Cost']: 
-                if col in df_cpk.columns: 
-                    df_cpk[col] = df_cpk[col].apply(lambda x: f"₹{x:.2f}" if isinstance(x, (int, float)) else x)
-            if 'Overall Util %' in df_cpk.columns:
-                df_cpk['Overall Util %'] = df_cpk['Overall Util %'].apply(lambda x: f"{x * 100:.2f}%" if isinstance(x, (int, float)) else x)
-                
-            df_cpk = df_cpk.drop(columns=['SortKey', 'Super_SortKey'], errors='ignore')
-            
-            def cpk_excel_color(val, col):
-                if pd.isna(val) or val == '-': return ''
-                if col == 'Overall Util %':
-                    try:
-                        pct = float(str(val).replace('%', '').strip())
-                        if pct < 50: return 'color: #D32F2F; font-weight: bold' # Red
-                        elif pct < 80: return 'color: #FBC02D; font-weight: bold' # Yellow
-                        else: return 'color: #388E3C; font-weight: bold' # Green
-                    except: return ''
-                elif col == 'Overall CPK':
-                    return 'color: #0288D1; font-weight: bold' # Blue
-                return ''
-                
-            styled_cpk = df_cpk.style
-            if hasattr(styled_cpk, 'map'):
-                styled_cpk = styled_cpk.map(lambda x: cpk_excel_color(x, 'Overall Util %'), subset=['Overall Util %'])
-                styled_cpk = styled_cpk.map(lambda x: cpk_excel_color(x, 'Overall CPK'), subset=['Overall CPK'])
-            else:
-                styled_cpk = styled_cpk.applymap(lambda x: cpk_excel_color(x, 'Overall Util %'), subset=['Overall Util %'])
-                styled_cpk = styled_cpk.applymap(lambda x: cpk_excel_color(x, 'Overall CPK'), subset=['Overall CPK'])
-                
-            styled_cpk.to_excel(writer, sheet_name='Network_Utilization', index=False)
-            apply_manager_formatting('Network_Utilization', df_cpk)
-
-        # Add Network Raw Data
-        if 'CPK_Raw_Data' in data_dict:
-            df_cpk_raw = data_dict['CPK_Raw_Data'].copy()
-            df_cpk_raw.to_excel(writer, sheet_name='Network_Raw', index=False)
-            apply_manager_formatting('Network_Raw', df_cpk_raw)
-
-    return output.getvalue()
-
 
 # ==========================================
 # 6. SIDEBAR: ADMIN PANEL
@@ -820,7 +817,7 @@ if st.session_state['role'] == 'Admin':
         st.rerun()
 
 # ==========================================
-# 7. DATA LOADING & UI ROUTING
+# 7. DATA LOADING & EXPORT BUTTON
 # ==========================================
 @st.cache_data
 def load_dashboard_data():
@@ -833,26 +830,21 @@ def load_dashboard_data():
 
 data = load_dashboard_data()
 
-# EXPORT MASTER BUTTON IN SIDEBAR
-if data:
+# EXPORT MASTER BUTTON IN SIDEBAR (Zero Processing, Just Read from Disk)
+if os.path.exists(FILE_MAP["EXECUTIVE_REPORT"]):
     st.sidebar.markdown("---")
     st.sidebar.header("📥 Export Reports")
     
-    if "master_excel_data" not in st.session_state:
-        st.session_state['master_excel_data'] = None
-
-    if st.sidebar.button("🛠️ Prepare Executive Report"):
-        with st.spinner("Compiling Master Report... Isme 5-10 seconds lag sakte hain."):
-            st.session_state['master_excel_data'] = generate_master_excel(data)
-            
-    if st.session_state['master_excel_data'] is not None:
-        st.sidebar.download_button(
-            label="📄 Download VIP Executive Report",
-            data=st.session_state['master_excel_data'],
-            file_name=f"Trackon_Executive_Master_Report_{datetime.datetime.now().strftime('%d_%b_%Y')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
+    with open(FILE_MAP["EXECUTIVE_REPORT"], "rb") as f:
+        excel_bytes = f.read()
+        
+    st.sidebar.download_button(
+        label="📄 Download VIP Executive Report",
+        data=excel_bytes,
+        file_name=f"Trackon_Executive_Master_Report_{datetime.datetime.now().strftime('%d_%b_%Y')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
 
 if os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
     ts = os.path.getmtime(FILE_MAP["FINAL_OUTPUT"])
@@ -878,7 +870,6 @@ if choice == "📊 Operations Summary":
         
         col1, col2, col3 = st.columns([1, 1, 2])
         
-        # Zone Filter
         all_zones = sorted(df_leg_sum['Zone'].dropna().unique().tolist())
         selected_zone = col1.selectbox("Filter by Zone:", ["ALL"] + all_zones)
         
@@ -886,7 +877,6 @@ if choice == "📊 Operations Summary":
             df_leg_sum = df_leg_sum[df_leg_sum['Zone'] == selected_zone]
             df_raw_leg = df_raw_leg[df_raw_leg['Zone'] == selected_zone]
             
-        # RO Filter
         all_ros = sorted(df_leg_sum['Origin RO'].dropna().unique().tolist())
         selected_ro = col2.selectbox("Filter by RO:", ["ALL"] + all_ros)
         
@@ -900,7 +890,6 @@ if choice == "📊 Operations Summary":
                         'Ontime Dep, Ontime Arr %', 'Ontime Dep, Late Arr %', 
                         'Late Dep, Late Arr %', 'Late Dep, Ontime Arr %']
         
-        # Hide the raw count columns from the UI
         df_display = df_leg_sum[display_cols].copy()
         
         if search_q:
@@ -1128,7 +1117,6 @@ elif choice == "💰 Network Utilization":
         df_cpk_master = data['Up_Down_Route_Summary'].copy()
         df_cpk_raw = data['CPK_Raw_Data'].copy()
         
-        # We process UI view from Master Data which is already correctly grouped by Process Data Engine
         col1, col2, col3 = st.columns([1, 1, 2])
         
         all_zones = sorted(df_cpk_master['Zone'].dropna().unique().tolist())
