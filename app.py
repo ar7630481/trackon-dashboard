@@ -291,7 +291,6 @@ def generate_vip_executive_report_to_disk(data_dict, output_path=None):
             
             tot_cpk = tot_cost / tot_wt if tot_wt > 0 else 0
             tot_util = tot_wt / tot_cap if tot_cap > 0 else 0
-            tot_avg_cost = tot_cost / tot_trips if tot_trips > 0 else 0
             
             tot_dict = {c: '-' for c in df.columns}
             if 'Zone' in df.columns: tot_dict['Zone'] = 'TOTAL'
@@ -302,7 +301,6 @@ def generate_vip_executive_report_to_disk(data_dict, output_path=None):
             if 'Total Trip Cost' in df.columns: tot_dict['Total Trip Cost'] = tot_cost
             if 'Overall CPK' in df.columns: tot_dict['Overall CPK'] = tot_cpk
             if 'Overall Util %' in df.columns: tot_dict['Overall Util %'] = tot_util
-            if 'Avg Trip Cost' in df.columns: tot_dict['Avg Trip Cost'] = f"₹{tot_avg_cost:.2f}"
             return pd.concat([df, pd.DataFrame([tot_dict])], ignore_index=True)
 
         if 'CPK_National_Zonal_Master' in data_dict and not data_dict['CPK_National_Zonal_Master'].empty:
@@ -768,13 +766,13 @@ def process_all_data():
                         Total_Carried_Wt=('Wt', 'sum'),
                         Total_Trip_Cost=('Cost', 'sum'),
                         VendorName=('VendorName', lambda x: ', '.join(sorted(set(x.dropna().astype(str))))),
-                        Avg_Trip_Cost=('Trip_Rate_Str', lambda x: ', '.join(sorted(set(x.dropna().astype(str)))))
+                        Per_Trip_Cost=('Trip_Rate_Str', lambda x: ', '.join(sorted(set(x.dropna().astype(str)))))
                     ).reset_index()
                     agg_nz_updown['Total Capacity'] = agg_nz_updown['Cap'] * agg_nz_updown['Total_Trips']
                     agg_nz_updown['Overall CPK'] = np.where(agg_nz_updown['Total_Carried_Wt'] > 0, agg_nz_updown['Total_Trip_Cost'] / agg_nz_updown['Total_Carried_Wt'], 0)
                     agg_nz_updown['Overall Util %'] = np.where(agg_nz_updown['Total Capacity'] > 0, agg_nz_updown['Total_Carried_Wt'] / agg_nz_updown['Total Capacity'], 0)
-                    nz_updown_final = agg_nz_updown[['Zone', 'RO_Clean', 'Final_Route', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Cap', 'Total Capacity', 'Total_Carried_Wt', 'Avg_Trip_Cost', 'Total_Trip_Cost', 'Total_Trips', 'VendorName', 'SortKey']]
-                    nz_updown_final.columns = ["Zone", "VendorRO", "Route (UP/DOWN)", "Type", "Overall CPK", "Overall Util %", "VehCap (Base)", "Total Capacity", "Total Carried Wt", "Avg Trip Cost", "Total Trip Cost", "Total Trips", "Vendor(s)", "SortKey"]
+                    nz_updown_final = agg_nz_updown[['Zone', 'RO_Clean', 'Final_Route', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Cap', 'Total Capacity', 'Total_Carried_Wt', 'Per_Trip_Cost', 'Total_Trip_Cost', 'Total_Trips', 'VendorName', 'SortKey']]
+                    nz_updown_final.columns = ["Zone", "VendorRO", "Route (UP/DOWN)", "Type", "Overall CPK", "Overall Util %", "VehCap (Base)", "Total Capacity", "Total Carried Wt", "Per Trip Cost", "Total Trip Cost", "Total Trips", "Vendor(s)", "SortKey"]
                     data_for_export['CPK_National_Zonal_UpDown'] = nz_updown_final.sort_values(by=['Type', 'SortKey'])
                     
                     # B. Top-Level Master Grouping (By Route Pair)
@@ -785,14 +783,14 @@ def process_all_data():
                         Total_Capacity=('Total_Cap_Raw', 'sum'),
                         Unique_Vendors=('VendorName', lambda x: x.nunique()),
                         VendorName=('VendorName', lambda x: ', '.join(sorted(set(x.dropna().astype(str))))),
-                        Route_Path=('Final_Route', lambda x: ', '.join(sorted(set(x.dropna().astype(str)))))
+                        Route_Path=('Final_Route', lambda x: ', '.join(sorted(set(x.dropna().astype(str))))),
+                        Per_Trip_Cost=('Trip_Rate_Str', lambda x: ', '.join(sorted(set(x.dropna().astype(str)))))
                     ).reset_index()
                     agg_nz_master['Overall CPK'] = np.where(agg_nz_master['Total_Carried_Wt'] > 0, agg_nz_master['Total_Trip_Cost'] / agg_nz_master['Total_Carried_Wt'], 0)
                     agg_nz_master['Overall Util %'] = np.where(agg_nz_master['Total_Capacity'] > 0, agg_nz_master['Total_Carried_Wt'] / agg_nz_master['Total_Capacity'], 0)
-                    agg_nz_master['Avg_Trip_Cost'] = np.where(agg_nz_master['Total_Trips'] > 0, agg_nz_master['Total_Trip_Cost'] / agg_nz_master['Total_Trips'], 0).round(2)
                     
-                    nz_master_final = agg_nz_master[['Zone', 'RO_Clean', 'Route_Path', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Total_Capacity', 'Total_Carried_Wt', 'Avg_Trip_Cost', 'Total_Trip_Cost', 'Total_Trips', 'Unique_Vendors', 'VendorName', 'SortKey']]
-                    nz_master_final.columns = ["Zone", "VendorRO", "Route Path", "Type", "Overall CPK", "Overall Util %", "Total Capacity", "Total Carried Wt", "Avg Trip Cost (₹)", "Total Trip Cost", "Total Trips", "Unique Vendors", "Vendor(s)", "Route Pair"]
+                    nz_master_final = agg_nz_master[['Zone', 'RO_Clean', 'Route_Path', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Total_Capacity', 'Total_Carried_Wt', 'Per_Trip_Cost', 'Total_Trip_Cost', 'Total_Trips', 'Unique_Vendors', 'VendorName', 'SortKey']]
+                    nz_master_final.columns = ["Zone", "VendorRO", "Route Path", "Type", "Overall CPK", "Overall Util %", "Total Capacity", "Total Carried Wt", "Per Trip Cost", "Total Trip Cost", "Total Trips", "Unique Vendors", "Vendor(s)", "Route Pair"]
                     data_for_export['CPK_National_Zonal_Master'] = nz_master_final.sort_values(by=['Type', 'Overall Util %'])
 
                 # 2. Feeder & Regional (Vehicle-wise)
@@ -803,14 +801,14 @@ def process_all_data():
                         Total_Carried_Wt=('Wt', 'sum'),
                         Total_Trip_Cost=('Cost', 'sum'),
                         VendorName=('VendorName', lambda x: ', '.join(sorted(set(x.dropna().astype(str))))),
-                        Avg_Trip_Cost=('Trip_Rate_Str', lambda x: ', '.join(sorted(set(x.dropna().astype(str))))),
+                        Per_Trip_Cost=('Trip_Rate_Str', lambda x: ', '.join(sorted(set(x.dropna().astype(str))))),
                         Routes_Covered=('Final_Route', lambda x: ', '.join(sorted(set(x.dropna().astype(str)))))
                     ).reset_index()
                     agg_fr['Total Capacity'] = agg_fr['Cap'] * agg_fr['Total_Trips']
                     agg_fr['Overall CPK'] = np.where(agg_fr['Total_Carried_Wt'] > 0, agg_fr['Total_Trip_Cost'] / agg_fr['Total_Carried_Wt'], 0)
                     agg_fr['Overall Util %'] = np.where(agg_fr['Total Capacity'] > 0, agg_fr['Total_Carried_Wt'] / agg_fr['Total Capacity'], 0)
-                    fr_final = agg_fr[['Zone', 'RO_Clean', 'Vehicle No', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Cap', 'Total Capacity', 'Total_Carried_Wt', 'Avg_Trip_Cost', 'Total_Trip_Cost', 'Total_Trips', 'VendorName', 'Routes_Covered']]
-                    fr_final.columns = ["Zone", "VendorRO", "Vehicle No", "Type", "Overall CPK", "Overall Util %", "VehCap (Base)", "Total Capacity", "Total Carried Wt", "Avg Trip Cost", "Total Trip Cost", "Total Trips", "Vendor(s)", "Routes Covered"]
+                    fr_final = agg_fr[['Zone', 'RO_Clean', 'Vehicle No', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Cap', 'Total Capacity', 'Total_Carried_Wt', 'Per_Trip_Cost', 'Total_Trip_Cost', 'Total_Trips', 'VendorName', 'Routes_Covered']]
+                    fr_final.columns = ["Zone", "VendorRO", "Vehicle No", "Type", "Overall CPK", "Overall Util %", "VehCap (Base)", "Total Capacity", "Total Carried Wt", "Per Trip Cost", "Total Trip Cost", "Total Trips", "Vendor(s)", "Routes Covered"]
                     data_for_export['CPK_Feeder_Regional'] = fr_final.sort_values(by=['Type', 'VendorRO', 'Overall Util %'])
                 
                 # 3. Co-loader (Vehicle-wise)
@@ -820,19 +818,19 @@ def process_all_data():
                         Total_Trips=('Trips', 'sum'),
                         Total_Carried_Wt=('Wt', 'sum'),
                         Total_Trip_Cost=('Cost', 'sum'),
-                        Avg_Trip_Cost=('Trip_Rate_Str', lambda x: ', '.join(sorted(set(x.dropna().astype(str)))))
+                        Per_Trip_Cost=('Trip_Rate_Str', lambda x: ', '.join(sorted(set(x.dropna().astype(str)))))
                     ).reset_index()
                     agg_col['Cap'] = df_updn[col_mask].groupby(['RO_Clean', 'Zone', 'VendorName', 'Final_Route', 'Vehicle No', 'Trip_Rate'])['Cap'].max().values
                     agg_col['Total Capacity'] = agg_col['Cap'] * agg_col['Total_Trips']
                     agg_col['Overall CPK'] = np.where(agg_col['Total_Carried_Wt'] > 0, agg_col['Total_Trip_Cost'] / agg_col['Total_Carried_Wt'], 0)
                     agg_col['Overall Util %'] = np.where(agg_col['Total Capacity'] > 0, agg_col['Total_Carried_Wt'] / agg_col['Total Capacity'], 0)
-                    col_final = agg_col[['Zone', 'RO_Clean', 'VendorName', 'Final_Route', 'Vehicle No', 'Overall CPK', 'Overall Util %', 'Cap', 'Total Capacity', 'Total_Carried_Wt', 'Avg_Trip_Cost', 'Total_Trip_Cost', 'Total_Trips']]
-                    col_final.columns = ["Zone", "VendorRO", "Vendor(s)", "Route", "Vehicle No", "Overall CPK", "Overall Util %", "VehCap (Base)", "Total Capacity", "Total Carried Wt", "Avg Trip Cost", "Total Trip Cost", "Total Trips"]
+                    col_final = agg_col[['Zone', 'RO_Clean', 'VendorName', 'Final_Route', 'Vehicle No', 'Overall CPK', 'Overall Util %', 'Cap', 'Total Capacity', 'Total_Carried_Wt', 'Per_Trip_Cost', 'Total_Trip_Cost', 'Total_Trips']]
+                    col_final.columns = ["Zone", "VendorRO", "Vendor(s)", "Route", "Vehicle No", "Overall CPK", "Overall Util %", "VehCap (Base)", "Total Capacity", "Total Carried Wt", "Per Trip Cost", "Total Trip Cost", "Total Trips"]
                     data_for_export['CPK_Coloader'] = col_final.sort_values(by=['VendorRO', 'Overall Util %'])
 
             del df_raw, df_lookup
         else:
-            st.warning("⚠️ CPK files missing. Skipping CPK module.")
+            st.warning("⚠️️ CPK files missing. Skipping CPK module.")
             
         progress.progress(80)
         
@@ -1295,9 +1293,9 @@ elif choice == "💳 Payment Dashboard":
         
         def color_payment_columns(val, col_name):
             if pd.isna(val) or val == 0: return ''
-            if col_name == '1. USER / DRAFT PENDING': return 'background-color: rgba(211, 47, 47, 0.3); color: #ff5252; font-weight: bold;' 
-            elif col_name == '2. COST CONTROL PENDING': return 'background-color: rgba(245, 127, 23, 0.3); color: #ffd740; font-weight: bold;'
-            elif col_name == '3. FINANCE PENDING': return 'background-color: rgba(245, 127, 23, 0.1); color: #ffe57f; font-weight: bold;'
+            if col_name == '1. USER / DRAFT PENDING': return 'background-color: #F8D7DA; color: #721C24; font-weight: bold' 
+            elif col_name == '2. COST CONTROL PENDING': return 'background-color: #FFF3CD; color: #856404; font-weight: bold'
+            elif col_name == '3. FINANCE PENDING': return 'background-color: #FFF8E1; color: #856404; font-weight: bold'
             return ''
 
         styled_pvt = pvt.style
@@ -1606,7 +1604,6 @@ elif choice == "💰 Network Utilization":
                 
                 tot_cpk = tot_cost / tot_wt if tot_wt > 0 else 0
                 tot_util = tot_wt / tot_cap if tot_cap > 0 else 0
-                tot_avg_cost = tot_cost / tot_trips if tot_trips > 0 else 0
                 
                 tot_dict = {c: '-' for c in df.columns}
                 if 'Zone' in df.columns: tot_dict['Zone'] = 'TOTAL'
@@ -1619,9 +1616,8 @@ elif choice == "💰 Network Utilization":
                 if 'Total Trip Cost' in df.columns: tot_dict['Total Trip Cost'] = tot_cost
                 if 'Overall CPK' in df.columns: tot_dict['Overall CPK'] = tot_cpk
                 if 'Overall Util %' in df.columns: tot_dict['Overall Util %'] = tot_util
-                if 'Avg Trip Cost' in df.columns: tot_dict['Avg Trip Cost'] = f"₹{tot_avg_cost:.2f}"
-                if 'Avg Trip Cost (₹)' in df.columns: tot_dict['Avg Trip Cost (₹)'] = f"₹{tot_avg_cost:.2f}"
                 if 'Route Pair' in df.columns: tot_dict['Route Pair'] = 'TOTAL'
+                if 'Per Trip Cost' in df.columns: tot_dict['Per Trip Cost'] = '-'
                 return pd.concat([df, pd.DataFrame([tot_dict])], ignore_index=True)
 
             disp_df = add_total_row(disp_df)
