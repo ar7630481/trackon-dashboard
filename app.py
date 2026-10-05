@@ -7,6 +7,9 @@ import os
 import warnings
 import json
 import gc
+import hashlib
+import tempfile
+import logging
 
 warnings.filterwarnings('ignore')
 
@@ -15,7 +18,7 @@ warnings.filterwarnings('ignore')
 # ==========================================
 st.set_page_config(page_title="Trackon Command Center", page_icon="🚀", layout="wide")
 
-DATA_DIR = "uploaded_raw_data"
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploaded_raw_data")
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
@@ -72,11 +75,29 @@ if not st.session_state['logged_in']:
 # 3. HELPER FUNCTIONS
 # ==========================================
 def save_file(uploaded_file, key):
-    if uploaded_file is not None:
-        with open(FILE_MAP[key], "wb") as f:
-            f.write(uploaded_file.getbuffer())
+    if uploaded_file is None:
+        return False
+    buffer = uploaded_file.getbuffer()
+    digest = hashlib.sha256(buffer).hexdigest()
+    state_key = f"saved_upload_{key}"
+    path = FILE_MAP[key]
+    if st.session_state.get(state_key) == digest and os.path.exists(path):
+        return False
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=DATA_DIR, suffix='.xlsx', delete=False) as f:
+            temp_path = f.name
+            f.write(buffer)
+        os.replace(temp_path, path)
+        st.session_state[state_key] = digest
         return True
-    return False
+    except Exception as exc:
+        st.error(f"Could not save {key}: {exc}")
+        return False
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+
 
 def get_file_time(key):
     path = FILE_MAP[key]
@@ -138,8 +159,8 @@ def format_pct_cnt(count, total):
 # ==========================================
 # 4. VIP EXCEL GENERATOR (Direct to Disk)
 # ==========================================
-def generate_vip_executive_report_to_disk(data_dict):
-    with pd.ExcelWriter(FILE_MAP["EXECUTIVE_REPORT"], engine='xlsxwriter') as writer:
+def generate_vip_executive_report_to_disk(data_dict, output_path=None):
+    with pd.ExcelWriter(output_path or FILE_MAP["EXECUTIVE_REPORT"], engine='xlsxwriter') as writer:
         workbook = writer.book
         
         # Professional Manager-Level Formats
@@ -320,12 +341,13 @@ def generate_vip_executive_report_to_disk(data_dict):
             apply_manager_formatting('Network_Raw', df_cpk_raw)
 
 # ==========================================
-# 5. MAIN DATA PROCESSING (Memory Safe)
+# 5. MAIN DATA PROCESSING
 # ==========================================
 def process_all_data():
     progress = st.progress(0)
     status_text = st.empty()
     data_for_export = {}
+    temp_output = None
     
     try:
         # --- EXTRACT ZONE MAPPING FROM BRANCH MASTER ---
@@ -676,19 +698,14 @@ def process_all_data():
                         corrections = json.load(f)
                     
                     for corr in corrections:
-                        route_str = str(corr['route']).strip().upper()
-                        cap_val = float(corr['capacity'])
-                        new_cost = float(corr['new_cost'])
-                        eff_date = pd.to_datetime(corr['eff_date'])
-                        
-                        route_mask = df_raw['Final_Route'].astype(str).str.upper() == route_str
-                        cap_mask = pd.to_numeric(df_raw['Cap'], errors='coerce') == cap_val
-                        date_mask = df_raw['Date_DT'] >= eff_date
+                        route_mask = df_raw['Final_Route'].str.upper() == corr['route'].upper()
+                        cap_mask = df_raw['Cap'] == float(corr['capacity'])
+                        date_mask = df_raw['Date_DT'] >= pd.to_datetime(corr['eff_date'])
                         
                         mask = route_mask & cap_mask & date_mask
-                        df_raw.loc[mask, 'Cost'] = new_cost * df_raw.loc[mask, 'Trips']
+                        df_raw.loc[mask, 'Cost'] = float(corr['new_cost']) * df_raw.loc[mask, 'Trips']
                 except Exception as e:
-                    pass 
+                    pass
             
             df_updn = df_raw[~df_raw['Final_Type'].str.upper().str.contains('OFD|PICKUP', na=False)].copy()
             target_keys = df_updn[df_updn['RO_Clean'].isin(target_ros)]['SortKey'].unique()
@@ -701,7 +718,7 @@ def process_all_data():
                 df_updn['Trip_Rate'] = np.where(df_updn['Trips'] > 0, df_updn['Cost'] / df_updn['Trips'], 0).round(2)
                 df_updn['Trip_Rate_Str'] = "₹" + df_updn['Trip_Rate'].astype(str)
                 
-                # Group strictly by Route, Type, Capacity, AND Trip Rate
+                # Group strictly by Route, Type, and Capacity
                 agg_updn = df_updn.groupby(['RO_Clean', 'Zone', 'Final_Route', 'Final_Type', 'Cap', 'SortKey', 'Trip_Rate']).agg(
                     Total_Trips=('Trips', 'sum'),
                     Total_Carried_Wt=('Wt', 'sum'),
@@ -730,27 +747,32 @@ def process_all_data():
             
         progress.progress(80)
         
-        # --- 1. SAVE RAW DB FILE ---
-        status_text.text("⚙️ Saving Raw Database...")
-        with pd.ExcelWriter(FILE_MAP["FINAL_OUTPUT"], engine='xlsxwriter') as writer:
+        # Replace the previous workbook only after a complete successful write.
+        if not data_for_export:
+            status_text.warning("No datasets were processed. Check the uploaded files.")
+            return False
+        status_text.text("Saving dashboard database...")
+        with tempfile.NamedTemporaryFile(dir=DATA_DIR, suffix='.xlsx', delete=False) as tmp:
+            temp_output = tmp.name
+        with pd.ExcelWriter(temp_output, engine='xlsxwriter') as writer:
             for k, v in data_for_export.items():
                 v.to_excel(writer, sheet_name=k, index=False)
-                
-        progress.progress(90)
-        
-        # --- 2. GENERATE VIP EXECUTIVE EXCEL DIRECTLY TO DISK ---
-        status_text.text("⚙️ Generating VIP Executive Report directly to disk...")
-        generate_vip_executive_report_to_disk(data_for_export)
-        
-        # Free memory immediately
-        del data_for_export 
-        gc.collect()
-
+        os.replace(temp_output, FILE_MAP["FINAL_OUTPUT"])
+        st.session_state.pop('_dashboard_cache', None)
+        st.session_state.pop('_download_version', None)
         progress.progress(100)
-        status_text.success("✅ Data Processed & VIP Report Generated Successfully!")
-        
+        status_text.success("Data processed successfully. Prepare the VIP report when needed.")
+        return True
     except Exception as e:
-        status_text.error(f"❌ Error during processing: {e}")
+        logging.exception("Dashboard processing failed")
+        status_text.error(f"Error during processing: {e}")
+        st.exception(e)
+        return False
+    finally:
+        data_for_export.clear()
+        if temp_output and os.path.exists(temp_output):
+            os.remove(temp_output)
+        gc.collect()
 
 # ==========================================
 # 6. SIDEBAR: ADMIN PANEL & RATE CORRECTIONS
@@ -826,48 +848,109 @@ if st.session_state['role'] == 'Admin':
 
     st.sidebar.markdown("---")
     if st.sidebar.button("🚀 PROCESS & REFRESH DATA", use_container_width=True):
-        process_all_data()
-        st.rerun()
+        st.session_state.pop('_dashboard_cache', None)
+        gc.collect()
+        if process_all_data():
+            st.session_state['_processing_success'] = True
+            st.rerun()
+        st.stop()
 
 # ==========================================
 # 7. DASHBOARD UI & DOWNLOAD BUTTON
 # ==========================================
-def load_dashboard_data():
-    if not os.path.exists(FILE_MAP["FINAL_OUTPUT"]): return {}
-    try:
-        return pd.read_excel(FILE_MAP["FINAL_OUTPUT"], sheet_name=None)
-    except:
+# Load only the active page. Keep at most one page in this session's cache.
+MENU_SHEETS = {
+    "📊 Operations Summary": ('Legwise_Route_Summary', 'Legwise_Processed_Data'),
+    "💳 Payment Dashboard": ('Master_Database',),
+    "📱 Communications": ('Actionable_Notes',),
+    "💰 Network Utilization": ('Up_Down_Route_Summary', 'CPK_Raw_Data'),
+}
+menu = list(MENU_SHEETS)
+choice = st.sidebar.radio("Navigation:", menu)
+
+def file_version(path):
+    stat = os.stat(path)
+    return (stat.st_mtime_ns, stat.st_size)
+
+def load_dashboard_data(page):
+    path = FILE_MAP["FINAL_OUTPUT"]
+    if not os.path.exists(path):
         return {}
+    cache_key = (file_version(path), page)
+    cached = st.session_state.get('_dashboard_cache')
+    if cached and cached[0] == cache_key:
+        return cached[1]
+    st.session_state.pop('_dashboard_cache', None)
+    del cached
+    gc.collect()
+    try:
+        with st.spinner("Loading selected dashboard..."):
+            with pd.ExcelFile(path, engine='openpyxl') as workbook:
+                data = {name: workbook.parse(name) for name in MENU_SHEETS[page]
+                        if name in workbook.sheet_names}
+        st.session_state['_dashboard_cache'] = (cache_key, data)
+        return data
+    except Exception as exc:
+        logging.exception("Cannot read dashboard workbook")
+        st.error(f"Cannot read the processed Excel file: {exc}")
+        if st.session_state['role'] == 'Admin':
+            st.exception(exc)
+        st.stop()
 
-data = load_dashboard_data()
+if st.session_state.pop('_processing_success', False):
+    st.success("Data refreshed successfully. Use Prepare VIP Report for the Excel export.")
 
-# 📥 EXPORT REPORT - SAFE MEMORY STREAMING (100% Crash-Free)
-if os.path.exists(FILE_MAP["EXECUTIVE_REPORT"]):
+# Downloads consume RAM in Streamlit. Only build/load the report on request.
+if os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
     st.sidebar.markdown("---")
     st.sidebar.header("📥 Export Reports")
-    try:
-        with open(FILE_MAP["EXECUTIVE_REPORT"], "rb") as file:
-            st.sidebar.download_button(
-                label="📄 Download VIP Executive Report",
-                data=file,
-                file_name=f"Trackon_Executive_Master_Report_{datetime.datetime.now().strftime('%d_%b_%Y')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-    except Exception as e:
-        pass
-
-if os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
+    database_version = file_version(FILE_MAP["FINAL_OUTPUT"])
+    if st.sidebar.button("Prepare VIP Report", use_container_width=True):
+        st.session_state.pop('_dashboard_cache', None)
+        st.session_state.pop('_download_version', None)
+        gc.collect()
+        report_data = None
+        temp_report = None
+        try:
+            with st.spinner("Preparing VIP Executive Report..."):
+                report_path = FILE_MAP["EXECUTIVE_REPORT"]
+                if (not os.path.exists(report_path) or
+                        os.stat(report_path).st_mtime_ns < database_version[0]):
+                    report_data = pd.read_excel(FILE_MAP["FINAL_OUTPUT"], sheet_name=None)
+                    with tempfile.NamedTemporaryFile(dir=DATA_DIR, suffix='.xlsx', delete=False) as tmp:
+                        temp_report = tmp.name
+                    generate_vip_executive_report_to_disk(report_data, temp_report)
+                    if file_version(FILE_MAP["FINAL_OUTPUT"]) != database_version:
+                        raise RuntimeError("Data changed while exporting. Prepare the report again.")
+                    os.replace(temp_report, report_path)
+                st.session_state['_download_version'] = database_version
+        except Exception as exc:
+            logging.exception("Report preparation failed")
+            st.sidebar.error(f"Report preparation failed: {exc}")
+        finally:
+            del report_data
+            if temp_report and os.path.exists(temp_report):
+                os.remove(temp_report)
+            gc.collect()
+    if st.session_state.get('_download_version') == database_version:
+        try:
+            with open(FILE_MAP["EXECUTIVE_REPORT"], "rb") as report_file:
+                st.sidebar.download_button(
+                    "📄 Download VIP Executive Report", data=report_file,
+                    file_name=f"Trackon_Executive_Master_Report_{get_ist_now():%d_%b_%Y}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True, on_click="ignore")
+        except Exception as exc:
+            st.sidebar.error(f"Could not load download: {exc}")
     ts = os.path.getmtime(FILE_MAP["FINAL_OUTPUT"])
-    dt = (datetime.datetime.fromtimestamp(ts) + datetime.timedelta(hours=5, minutes=30)).strftime('%d %b %Y, %I:%M %p')
-    st.sidebar.info(f"📊 Dashboard Refreshed:\n{dt} (IST)")
+    ist = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+    dt = datetime.datetime.fromtimestamp(ts, tz=ist).strftime('%d %b %Y, %I:%M %p')
+    st.sidebar.info(f"📊 Dashboard Refreshed: {dt} (IST)")
 
+data = load_dashboard_data(choice)
 if not data:
-    st.warning("⚠ No data found! Admin must upload raw files and process data.")
+    st.warning("No processed data for this page. Admin must upload the relevant files and process data.")
     st.stop()
-    
-menu = ["📊 Operations Summary", "💳 Payment Dashboard", "📱 Communications", "💰 Network Utilization"]
-choice = st.sidebar.radio("Navigation:", menu)
 
 # -------------------------------------------------------------
 # A. DAILY STANDUP (Operations Summary)
@@ -877,7 +960,7 @@ if choice == "📊 Operations Summary":
     
     if 'Legwise_Route_Summary' in data and 'Legwise_Processed_Data' in data:
         df_leg_sum = data['Legwise_Route_Summary'].copy()
-        df_raw_leg = data['Legwise_Processed_Data'].copy()
+        df_raw_leg = data['Legwise_Processed_Data']
         
         col1, col2, col3 = st.columns([1, 1, 2])
         
@@ -904,7 +987,7 @@ if choice == "📊 Operations Summary":
         df_display = df_leg_sum[display_cols].copy()
         
         if search_q:
-            mask = df_display.astype(str).apply(lambda x: x.str.contains(search_q, case=False)).any(axis=1)
+            mask = df_display.astype(str).apply(lambda x: x.str.contains(search_q, case=False, regex=False, na=False)).any(axis=1)
             df_display = df_display[mask]
             
         def extract_pct(x):
@@ -1060,7 +1143,7 @@ elif choice == "💳 Payment Dashboard":
                 filtered_pay = df_pay[(df_pay['RO Name'] == sel_pay_ro) & (df_pay['Department Bucket'] == sel_bucket)].copy()
                 
             if search_q:
-                mask = filtered_pay.astype(str).apply(lambda x: x.str.contains(search_q, case=False)).any(axis=1)
+                mask = filtered_pay.astype(str).apply(lambda x: x.str.contains(search_q, case=False, regex=False, na=False)).any(axis=1)
                 filtered_pay = filtered_pay[mask]
                 
             pay_order = ['Invoice Id', 'Zone', 'RO Name', 'Vendor Name', 'Amount', 'Status', 'Pending With', 'Days Pending', 'Aging Bucket', 'Revert Remarks']
@@ -1126,7 +1209,7 @@ elif choice == "💰 Network Utilization":
     st.markdown("<h2>Network Utilization & CPK</h2>", unsafe_allow_html=True)
     if 'Up_Down_Route_Summary' in data and 'CPK_Raw_Data' in data:
         df_cpk_master = data['Up_Down_Route_Summary'].copy()
-        df_cpk_raw = data['CPK_Raw_Data'].copy()
+        df_cpk_raw = data['CPK_Raw_Data']
         
         col1, col2, col3 = st.columns([1, 1, 2])
         
@@ -1147,7 +1230,7 @@ elif choice == "💰 Network Utilization":
         search_q = col3.text_input("🔍 Quick Search:", placeholder="Search Route, Vendor...")
         
         if search_q:
-            mask = df_cpk_view.astype(str).apply(lambda x: x.str.contains(search_q, case=False)).any(axis=1)
+            mask = df_cpk_view.astype(str).apply(lambda x: x.str.contains(search_q, case=False, regex=False, na=False)).any(axis=1)
             df_cpk_view = df_cpk_view[mask]
 
         m1, m2, m3 = st.columns(3)
