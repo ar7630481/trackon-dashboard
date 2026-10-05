@@ -167,6 +167,7 @@ def generate_vip_executive_report_to_disk(data_dict):
         # --- 1. OPERATIONS SUMMARY ---
         if 'Legwise_Route_Summary' in data_dict:
             df_ops = data_dict['Legwise_Route_Summary'].copy()
+            # Faltu Columns Hataye (From UI Request)
             cols_to_drop = ['OO_Cnt', 'LO_Cnt', 'OL_Cnt', 'LL_Cnt', 'Ontime_Dep_IT_Cnt', 'Late_Dep_IT_Cnt']
             df_ops = df_ops.drop(columns=[c for c in cols_to_drop if c in df_ops.columns], errors='ignore')
             
@@ -602,7 +603,7 @@ def process_all_data():
                 
                 rename_dict = {}
                 if lkp_route_col: rename_dict[lkp_route_col] = 'LKP_ROUTE'
-                if lkp_type_col: rename_dict[lkp_type_col] = 'LKP_ROUTE' # Keeping your logic intact
+                if lkp_type_col: rename_dict[lkp_type_col] = 'LKP_TYPE'
                 if lkp_from_col: rename_dict[lkp_from_col] = 'LKP_FROM'
                 if lkp_to_col: rename_dict[lkp_to_col] = 'LKP_TO'
                 lkp_sub.rename(columns=rename_dict, inplace=True)
@@ -675,14 +676,19 @@ def process_all_data():
                         corrections = json.load(f)
                     
                     for corr in corrections:
-                        route_mask = df_raw['Final_Route'].str.upper() == corr['route'].upper()
-                        cap_mask = df_raw['Cap'] == float(corr['capacity'])
-                        date_mask = df_raw['Date_DT'] >= pd.to_datetime(corr['eff_date'])
+                        route_str = str(corr['route']).strip().upper()
+                        cap_val = float(corr['capacity'])
+                        new_cost = float(corr['new_cost'])
+                        eff_date = pd.to_datetime(corr['eff_date'])
+                        
+                        route_mask = df_raw['Final_Route'].astype(str).str.upper() == route_str
+                        cap_mask = pd.to_numeric(df_raw['Cap'], errors='coerce') == cap_val
+                        date_mask = df_raw['Date_DT'] >= eff_date
                         
                         mask = route_mask & cap_mask & date_mask
-                        df_raw.loc[mask, 'Cost'] = float(corr['new_cost']) * df_raw.loc[mask, 'Trips']
+                        df_raw.loc[mask, 'Cost'] = new_cost * df_raw.loc[mask, 'Trips']
                 except Exception as e:
-                    pass
+                    pass 
             
             df_updn = df_raw[~df_raw['Final_Type'].str.upper().str.contains('OFD|PICKUP', na=False)].copy()
             target_keys = df_updn[df_updn['RO_Clean'].isin(target_ros)]['SortKey'].unique()
@@ -691,9 +697,11 @@ def process_all_data():
             data_for_export['CPK_Raw_Data'] = df_updn
 
             if not df_updn.empty:
+                # Calculate Trip Rate for each raw entry before grouping
                 df_updn['Trip_Rate'] = np.where(df_updn['Trips'] > 0, df_updn['Cost'] / df_updn['Trips'], 0).round(2)
                 df_updn['Trip_Rate_Str'] = "₹" + df_updn['Trip_Rate'].astype(str)
                 
+                # Group strictly by Route, Type, Capacity, AND Trip Rate
                 agg_updn = df_updn.groupby(['RO_Clean', 'Zone', 'Final_Route', 'Final_Type', 'Cap', 'SortKey', 'Trip_Rate']).agg(
                     Total_Trips=('Trips', 'sum'),
                     Total_Carried_Wt=('Wt', 'sum'),
@@ -706,6 +714,7 @@ def process_all_data():
                 agg_updn['Overall CPK'] = np.where(agg_updn['Total_Carried_Wt'] > 0, agg_updn['Total_Trip_Cost'] / agg_updn['Total_Carried_Wt'], 0)
                 agg_updn['Overall Util %'] = np.where(agg_updn['Total Capacity'] > 0, agg_updn['Total_Carried_Wt'] / agg_updn['Total Capacity'], 0)
                 
+                # Column selection matching the requested output format exactly
                 updn_final = agg_updn[['Zone', 'RO_Clean', 'Final_Route', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Cap', 'Total Capacity', 'Total_Carried_Wt', 'Avg_Trip_Cost', 'Total_Trip_Cost', 'Total_Trips', 'VendorName', 'SortKey']]
                 updn_final.columns = ["Zone", "VendorRO", "Route (UP/DOWN)", "Type", "Overall CPK", "Overall Util %", "VehCap (Base)", "Total Capacity", "Total Carried Wt", "Avg Trip Cost", "Total Trip Cost", "Total Trips", "Vendor(s)", "SortKey"]
 
@@ -733,6 +742,7 @@ def process_all_data():
         status_text.text("⚙️ Generating VIP Executive Report directly to disk...")
         generate_vip_executive_report_to_disk(data_for_export)
         
+        # Free memory immediately
         del data_for_export 
         gc.collect()
 
@@ -822,18 +832,14 @@ if st.session_state['role'] == 'Admin':
 # ==========================================
 # 7. DASHBOARD UI & DOWNLOAD BUTTON
 # ==========================================
-# Smart Cache - Read File Once based on Last Modified Time to prevent OOM crash
-@st.cache_data(show_spinner=False)
-def load_dashboard_data(file_mtime):
+def load_dashboard_data():
     if not os.path.exists(FILE_MAP["FINAL_OUTPUT"]): return {}
     try:
         return pd.read_excel(FILE_MAP["FINAL_OUTPUT"], sheet_name=None)
     except:
         return {}
 
-# Pass the file modified time to the cache function. If it changes, cache refreshes safely.
-current_file_mtime = os.path.getmtime(FILE_MAP["FINAL_OUTPUT"]) if os.path.exists(FILE_MAP["FINAL_OUTPUT"]) else 0
-data = load_dashboard_data(current_file_mtime)
+data = load_dashboard_data()
 
 # 📥 EXPORT REPORT - SAFE MEMORY STREAMING (100% Crash-Free)
 if os.path.exists(FILE_MAP["EXECUTIVE_REPORT"]):
