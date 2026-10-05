@@ -1,5 +1,6 @@
-streamlit
-pandas
-numpy
-xlsxwriter
-openpyxl
+streamlit>=1.44,<2
+pandas>=2.2,<3
+numpy>=1.26,<3
+openpyxl>=3.1,<4
+xlsxwriter>=3.2,<4
+jinja2>=3.1,<4
