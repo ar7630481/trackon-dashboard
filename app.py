@@ -4,19 +4,12 @@ import numpy as np
 import datetime
 import urllib.parse
 import os
-import time
-import shutil
 import warnings
-import traceback
-import threading
-import json
-from playwright.sync_api import sync_playwright
-import pdfplumber
 
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# 1. PAGE SETUP & THEME (Dark Theme)
+# 1. PAGE SETUP (Professional Dark Theme)
 # ==========================================
 st.set_page_config(page_title="Trackon Command Center", page_icon="🚀", layout="wide")
 
@@ -32,14 +25,10 @@ FILE_MAP = {
     "MCD_VENDOR": os.path.join(DATA_DIR, "mcd_vendor.xlsx"),
     "CPK_UTIL": os.path.join(DATA_DIR, "cpk_util.xlsx"),
     "ROUTE_LOOKUP": os.path.join(DATA_DIR, "route_lookup.xlsx"),
-    "FINAL_OUTPUT": os.path.join(DATA_DIR, "Auto_Generated_Monitoring_Data.xlsx"),
-    "FLEET_CACHE": os.path.join(DATA_DIR, "live_fleet_cache.csv"),
-    "SYNC_STATUS": os.path.join(DATA_DIR, "sync_status.json")
+    "FINAL_OUTPUT": os.path.join(DATA_DIR, "Auto_Generated_Monitoring_Data.xlsx")
 }
 
-# --- IST Time Helper ---
 def get_ist_now():
-    # Streamlit Cloud runs in UTC, adding 5 hours 30 mins for IST
     return datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
 
 # ==========================================
@@ -89,7 +78,6 @@ def get_file_time(key):
     path = FILE_MAP[key]
     if os.path.exists(path):
         ts = os.path.getmtime(path)
-        # Using Local timezone representation here based on file save time
         return datetime.datetime.fromtimestamp(ts).strftime('%d %b %Y, %I:%M %p')
     return "Not Uploaded Yet ❌"
 
@@ -144,286 +132,7 @@ def format_pct_cnt(count, total):
     return f"{pct:.1f}% ({int(count)})"
 
 # ==========================================
-# 4. FLEET SCRAPER LOGIC
-# ==========================================
-FLEET_ACCOUNTS = [
-    {"email": "anand.joshi@trackon.in", "password": "Trackon@123"},
-    {"email": "lh.fleetops@trackon.in", "password": "i7F0TYVh@"},
-    {"email": "amar.vandanamotors@gmail.com", "password": "Amar@123"},
-    {"email": "9712339060", "password": "Boss@9918"}
-]
-
-@st.cache_resource(show_spinner=False)
-def setup_playwright():
-    try:
-        os.system("playwright install chromium")
-    except Exception:
-        pass 
-
-def clear_pre_modal_popups(page):
-    try:
-        close_btn = page.locator('span.ant-tour-close-icon')
-        if close_btn.is_visible(timeout=1000): close_btn.click()
-    except: pass
-    try:
-        next_btn = page.locator("span", has_text="Next")
-        if next_btn.is_visible(timeout=1000): next_btn.click()
-    except: pass
-    try:
-        svg_close = page.locator('svg[data-icon="close"]')
-        if svg_close.is_visible(timeout=1000): svg_close.click()
-    except: pass
-
-def get_sync_status():
-    if os.path.exists(FILE_MAP["SYNC_STATUS"]):
-        try:
-            with open(FILE_MAP["SYNC_STATUS"], 'r') as f:
-                return json.load(f)
-        except: pass
-    return {"start": "Not Started", "end": "Not Started", "status": "idle", "errors": []}
-
-def set_sync_status(start, end, status, errors):
-    try:
-        with open(FILE_MAP["SYNC_STATUS"], 'w') as f:
-            json.dump({"start": start, "end": end, "status": status, "errors": errors}, f)
-    except: pass
-
-def clean_account_data(raw_data, account_email):
-    if not raw_data: return pd.DataFrame()
-    max_cols = max(len(row) for row in raw_data)
-    normalized_data = [row + [""] * (max_cols - len(row)) for row in raw_data]
-    df = pd.DataFrame(normalized_data[1:], columns=normalized_data[0])
-    df.columns = [str(c).replace('\n', ' ').strip() if c else f"Col_{i}" for i, c in enumerate(df.columns)]
-    
-    veh_col = next((c for c in df.columns if 'Vehicle' in str(c) or 'Name' in str(c)), None)
-    if veh_col:
-        raw_str = df[veh_col].astype(str).str.replace(r'\n', ' ', regex=True)
-        df['Vehicle_Code'] = raw_str.str.extract(r'(?i)(?:Name:)?\s*(\d{4})', expand=False).fillna("-")
-        df['Full_Number'] = raw_str.str.extract(r'(?i)No:\s*([A-Z0-9]+)', expand=False).fillna("-")
-    else:
-        df['Vehicle_Code'] = "-"
-        df['Full_Number'] = "-"
-        
-    status_col = next((c for c in df.columns if 'Status' in str(c) and 'Job' not in str(c)), None)
-    df['Status'] = df[status_col].astype(str).str.replace(r'\n', ' ', regex=True).str.strip() if status_col else "-"
-        
-    speed_col = next((c for c in df.columns if 'Spee' in str(c) or 'Speed' in str(c)), None)
-    df['Speed'] = df[speed_col].astype(str).str.replace(r'\n', ' ', regex=True).str.strip() if speed_col else "-"
-        
-    nearest_col = next((c for c in df.columns if 'Nearest' in str(c)), None)
-    df['Remaining_KMS'] = df[nearest_col].astype(str).str.replace(r'\n', ' ', regex=True).str.strip() if nearest_col else "-"
-        
-    loc_col = next((c for c in df.columns if 'Location' in str(c)), None)
-    df['Location'] = df[loc_col].astype(str).str.replace(r'\n', ' ', regex=True).str.strip() if loc_col else "-"
-        
-    time_col = next((c for c in df.columns if 'Last' in str(c) or 'dated' in str(c)), None)
-    df['Last_Updated'] = df[time_col].astype(str).str.replace(r'\n', ' ', regex=True).str.strip() if time_col else "-"
-
-    final_cols = ['Vehicle_Code', 'Full_Number', 'Status', 'Speed', 'Remaining_KMS', 'Location', 'Last_Updated']
-    for col in final_cols:
-        if col not in df.columns: df[col] = "-"
-            
-    df_clean = df[final_cols]
-    df_clean = df_clean.drop_duplicates(subset=['Full_Number'], keep='first')
-    df_clean['Account_Source'] = account_email 
-    return df_clean
-
-def run_scraper(p_bar=None, s_txt=None, df_placeholder=None):
-    setup_playwright() 
-    base_dir = os.getcwd() 
-    cache_file = FILE_MAP["FLEET_CACHE"]
-    
-    if os.path.exists(cache_file):
-        try: master_df = pd.read_csv(cache_file)
-        except: master_df = pd.DataFrame()
-    else:
-        master_df = pd.DataFrame()
-        
-    error_logs = []
-    start_time_str = get_ist_now().strftime('%I:%M %p, %d %b %Y') # IST Time applied
-    set_sync_status(start_time_str, "In Progress...", "running", error_logs)
-    
-    try:
-        with sync_playwright() as p:
-            if s_txt: s_txt.text("⚙ Launching Secure Cloud Browser...")
-            browser = p.chromium.launch(
-                headless=True,
-                args=[
-                    '--no-sandbox', 
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-gpu',           
-                    '--single-process',
-                    '--disable-blink-features=AutomationControlled'
-                ]
-            ) 
-            
-            total_accs = len(FLEET_ACCOUNTS)
-            for idx, acc in enumerate(FLEET_ACCOUNTS):
-                acc_email = acc['email']
-                if s_txt: s_txt.text(f"📡 Fetching data for {acc_email} ({idx+1}/{total_accs})... Please wait!")
-                
-                acc_start_time = time.time()
-                def check_timeout(step=""):
-                    if time.time() - acc_start_time > 150: 
-                        raise Exception(f"⏱️ Timeout at '{step}'. Skipping.")
-
-                context = None
-                acc_raw_data = []
-                try:
-                    context = browser.new_context(
-                        accept_downloads=True,
-                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                    )
-                    page = context.new_page()
-                    
-                    safe_email = acc_email.replace('@', '_').replace('.', '_')
-                    pdf_path = os.path.join(base_dir, f"temp_{safe_email}.pdf")
-                    
-                    check_timeout("Navigating")
-                    page.goto("https://app.fleetx.io/users/login", timeout=45000, wait_until="domcontentloaded")
-                    page.fill('input[data-testid="email"]', acc_email)
-                    page.fill('input[data-testid="password"]', acc['password'])
-                    page.click('button[type="submit"]')
-
-                    check_timeout("Waiting for Report Icon")
-                    page.wait_for_selector('img[title="Realtime Vehicle Report"]', timeout=45000)
-                    page.wait_for_timeout(2000)
-
-                    check_timeout("Clearing Popups")
-                    clear_pre_modal_popups(page)
-
-                    page.evaluate("document.querySelector('img[title=\"Realtime Vehicle Report\"]').click()")
-                    page.wait_for_timeout(2000) 
-                    
-                    page.evaluate("Array.from(document.querySelectorAll('span')).find(el => el.textContent.trim() === 'Download PDF')?.click()")
-                    page.wait_for_timeout(2000)
-
-                    if os.path.exists(pdf_path): 
-                        try: os.remove(pdf_path)
-                        except: pass
-
-                    if "anand.joshi" in acc_email or "lh.fleetops" in acc_email:
-                        check_timeout("Setting up AWS Intercept")
-                        captured_urls = []
-                        def handle_new_page(new_page):
-                            try:
-                                new_page.wait_for_timeout(3000)
-                                captured_urls.append(new_page.url)
-                            except: pass
-
-                        context.on("page", handle_new_page)
-                        
-                        page.evaluate("Array.from(document.querySelectorAll('span')).find(el => el.textContent.trim() === 'Download')?.click()")
-                        
-                        pdf_url = ""
-                        for _ in range(40):
-                            check_timeout("Waiting for AWS S3 Link")
-                            for url in captured_urls:
-                                if "amazonaws.com" in url or ".pdf" in url.lower():
-                                    pdf_url = url
-                                    break
-                            if not pdf_url:
-                                for p_tab in context.pages:
-                                    if "amazonaws.com" in p_tab.url or ".pdf" in p_tab.url.lower():
-                                        pdf_url = p_tab.url
-                                        break
-                            if pdf_url: break
-                            page.wait_for_timeout(1000)
-                            
-                        if pdf_url:
-                            check_timeout("Downloading via Request")
-                            import requests
-                            response = requests.get(pdf_url, stream=True, timeout=30)
-                            if response.status_code == 200:
-                                with open(pdf_path, 'wb') as out_file:
-                                    shutil.copyfileobj(response.raw, out_file)
-                            else:
-                                raise Exception(f"AWS Link returned status code {response.status_code}")
-                        else:
-                            raise Exception("AWS S3 Link trigger nahi hua.")
-                    else:
-                        check_timeout("Waiting for Native Download")
-                        try:
-                            with page.expect_download(timeout=45000) as download_info:
-                                download_buttons = page.locator("span", has_text="Download")
-                                if download_buttons.count() > 0:
-                                     download_buttons.last.click()
-                                else:
-                                     page.evaluate("Array.from(document.querySelectorAll('span')).find(el => el.textContent.trim() === 'Download')?.click()")
-                                     
-                            download = download_info.value
-                            download.save_as(pdf_path)
-                        except Exception as e:
-                             check_timeout("Fallback Download")
-                             page.evaluate("Array.from(document.querySelectorAll('span')).find(el => el.textContent.trim() === 'Download')?.click()")
-                             page.wait_for_timeout(15000)
-
-                    check_timeout("Extracting PDF Data")
-                    if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0:
-                        with pdfplumber.open(pdf_path) as pdf:
-                            for page_obj in pdf.pages:
-                                check_timeout(f"Reading Page {page_obj.page_number}")
-                                table = page_obj.extract_table()
-                                if table:
-                                    for row in table:
-                                        if any(cell and str(cell).strip() for cell in row):
-                                            acc_raw_data.append(row)
-                        try: os.remove(pdf_path)
-                        except: pass
-                    else:
-                        error_logs.append(f"{acc_email}: PDF khali mili ya save nahi hui.")
-                        
-                except Exception as e:
-                    error_logs.append(f"❌ {acc_email} ERROR: {str(e)}")
-                finally:
-                    if context:
-                        try: context.close()
-                        except: pass
-                        
-                df_acc = clean_account_data(acc_raw_data, acc_email)
-                if not df_acc.empty:
-                    if not master_df.empty and 'Account_Source' in master_df.columns:
-                        master_df = master_df[master_df['Account_Source'] != acc_email]
-                    
-                    master_df = pd.concat([master_df, df_acc], ignore_index=True)
-                    master_df.to_csv(cache_file, index=False)
-                    
-                    if df_placeholder:
-                        display_df = master_df.drop(columns=['Account_Source'], errors='ignore')
-                        df_placeholder.dataframe(display_df, hide_index=True, use_container_width=True)
-
-                if p_bar: p_bar.progress(int(((idx+1)/total_accs)*100))
-                set_sync_status(start_time_str, "In Progress...", "running", error_logs)
-                
-            browser.close()
-            
-    except Exception as overall_e:
-        error_logs.append(f"Playwright Master Engine Error: {str(overall_e)}")
-
-    end_time_str = get_ist_now().strftime('%I:%M %p, %d %b %Y')
-    set_sync_status(start_time_str, end_time_str, "completed", error_logs)
-    return master_df
-
-def bg_task():
-    lock_file = os.path.join(DATA_DIR, "scraping.lock")
-    if os.path.exists(lock_file): return
-    with open(lock_file, 'w') as f: f.write("locked")
-    
-    try:
-        run_scraper(None, None, None) 
-    except Exception as e:
-        pass
-    finally:
-        if os.path.exists(lock_file):
-            os.remove(lock_file)
-
-def trigger_bg_update():
-    t = threading.Thread(target=bg_task)
-    t.start()
-
-# ==========================================
-# 5. MAIN PROCESSING ENGINE
+# 4. MAIN PROCESSING ENGINE
 # ==========================================
 def process_all_data():
     progress = st.progress(0)
@@ -432,6 +141,17 @@ def process_all_data():
     try:
         writer = pd.ExcelWriter(FILE_MAP["FINAL_OUTPUT"], engine='xlsxwriter')
         
+        # --- EXTRACT ZONE MAPPING FROM BRANCH MASTER ---
+        ro_zone_map = {}
+        if os.path.exists(FILE_MAP["BRANCH_MASTER"]):
+            df_brn_master = pd.read_excel(FILE_MAP["BRANCH_MASTER"], sheet_name="Sheet1")
+            df_brn_master.columns = df_brn_master.columns.astype(str).str.strip()
+            ro_col_m = next((c for c in df_brn_master.columns if 'rptro' in c.lower().replace(' ', '')), 'RPTRO')
+            zone_col_m = next((c for c in df_brn_master.columns if 'zone' in c.lower().replace(' ', '')), 'Zone')
+            
+            df_brn_master[ro_col_m] = df_brn_master[ro_col_m].astype(str).str.strip().str.upper()
+            ro_zone_map = df_brn_master.drop_duplicates(subset=[ro_col_m]).set_index(ro_col_m)[zone_col_m].to_dict()
+
         # --- MODULE 0: PAYMENT DATA ---
         status_text.text("⚙️ Processing Payment Data...")
         if os.path.exists(FILE_MAP["PAYMENT"]):
@@ -465,6 +185,10 @@ def process_all_data():
             df_pay['Status'] = df_pay['Status'].fillna('').astype(str).str.upper()
             df_pay['Pending With'] = df_pay['Pending With'].fillna('').astype(str).str.upper()
             
+            # Add Zone mapping to Payment Data
+            df_pay['RO Name Clean'] = df_pay['RO Name'].astype(str).str.strip().str.upper()
+            df_pay['Zone'] = df_pay['RO Name Clean'].map(ro_zone_map).fillna('UNKNOWN ZONE')
+            
             valid_cats = ["Contract - Feeder Connection vehicle charges", "Market - Feeder Connection vehicle charges", 
                           "Market Vehicle Hired -Linehaul", "Contract Network Vehicle Hired - Regional", 
                           "Contract Network Vehicle Hired - Zonal", "Contract Network Vehicle Hired - National"]
@@ -496,7 +220,7 @@ def process_all_data():
             df_pay['Base Date'] = df_pay['Base Date'].dt.strftime('%d-%b-%Y').fillna("")
             df_pay['Invoice Month'] = df_pay['Invoice Date'].dt.strftime('%b-%Y').fillna("UNKNOWN")
             
-            df_master = df_pay[["RO Name", "Category", "Vendor Name", "Bill Uploader", "Invoice Id", "Hold Key", "Aging Bucket", "Invoice Month", "Days Pending", "Status", "Pending With", "Revert Remarks", "Department Bucket", "Amount", "Base Date"]]
+            df_master = df_pay[["Zone", "RO Name", "Category", "Vendor Name", "Bill Uploader", "Invoice Id", "Hold Key", "Aging Bucket", "Invoice Month", "Days Pending", "Status", "Pending With", "Revert Remarks", "Department Bucket", "Amount", "Base Date"]]
             df_master.to_excel(writer, sheet_name='Master_Database', index=False)
         else:
             st.warning("⚠️ Payment file missing.")
@@ -541,9 +265,9 @@ def process_all_data():
             df_brn['RPTBranchcode_Clean'] = df_brn[brn_col].astype(str).str.strip().str.upper()
             df_brn_clean = df_brn[['RPTBranchcode_Clean', ro_col, zone_col]].drop_duplicates('RPTBranchcode_Clean')
             df_leg = df_leg.merge(df_brn_clean, left_on='CD_FromBranch_Clean', right_on='RPTBranchcode_Clean', how='left')
-            df_leg.rename(columns={ro_col: 'Origin RO', zone_col: 'Region'}, inplace=True)
+            df_leg.rename(columns={ro_col: 'Origin RO', zone_col: 'Zone'}, inplace=True)
             df_leg['Origin RO'] = df_leg['Origin RO'].fillna('Missing RO')
-            df_leg['Region'] = df_leg['Region'].fillna('Missing Zone')
+            df_leg['Zone'] = df_leg['Zone'].fillna('UNKNOWN ZONE')
             
             df_leg[['Origin', 'Destination']] = df_leg['Route Path'].apply(lambda x: pd.Series(extract_orig_dest(x)))
             df_leg['E2E_Pair'] = df_leg['Route Path'].apply(get_route_pair)
@@ -588,7 +312,7 @@ def process_all_data():
             df_leg['Late Arr'] = df_leg['Remark'].str.contains('Late Arr', case=False, na=False).astype(int)
             df_leg['Missing'] = df_leg['Remark'].str.contains('No Dep|Missing', case=False, na=False, regex=True).astype(int)
 
-            exec_sum = df_leg.groupby(['Region', 'LH Type', 'E2E_Pair', 'Origin RO', 'Route Path', 'Leg_Num', 'Legwise', 'Legs']).agg(
+            exec_sum = df_leg.groupby(['Zone', 'LH Type', 'E2E_Pair', 'Origin RO', 'Route Path', 'Leg_Num', 'Legwise', 'Legs']).agg(
                 Trips=('MasterCDNo', 'count'), LDep=('Late Dep', 'sum'), LArr=('Late Arr', 'sum'), Miss=('Missing', 'sum')
             ).reset_index()
 
@@ -636,7 +360,7 @@ def process_all_data():
                 
                 return summary.sort_values(by=['LH Type', 'E2E_Pair', 'Origin', 'Route Path', 'Leg_Num'])
                 
-            leg_sum = generate_summary(df_leg, ['Region', 'LH Type', 'E2E_Pair', 'Origin RO', 'Route Path', 'Origin', 'Destination', 'Leg_Num', 'Legwise', 'Legs'])
+            leg_sum = generate_summary(df_leg, ['Zone', 'LH Type', 'E2E_Pair', 'Origin RO', 'Route Path', 'Origin', 'Destination', 'Leg_Num', 'Legwise', 'Legs'])
             leg_sum.to_excel(writer, sheet_name='Legwise_Route_Summary', index=False)
             
             dt_cols = ['Scheduled Departure Time', 'Actual Departure Time', 'Scheduled Arrival Time', 'Actual Arrival Time']
@@ -750,6 +474,10 @@ def process_all_data():
 
             ro_col = get_col(df_raw, ['vendorro', 'ro']) or 'VendorRO'
             df_raw['RO_Clean'] = df_raw.get(ro_col, pd.Series(['UNKNOWN']*len(df_raw))).astype(str).str.upper().str.strip()
+            
+            # Map Zone to CPK Data
+            df_raw['Zone'] = df_raw['RO_Clean'].map(ro_zone_map).fillna('UNKNOWN ZONE')
+            
             target_ros = ['PATRO', 'CCURO', 'BBSRO', 'GAURO', 'MUMRO', 'DELRO', 'LKORO']
             
             df_updn = df_raw[~df_raw['Final_Type'].str.upper().str.contains('OFD|PICKUP', na=False)]
@@ -759,10 +487,15 @@ def process_all_data():
             df_updn.to_excel(writer, sheet_name='CPK_Raw_Data', index=False)
 
             if not df_updn.empty:
-                agg_updn = df_updn.groupby(['RO_Clean', 'Final_Route', 'Final_Type', 'Cap', 'SortKey', 'VendorName']).agg(
+                # Calculate Rate per trip to ensure grouping separates differing rates
+                df_updn['Trip_Rate'] = np.where(df_updn['Trips'] > 0, df_updn['Cost'] / df_updn['Trips'], 0).round(2)
+                
+                # Modified Groupby to group Vendors with same capacity AND same Rate
+                agg_updn = df_updn.groupby(['RO_Clean', 'Zone', 'Final_Route', 'Final_Type', 'Cap', 'SortKey', 'Trip_Rate']).agg(
                     Total_Trips=('Trips', 'sum'),
                     Total_Carried_Wt=('Wt', 'sum'),
-                    Total_Trip_Cost=('Cost', 'sum')
+                    Total_Trip_Cost=('Cost', 'sum'),
+                    VendorName=('VendorName', lambda x: ', '.join(sorted(set(x.dropna().astype(str)))))
                 ).reset_index()
 
                 agg_updn['Total Capacity'] = agg_updn['Cap'] * agg_updn['Total_Trips']
@@ -770,8 +503,8 @@ def process_all_data():
                 agg_updn['Overall Util %'] = np.where(agg_updn['Total Capacity'] > 0, agg_updn['Total_Carried_Wt'] / agg_updn['Total Capacity'], 0)
                 agg_updn['Avg Trip Cost'] = np.where(agg_updn['Total_Trips'] > 0, agg_updn['Total_Trip_Cost'] / agg_updn['Total_Trips'], 0)
                 
-                updn_final = agg_updn[['RO_Clean', 'Final_Route', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Cap', 'Total Capacity', 'Total_Carried_Wt', 'Avg Trip Cost', 'Total_Trip_Cost', 'Total_Trips', 'VendorName', 'SortKey']]
-                updn_final.columns = ["VendorRO", "Route (UP/DOWN)", "Type", "Overall CPK", "Overall Util %", "VehCap (Base)", "Total Capacity", "Total Carried Wt", "Avg Trip Cost", "Total Trip Cost", "Total Trips", "Vendor(s)", "SortKey"]
+                updn_final = agg_updn[['Zone', 'RO_Clean', 'Final_Route', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Cap', 'Total Capacity', 'Total_Carried_Wt', 'Avg Trip Cost', 'Total_Trip_Cost', 'Total_Trips', 'VendorName', 'SortKey']]
+                updn_final.columns = ["Zone", "VendorRO", "Route (UP/DOWN)", "Type", "Overall CPK", "Overall Util %", "VehCap (Base)", "Total Capacity", "Total Carried Wt", "Avg Trip Cost", "Total Trip Cost", "Total Trips", "Vendor(s)", "SortKey"]
 
                 type_order = {"MCD-National LH":1, "MCD-Zonal LH":2, "MCD-Regional LH":3, "MCD-Feeder":4, "CO-LOADER":5}
                 updn_final['TypeSort'] = updn_final['Type'].map(lambda x: type_order.get(x, 99))
@@ -794,7 +527,7 @@ def process_all_data():
         status_text.error(f"❌ Error during processing: {e}")
 
 # ==========================================
-# 6. SIDEBAR: ADMIN PANEL
+# 5. SIDEBAR: ADMIN PANEL
 # ==========================================
 st.sidebar.title(f"Welcome, {st.session_state['role']}")
 if st.sidebar.button("Logout", key="logout_btn"):
@@ -805,7 +538,7 @@ if st.sidebar.button("Logout", key="logout_btn"):
 st.sidebar.markdown("---")
 
 if st.session_state['role'] == 'Admin':
-    st.sidebar.header("🛠 Admin Data Management")
+    st.sidebar.header("🛠 Data Management")
     with st.sidebar.expander("📂 Upload Raw Files", expanded=False):
         f1 = st.file_uploader("1. Payment Data", type=['xlsx'])
         if save_file(f1, "PAYMENT"): st.success("Saved!")
@@ -842,12 +575,11 @@ if st.session_state['role'] == 'Admin':
     
 if os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
     ts = os.path.getmtime(FILE_MAP["FINAL_OUTPUT"])
-    # Convert file save time to IST for display
     dt = (datetime.datetime.fromtimestamp(ts) + datetime.timedelta(hours=5, minutes=30)).strftime('%d %b %Y, %I:%M %p')
     st.sidebar.info(f"📊 Dashboard Refreshed:\n{dt} (IST)")
 
 # ==========================================
-# 7. DATA LOADING 
+# 6. DATA LOADING & UI ROUTING
 # ==========================================
 @st.cache_data
 def load_dashboard_data():
@@ -864,25 +596,38 @@ if not data:
     st.warning("⚠ No data found! Admin must upload raw files and process data.")
     st.stop()
     
-menu = ["📊 Daily Standup", "💳 Vendor Payment", "📱 WhatsApp Alerts", "💰 CPK & Utilization", "📍 Live Fleet Tracker"]
-choice = st.sidebar.radio("Navigate to:", menu)
+menu = ["📊 Operations Summary", "💳 Payment Dashboard", "📱 Communications", "💰 Network Utilization"]
+choice = st.sidebar.radio("Navigation:", menu)
 
 # -------------------------------------------------------------
-# A. DAILY STANDUP
+# A. DAILY STANDUP (Operations Summary)
 # -------------------------------------------------------------
-if choice == "📊 Daily Standup":
-    st.markdown("<h1>🚨 Exception Reporting</h1>", unsafe_allow_html=True)
+if choice == "📊 Operations Summary":
+    st.markdown("<h2>Operations Exception Summary</h2>", unsafe_allow_html=True)
     
     if 'Legwise_Route_Summary' in data and 'Legwise_Processed_Data' in data:
         df_leg_sum = data['Legwise_Route_Summary'].copy()
         df_raw_leg = data['Legwise_Processed_Data'].copy()
         
-        all_ros = sorted(df_leg_sum['Origin RO'].dropna().unique().tolist())
-        selected_ro = st.selectbox("Select Regional Office (RO):", ["PAN INDIA"] + all_ros)
+        col1, col2, col3 = st.columns([1, 1, 2])
         
-        if selected_ro != "PAN INDIA":
+        # Zone Filter
+        all_zones = sorted(df_leg_sum['Zone'].dropna().unique().tolist())
+        selected_zone = col1.selectbox("Filter by Zone:", ["ALL"] + all_zones)
+        
+        if selected_zone != "ALL":
+            df_leg_sum = df_leg_sum[df_leg_sum['Zone'] == selected_zone]
+            df_raw_leg = df_raw_leg[df_raw_leg['Zone'] == selected_zone]
+            
+        # RO Filter
+        all_ros = sorted(df_leg_sum['Origin RO'].dropna().unique().tolist())
+        selected_ro = col2.selectbox("Filter by RO:", ["ALL"] + all_ros)
+        
+        if selected_ro != "ALL":
             df_leg_sum = df_leg_sum[df_leg_sum['Origin RO'] == selected_ro]
             df_raw_leg = df_raw_leg[df_raw_leg['Origin RO'] == selected_ro]
+
+        search_q = col3.text_input("🔍 Quick Search:", placeholder="Search Route, Leg...")
 
         display_cols = ['Route Path', 'Legwise', 'Legs', 'Total_Trips', 
                         'Ontime Dep, Ontime Arr %', 'Ontime Dep, Late Arr %', 
@@ -890,6 +635,10 @@ if choice == "📊 Daily Standup":
         
         display_cols = [c for c in display_cols if c in df_leg_sum.columns]
         df_display = df_leg_sum[display_cols].copy()
+        
+        if search_q:
+            mask = df_display.astype(str).apply(lambda x: x.str.contains(search_q, case=False)).any(axis=1)
+            df_display = df_display[mask]
             
         def extract_pct(x):
             if isinstance(x, str) and '%' in x:
@@ -933,7 +682,7 @@ if choice == "📊 Daily Standup":
             if hasattr(styled_df, 'map'): styled_df = styled_df.map(lambda x, c=col: highlight_cells(x, c), subset=[col])
             else: styled_df = styled_df.applymap(lambda x, c=col: highlight_cells(x, c), subset=[col])
 
-        st.markdown("### 🔥 Top Priority Routes Summary")
+        st.markdown("### Top Priority Routes Summary")
         
         selection = st.dataframe(
             styled_df, 
@@ -949,12 +698,12 @@ if choice == "📊 Daily Standup":
             selected_leg = df_display.iloc[selected_idx]['Legwise']
             
             st.markdown("---")
-            st.markdown(f"### 🔍 Raw Data Proof: `{selected_route}` - `{selected_leg}`")
+            st.markdown(f"### 📄 Details for `{selected_route}` - `{selected_leg}`")
             
             filtered_raw = df_raw_leg[(df_raw_leg['Route Path'] == selected_route) & (df_raw_leg['Legwise'] == selected_leg)].copy()
             
             cols_to_drop = ['Scheduled TAT Till Destination', 'Actual TAT Till Destination', 
-                            'Overall Remark', 'MCD_EndDate', 'LH Type', 'Origin', 'Destination', 'Region', 'Origin RO']
+                            'Overall Remark', 'MCD_EndDate', 'LH Type', 'Origin', 'Destination', 'Region', 'Origin RO', 'Zone']
             filtered_raw = filtered_raw.drop(columns=[c for c in cols_to_drop if c in filtered_raw.columns], errors='ignore')
             
             logical_order = ['Route Path', 'MCD_StartDate', 'Legwise', 'Legs', 'Remark', 
@@ -978,11 +727,8 @@ if choice == "📊 Daily Standup":
                 else: styled_raw = styled_raw.applymap(highlight_remarks, subset=['Remark'])
                     
             st.dataframe(styled_raw, use_container_width=True)
-            
-            csv_raw = filtered_raw.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Copy / Download Logs as CSV", data=csv_raw, file_name=f"Raw_Logs_{selected_route}_{selected_leg}.csv", mime="text/csv")
         else:
-            st.info("👆 Click any row in the table above to view its detailed proof data.")
+            st.info("👆 Click any row in the table above to view detailed trip records.")
 
     else:
         st.error("Operations Data missing.")
@@ -990,13 +736,22 @@ if choice == "📊 Daily Standup":
 # -------------------------------------------------------------
 # B. VENDOR PAYMENT DASHBOARD 
 # -------------------------------------------------------------
-elif choice == "💳 Vendor Payment":
-    st.markdown("<h1>💳 Pending Tracker</h1>", unsafe_allow_html=True)
+elif choice == "💳 Payment Dashboard":
+    st.markdown("<h2>Pending Payments Tracker</h2>", unsafe_allow_html=True)
     
     if 'Master_Database' in data:
         df_pay = data['Master_Database'].copy()
         
-        st.markdown("### 📊 Overall RO-Wise Control Center")
+        col1, col2 = st.columns([1, 2])
+        
+        all_zones = sorted(df_pay['Zone'].dropna().unique().tolist())
+        selected_zone = col1.selectbox("Filter by Zone:", ["ALL"] + all_zones)
+        
+        if selected_zone != "ALL":
+            df_pay = df_pay[df_pay['Zone'] == selected_zone]
+            
+        search_q = col2.text_input("🔍 Quick Search (Invoice, Vendor, RO...):")
+            
         pvt = pd.pivot_table(df_pay, values='Invoice Id', index='RO Name', columns='Department Bucket', aggfunc='count', fill_value=0, margins=True, margins_name='Grand Total')
         
         cols_order = ["1. USER / DRAFT PENDING", "2. COST CONTROL PENDING", "3. FINANCE PENDING", "4. PAYMENT PENDING", "5. OTHER PENDING", "Grand Total"]
@@ -1015,6 +770,7 @@ elif choice == "💳 Vendor Payment":
             if hasattr(styled_pvt, 'map'): styled_pvt = styled_pvt.map(lambda x, c=col: color_payment_columns(x, c), subset=[col])
             else: styled_pvt = styled_pvt.applymap(lambda x, c=col: color_payment_columns(x, c), subset=[col])
 
+        st.markdown("### RO-Wise Summary")
         pay_selection = st.dataframe(
             styled_pvt, 
             use_container_width=True, 
@@ -1027,16 +783,20 @@ elif choice == "💳 Vendor Payment":
             sel_pay_ro = pvt.index[selected_idx]
             
             st.markdown("---")
-            st.markdown(f"### 🔍 Payment Proof for `{sel_pay_ro}`")
+            st.markdown(f"### 📄 Detailed Invoices for `{sel_pay_ro}`")
             
-            sel_bucket = st.selectbox("Select Pending Status:", existing_cols[:-1])
+            sel_bucket = st.selectbox("Filter Pending Status:", existing_cols[:-1])
             
             if sel_pay_ro == 'Grand Total':
                 filtered_pay = df_pay[df_pay['Department Bucket'] == sel_bucket].copy()
             else:
                 filtered_pay = df_pay[(df_pay['RO Name'] == sel_pay_ro) & (df_pay['Department Bucket'] == sel_bucket)].copy()
                 
-            pay_order = ['Invoice Id', 'RO Name', 'Vendor Name', 'Amount', 'Status', 'Pending With', 'Days Pending', 'Aging Bucket', 'Revert Remarks']
+            if search_q:
+                mask = filtered_pay.astype(str).apply(lambda x: x.str.contains(search_q, case=False)).any(axis=1)
+                filtered_pay = filtered_pay[mask]
+                
+            pay_order = ['Invoice Id', 'Zone', 'RO Name', 'Vendor Name', 'Amount', 'Status', 'Pending With', 'Days Pending', 'Aging Bucket', 'Revert Remarks']
             final_pay_cols = [c for c in pay_order if c in filtered_pay.columns]
             
             leftovers_pay = [c for c in filtered_pay.columns if c not in final_pay_cols and c != 'Bill Uploader']
@@ -1054,22 +814,19 @@ elif choice == "💳 Vendor Payment":
                     "Vendor Name": st.column_config.TextColumn("Vendor Name", width="medium")
                 }
             )
-            
-            csv_pay = filtered_pay.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Copy / Download Payment Logs as CSV", data=csv_pay, file_name=f"Payment_Proof_{sel_pay_ro}.csv", mime="text/csv")
         else:
              st.info("👆 Click any RO row in the table above to view specific invoices.")
 
 # -------------------------------------------------------------
-# C. WHATSAPP AUTOMATOR
+# C. WHATSAPP ALERTS (Communications)
 # -------------------------------------------------------------
-elif choice == "📱 WhatsApp Alerts":
-    st.markdown("<h1>📱 WhatsApp Alerts</h1>", unsafe_allow_html=True)
+elif choice == "📱 Communications":
+    st.markdown("<h2>Actionable Communications</h2>", unsafe_allow_html=True)
     
     if 'Actionable_Notes' in data:
         df_notes = data['Actionable_Notes']
         all_ros = sorted(df_notes['Origin RO'].dropna().unique().tolist())
-        sel_ro = st.selectbox("Select RO:", all_ros)
+        sel_ro = st.selectbox("Select RO for Alert Generation:", all_ros)
         
         ro_notes = df_notes[(df_notes['Origin RO'] == sel_ro) & (df_notes['Status'].str.contains("Critical", na=False, case=False))]
         
@@ -1079,14 +836,14 @@ elif choice == "📱 WhatsApp Alerts":
                 msg += f"🛣️ *Route:* {row['Route Path']} ({row['Legs']})\n⚠️ *Issue:* {row['Actionable Note']}\n\n"
             msg += "Regards,\n*Central Control Tower*"
             
-            st.text_area("Preview WhatsApp Message:", value=msg, height=250)
+            st.text_area("Preview Message:", value=msg, height=250)
             encoded_msg = urllib.parse.quote(msg)
             whatsapp_url = f"https://api.whatsapp.com/send?text={encoded_msg}"
             
             st.markdown(f"""
             <a href="{whatsapp_url}" target="_blank">
                 <button style="background-color: #25D366; color: white; padding: 10px 24px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; font-weight: bold;">
-                    💬 Send to WhatsApp Web
+                    💬 Send via WhatsApp Web
                 </button>
             </a>
             """, unsafe_allow_html=True)
@@ -1098,8 +855,8 @@ elif choice == "📱 WhatsApp Alerts":
 # -------------------------------------------------------------
 # D. CPK & UTILIZATION 
 # -------------------------------------------------------------
-elif choice == "💰 CPK & Utilization":
-    st.markdown("<h1>💰 CPK & Utilization</h1>", unsafe_allow_html=True)
+elif choice == "💰 Network Utilization":
+    st.markdown("<h2>Network Utilization & CPK</h2>", unsafe_allow_html=True)
     if 'Up_Down_Route_Summary' in data and 'CPK_Raw_Data' in data:
         df_cpk_master = data['Up_Down_Route_Summary'].copy()
         df_cpk_raw = data['CPK_Raw_Data'].copy()
@@ -1117,24 +874,38 @@ elif choice == "💰 CPK & Utilization":
             
         df_cpk_master['Super_SortKey'] = df_cpk_master['Route (UP/DOWN)'].apply(create_super_key)
 
-        ro_filter = st.selectbox("Filter RO (CPK):", ["ALL"] + sorted(df_cpk_master['VendorRO'].dropna().unique().tolist()))
+        col1, col2, col3 = st.columns([1, 1, 2])
+        
+        all_zones = sorted(df_cpk_master['Zone'].dropna().unique().tolist())
+        zone_filter = col1.selectbox("Filter Zone:", ["ALL"] + all_zones)
+        
+        if zone_filter != "ALL":
+            df_cpk_master = df_cpk_master[df_cpk_master['Zone'] == zone_filter]
+            
+        all_ros = sorted(df_cpk_master['VendorRO'].dropna().unique().tolist())
+        ro_filter = col2.selectbox("Filter RO:", ["ALL"] + all_ros)
         
         if ro_filter != "ALL": 
             df_cpk_view = df_cpk_master[df_cpk_master['VendorRO'] == ro_filter].copy()
         else:
             df_cpk_view = df_cpk_master.copy()
             
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total Trips", int(df_cpk_view['Total Trips'].sum()))
-        avg_util = (df_cpk_view['Total Carried Wt'].sum() / df_cpk_view['Total Capacity'].sum() * 100) if df_cpk_view['Total Capacity'].sum() > 0 else 0
-        c2.metric("Overall Utilization", f"{avg_util:.1f}%")
-        avg_cpk = (df_cpk_view['Total Trip Cost'].sum() / df_cpk_view['Total Carried Wt'].sum()) if df_cpk_view['Total Carried Wt'].sum() > 0 else 0
-        c3.metric("Overall CPK", f"₹ {avg_cpk:.2f}")
+        search_q = col3.text_input("🔍 Quick Search:", placeholder="Search Route, Vendor...")
         
-        st.markdown("### Top Priority Utilization (Lowest on Top)")
+        if search_q:
+            mask = df_cpk_view.astype(str).apply(lambda x: x.str.contains(search_q, case=False)).any(axis=1)
+            df_cpk_view = df_cpk_view[mask]
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total Trips", int(df_cpk_view['Total Trips'].sum()))
+        avg_util = (df_cpk_view['Total Carried Wt'].sum() / df_cpk_view['Total Capacity'].sum() * 100) if df_cpk_view['Total Capacity'].sum() > 0 else 0
+        m2.metric("Overall Utilization", f"{avg_util:.1f}%")
+        avg_cpk = (df_cpk_view['Total Trip Cost'].sum() / df_cpk_view['Total Carried Wt'].sum()) if df_cpk_view['Total Carried Wt'].sum() > 0 else 0
+        m3.metric("Overall CPK", f"₹ {avg_cpk:.2f}")
+        
+        st.markdown("### Top Priority Utilization List")
         
         df_cpk_view = df_cpk_view.sort_values(by='Overall Util %', ascending=True)
-        
         disp_df = df_cpk_view.copy()
         
         def add_total_row(df):
@@ -1149,6 +920,7 @@ elif choice == "💰 CPK & Utilization":
             tot_avg_cost = tot_cost / tot_trips if tot_trips > 0 else 0
             
             tot_dict = {c: '-' for c in df.columns}
+            tot_dict['Zone'] = 'TOTAL'
             tot_dict['VendorRO'] = 'TOTAL'
             if 'Total Trips' in df.columns: tot_dict['Total Trips'] = tot_trips
             if 'Total Capacity' in df.columns: tot_dict['Total Capacity'] = tot_cap
@@ -1211,7 +983,7 @@ elif choice == "💰 CPK & Utilization":
                 selected_ro_val = df_cpk_view.iloc[selected_idx]['VendorRO']
                 
                 st.markdown("---")
-                st.markdown(f"### 🔗 UP-DOWN Network Connected View")
+                st.markdown(f"### 🔗 Network Connected View (UP & DOWN)")
                 
                 network_df = df_cpk_master[df_cpk_master['Super_SortKey'] == selected_super_sortkey].copy()
                 network_df = network_df.drop(columns=['SortKey', 'Super_SortKey'], errors='ignore')
@@ -1233,17 +1005,18 @@ elif choice == "💰 CPK & Utilization":
 
                 st.dataframe(styled_network, use_container_width=True)
                 
-                # --- VIEW EXACT MATCH RAW TRIPS ---
                 st.markdown("---")
-                st.markdown(f"### 📄 Raw Trip Logs (Exact Proof for {selected_vendor})")
+                st.markdown(f"### 📄 Details for `{selected_vendor}` on `{selected_route_name}`")
+                
+                vendors_list = [v.strip().upper() for v in str(selected_vendor).split(',')]
                 
                 raw_trips = df_cpk_raw[
                     (df_cpk_raw['Final_Route'].astype(str).str.strip().str.upper() == str(selected_route_name).strip().upper()) & 
-                    (df_cpk_raw['VendorName'].astype(str).str.strip().str.upper() == str(selected_vendor).strip().upper()) &
+                    (df_cpk_raw['VendorName'].astype(str).str.strip().str.upper().isin(vendors_list)) &
                     (df_cpk_raw['RO_Clean'].astype(str).str.strip().str.upper() == str(selected_ro_val).strip().upper())
                 ].copy()
 
-                raw_cols = ['RO_Clean', 'Final_Route', 'Final_Type', 'VendorName', 'Vehicle No', 'Date', 'Cap', 'Wt', 'Trips', 'Cost']
+                raw_cols = ['Zone', 'RO_Clean', 'Final_Route', 'Final_Type', 'VendorName', 'Vehicle No', 'Date', 'Cap', 'Wt', 'Trips', 'Cost']
                 raw_cols = [c for c in raw_cols if c in raw_trips.columns]
                 raw_trips = raw_trips[raw_cols]
                 
@@ -1256,125 +1029,8 @@ elif choice == "💰 CPK & Utilization":
                         styled_raw_trips = styled_raw_trips.format({'Cost': format_cost})
                 
                 st.dataframe(styled_raw_trips, use_container_width=True)
-                
-                csv_cpk = raw_trips.to_csv(index=False).encode('utf-8')
-                st.download_button("📥 Copy / Download Trip Logs as CSV", data=csv_cpk, file_name=f"Trip_Logs_{selected_vendor}.csv", mime="text/csv")
 
         else:
-            st.info("👆 Click any row above to view its complete UP & DOWN network & Raw Trips combined.")
+            st.info("👆 Click any row above to view full UP/DOWN network details.")
     else:
         st.info("Please process CPK data first.")
-
-# -------------------------------------------------------------
-# E. LIVE FLEET TRACKER
-# -------------------------------------------------------------
-elif choice == "📍 Live Fleet Tracker":
-    st.markdown("<h1>📍 Live Fleet Tracker</h1>", unsafe_allow_html=True)
-    
-    cache_file = FILE_MAP["FLEET_CACHE"]
-    status_data = get_sync_status()
-    
-    # 1. DISPLAY TIMESTAMPS
-    c1, c2 = st.columns(2)
-    c1.success(f"**▶️ Refresh Started At:** {status_data.get('start', 'Not Started')}")
-    if status_data.get('status') == 'running':
-        c2.warning("**🔄 Status:** Background Sync in Progress...")
-    else:
-        c2.info(f"**⏹️ Refresh Ended At:** {status_data.get('end', 'Not Started')}")
-
-    # Display partial or old data if it exists
-    if os.path.exists(cache_file):
-        try:
-            df_fleet = pd.read_csv(cache_file)
-            df_fleet = df_fleet.drop(columns=['Account_Source'], errors='ignore')
-            df_fleet = df_fleet.replace({np.nan: "-"}) 
-        except:
-            df_fleet = pd.DataFrame()
-    else:
-        df_fleet = pd.DataFrame()
-        
-    # Auto-trigger background update if 15 minutes passed and not already running
-    if status_data.get('start') != 'Not Started':
-        try:
-            last_run_time = datetime.datetime.strptime(status_data['start'], '%I:%M %p, %d %b %Y')
-            # Check against IST
-            if (get_ist_now() - last_run_time).total_seconds() > 900 and status_data.get('status') != 'running':
-                trigger_bg_update()
-        except: pass
-
-    # Show small background warning to let user know data is fetching
-    if status_data.get('status') == 'running':
-        st.caption("🔄 Data is currently being updated in the background. Naya data aate hi table mein add ho jayega (Please refresh view to see updates).")
-
-    # ADMIN CONTROLS (Progress Bar and Error Logs only for Admin)
-    if st.session_state.get('role') == 'Admin':
-        with st.expander("🛠 Admin Controls: Manual Data Sync & Error Logs"):
-            st.info("Manual Sync dabane se background lock override ho jayega, aur turant scraping chalu hogi.")
-            
-            # --- OVERRIDE BUTTON LOGIC ---
-            if st.button("🔄 Force Manual Sync (Override Lock)", use_container_width=True):
-                # FORCE KILL BACKGROUND LOCK
-                lock_file = os.path.join(DATA_DIR, "scraping.lock")
-                if os.path.exists(lock_file):
-                    try: os.remove(lock_file)
-                    except: pass
-                
-                p_bar = st.progress(0)
-                s_txt = st.empty()
-                df_placeholder = st.empty()
-                
-                df_new = run_scraper(p_bar, s_txt, df_placeholder)
-                if not df_new.empty:
-                    s_txt.success("✅ Update Complete! All accounts verified.")
-                    time.sleep(2)
-                    st.rerun()
-                else:
-                    s_txt.error("❌ Failed to fetch data.")
-            
-            if status_data.get('errors'):
-                st.markdown("🚨 **Recent Errors (Agar koi account fail hua ya Skip kiya gaya):**")
-                for err in status_data['errors']:
-                    st.code(err)
-
-    # DISPLAY THE FLEET DATA
-    if not df_fleet.empty:
-        st.info(f"📊 **Total Vehicles Scraped Currently:** {len(df_fleet)}")
-        
-        st.markdown("### 🔍 Search Vehicle & View Map")
-        search_query = st.text_input("Enter 4-digit code or Full Number:", placeholder="Example: 3389")
-        
-        if search_query:
-            sq = search_query.strip()
-            mask = (df_fleet['Vehicle_Code'].astype(str).str.contains(sq, case=False, na=False) | 
-                    df_fleet['Full_Number'].astype(str).str.contains(sq, case=False, na=False))
-            result = df_fleet[mask]
-            
-            if not result.empty:
-                st.success(f"✅ {len(result)} Vehicle(s) found!")
-                for index, vehicle in result.iterrows():
-                    full_no = vehicle.get('Full_Number', '-')
-                    with st.container(border=True):
-                        st.markdown(f"### 🚛 Vehicle No: {full_no}")
-                        c1, c2, c3 = st.columns(3)
-                        c1.metric(label="🚦 Status", value=str(vehicle.get('Status', '-')).upper())
-                        c2.metric(label="⚡ Speed", value=str(vehicle.get('Speed', '-')))
-                        c3.metric(label="🕒 Last Updated", value=str(vehicle.get('Last_Updated', '-')))
-                        st.divider()
-                        loc = str(vehicle.get('Location', '-'))
-                        st.info(f"**🌍 Current Location:**\n\n{loc}")
-                        st.warning(f"**🛣 Bacha Hua Rasta (Distance):**\n\n{str(vehicle.get('Remaining_KMS', '-'))}")
-                        
-                        if loc != "-":
-                            loc_parts = [p.strip() for p in loc.split(',')]
-                            optimized_loc = ", ".join(loc_parts[-3:]) if len(loc_parts) >= 3 else loc
-                            safe_location = urllib.parse.quote(optimized_loc)
-                            gmaps_url = f"https://www.google.com/maps/dir/?api=1&destination={safe_location}"
-                            st.link_button(f"📍 {full_no} Ka Rasta Maps Par Dekhein", gmaps_url, type="primary", use_container_width=True)
-            else:
-                st.error(f"❌ No vehicle found matching '{sq}'.")
-                
-        st.markdown("---")
-        st.markdown("### 📋 Full Fleet Database")
-        st.dataframe(df_fleet, hide_index=True, use_container_width=True)
-    else:
-        st.warning("⚠️️ No data available yet. Admin needs to run the first manual sync.")
