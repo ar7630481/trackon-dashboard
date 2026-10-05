@@ -361,7 +361,6 @@ def process_all_data():
                 summary['Ontime Dep, In-Transit'] = summary.apply(lambda r: format_pct_cnt(r['Ontime_Dep_IT_Cnt'], r[trip_col]), axis=1)
                 summary['Late Dep, In-Transit'] = summary.apply(lambda r: format_pct_cnt(r['Late_Dep_IT_Cnt'], r[trip_col]), axis=1)
                 
-                # Keep counts for internal logic, they will be dropped before export
                 return summary.sort_values(by=['LH Type', 'E2E_Pair', 'Origin', 'Route Path', 'Leg_Num'])
                 
             leg_sum = generate_summary(df_leg, ['Zone', 'LH Type', 'E2E_Pair', 'Origin RO', 'Route Path', 'Origin', 'Destination', 'Leg_Num', 'Legwise', 'Legs'])
@@ -374,7 +373,7 @@ def process_all_data():
             df_leg_final.to_excel(writer, sheet_name='Legwise_Processed_Data', index=False)
 
         else:
-            st.warning("⚠️️ Operations files missing. Skipping Operations module.")
+            st.warning("⚠️ Operations files missing. Skipping Operations module.")
 
         progress.progress(60)
         
@@ -552,7 +551,6 @@ def process_all_data():
 # ==========================================
 # 5. MASTER EXCEL GENERATOR (With VIP Formatting & Raw Data)
 # ==========================================
-@st.cache_data
 def generate_master_excel(data_dict):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -576,7 +574,10 @@ def generate_master_excel(data_dict):
                 worksheet.write(0, col_num, value, header_format)
             # Autofit logic (Max 35 wide)
             for i, col in enumerate(df_to_write.columns):
-                col_len = max(df_to_write[col].astype(str).map(len).max(), len(str(col))) + 2
+                if not df_to_write.empty:
+                    col_len = max(df_to_write[col].astype(str).map(len).max(), len(str(col))) + 2
+                else:
+                    col_len = len(str(col)) + 2
                 worksheet.set_column(i, i, min(col_len, 35))
 
         # --- 1. OPERATIONS SUMMARY ---
@@ -836,17 +837,22 @@ data = load_dashboard_data()
 if data:
     st.sidebar.markdown("---")
     st.sidebar.header("📥 Export Reports")
-    try:
-        master_excel_bytes = generate_master_excel(data)
+    
+    if "master_excel_data" not in st.session_state:
+        st.session_state.master_excel_data = None
+
+    if st.sidebar.button("🛠️ Prepare Executive Report"):
+        with st.spinner("Compiling Master Report... Please Wait"):
+            st.session_state.master_excel_data = generate_master_excel(data)
+            
+    if st.session_state.master_excel_data:
         st.sidebar.download_button(
             label="📄 Download VIP Executive Report",
-            data=master_excel_bytes,
+            data=st.session_state.master_excel_data,
             file_name=f"Trackon_Executive_Master_Report_{datetime.datetime.now().strftime('%d_%b_%Y')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
-    except Exception as e:
-        st.sidebar.error(f"Export Error: {e}")
 
 if os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
     ts = os.path.getmtime(FILE_MAP["FINAL_OUTPUT"])
