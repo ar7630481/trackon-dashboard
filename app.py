@@ -676,14 +676,19 @@ def process_all_data():
                         corrections = json.load(f)
                     
                     for corr in corrections:
-                        route_mask = df_raw['Final_Route'].str.upper() == corr['route'].upper()
-                        cap_mask = df_raw['Cap'] == float(corr['capacity'])
-                        date_mask = df_raw['Date_DT'] >= pd.to_datetime(corr['eff_date'])
+                        route_str = str(corr['route']).strip().upper()
+                        cap_val = float(corr['capacity'])
+                        new_cost = float(corr['new_cost'])
+                        eff_date = pd.to_datetime(corr['eff_date'])
+                        
+                        route_mask = df_raw['Final_Route'].astype(str).str.upper() == route_str
+                        cap_mask = pd.to_numeric(df_raw['Cap'], errors='coerce') == cap_val
+                        date_mask = df_raw['Date_DT'] >= eff_date
                         
                         mask = route_mask & cap_mask & date_mask
-                        df_raw.loc[mask, 'Cost'] = float(corr['new_cost']) * df_raw.loc[mask, 'Trips']
+                        df_raw.loc[mask, 'Cost'] = new_cost * df_raw.loc[mask, 'Trips']
                 except Exception as e:
-                    pass
+                    pass # Rate correction failure won't stop the processing
             
             df_updn = df_raw[~df_raw['Final_Type'].str.upper().str.contains('OFD|PICKUP', na=False)].copy()
             target_keys = df_updn[df_updn['RO_Clean'].isin(target_ros)]['SortKey'].unique()
@@ -696,7 +701,7 @@ def process_all_data():
                 df_updn['Trip_Rate'] = np.where(df_updn['Trips'] > 0, df_updn['Cost'] / df_updn['Trips'], 0).round(2)
                 df_updn['Trip_Rate_Str'] = "₹" + df_updn['Trip_Rate'].astype(str)
                 
-                # Group strictly by Route, Type, and Capacity
+                # Group strictly by Route, Type, Capacity, AND Trip Rate
                 agg_updn = df_updn.groupby(['RO_Clean', 'Zone', 'Final_Route', 'Final_Type', 'Cap', 'SortKey', 'Trip_Rate']).agg(
                     Total_Trips=('Trips', 'sum'),
                     Total_Carried_Wt=('Wt', 'sum'),
