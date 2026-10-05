@@ -6,6 +6,7 @@ import urllib.parse
 import os
 import warnings
 import json
+import gc
 
 warnings.filterwarnings('ignore')
 
@@ -27,7 +28,7 @@ FILE_MAP = {
     "CPK_UTIL": os.path.join(DATA_DIR, "cpk_util.xlsx"),
     "ROUTE_LOOKUP": os.path.join(DATA_DIR, "route_lookup.xlsx"),
     "FINAL_OUTPUT": os.path.join(DATA_DIR, "Auto_Generated_Monitoring_Data.xlsx"),
-    "EXECUTIVE_REPORT": os.path.join(DATA_DIR, "Trackon_VIP_Executive_Report.xlsx"), # Nayi Pre-Generated File
+    "EXECUTIVE_REPORT": os.path.join(DATA_DIR, "Trackon_VIP_Executive_Report.xlsx"),
     "RATE_CORRECTIONS": os.path.join(DATA_DIR, "rate_corrections.json")
 }
 
@@ -135,15 +136,9 @@ def format_pct_cnt(count, total):
     return f"{pct:.1f}% ({int(count)})"
 
 # ==========================================
-# 4. VIP EXCEL GENERATOR (Runs ONLY during Refresh)
+# 4. VIP EXCEL GENERATOR (Runs completely in memory during refresh)
 # ==========================================
-def generate_vip_executive_report_to_disk():
-    if not os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
-        return
-        
-    xls = pd.ExcelFile(FILE_MAP["FINAL_OUTPUT"])
-    data_dict = {sheet: pd.read_excel(xls, sheet_name=sheet) for sheet in xls.sheet_names}
-    
+def generate_vip_executive_report(data_dict):
     with pd.ExcelWriter(FILE_MAP["EXECUTIVE_REPORT"], engine='xlsxwriter') as writer:
         workbook = writer.book
         
@@ -172,8 +167,9 @@ def generate_vip_executive_report_to_disk():
         # --- 1. OPERATIONS SUMMARY ---
         if 'Legwise_Route_Summary' in data_dict:
             df_ops = data_dict['Legwise_Route_Summary'].copy()
+            # Faltu Columns Hataye Gaye
             cols_to_drop = ['OO_Cnt', 'LO_Cnt', 'OL_Cnt', 'LL_Cnt', 'Ontime_Dep_IT_Cnt', 'Late_Dep_IT_Cnt']
-            df_ops = df_ops.drop(columns=cols_to_drop, errors='ignore')
+            df_ops = df_ops.drop(columns=[c for c in cols_to_drop if c in df_ops.columns], errors='ignore')
             
             def extract_pct(x):
                 if isinstance(x, str) and '%' in x:
@@ -323,17 +319,16 @@ def generate_vip_executive_report_to_disk():
             df_cpk_raw.to_excel(writer, sheet_name='Network_Raw', index=False)
             apply_manager_formatting('Network_Raw', df_cpk_raw)
 
-
 # ==========================================
-# 5. MAIN DATA PROCESSING
+# 5. MAIN DATA PROCESSING (Memory Safe)
 # ==========================================
 def process_all_data():
     progress = st.progress(0)
     status_text = st.empty()
     
+    data_for_export = {}
+    
     try:
-        writer = pd.ExcelWriter(FILE_MAP["FINAL_OUTPUT"], engine='xlsxwriter')
-        
         # --- EXTRACT ZONE MAPPING FROM BRANCH MASTER ---
         ro_zone_map = {}
         if os.path.exists(FILE_MAP["BRANCH_MASTER"]):
@@ -378,7 +373,6 @@ def process_all_data():
             df_pay['Status'] = df_pay['Status'].fillna('').astype(str).str.upper()
             df_pay['Pending With'] = df_pay['Pending With'].fillna('').astype(str).str.upper()
             
-            # Add Zone mapping to Payment Data
             df_pay['RO Name Clean'] = df_pay['RO Name'].astype(str).str.strip().str.upper()
             df_pay['Zone'] = df_pay['RO Name Clean'].map(ro_zone_map).fillna('UNKNOWN ZONE')
             
@@ -414,7 +408,8 @@ def process_all_data():
             df_pay['Invoice Month'] = df_pay['Invoice Date'].dt.strftime('%b-%Y').fillna("UNKNOWN")
             
             df_master = df_pay[["Zone", "RO Name", "Category", "Vendor Name", "Bill Uploader", "Invoice Id", "Hold Key", "Aging Bucket", "Invoice Month", "Days Pending", "Status", "Pending With", "Revert Remarks", "Department Bucket", "Amount", "Base Date"]]
-            df_master.to_excel(writer, sheet_name='Master_Database', index=False)
+            data_for_export['Master_Database'] = df_master
+            del df_pay
         else:
             st.warning("⚠️ Payment file missing.")
 
@@ -528,7 +523,7 @@ def process_all_data():
                 
             exec_notes['Actionable Note'] = exec_notes.apply(mk_note, axis=1)
             exec_notes.sort_values(by=['LH Type', 'E2E_Pair', 'Route Path', 'Leg_Num'], inplace=True)
-            exec_notes.to_excel(writer, sheet_name='Actionable_Notes', index=False)
+            data_for_export['Actionable_Notes'] = exec_notes
             
             def generate_summary(df_group, group_cols):
                 df_valid = df_group.copy()
@@ -554,14 +549,15 @@ def process_all_data():
                 return summary.sort_values(by=['LH Type', 'E2E_Pair', 'Origin', 'Route Path', 'Leg_Num'])
                 
             leg_sum = generate_summary(df_leg, ['Zone', 'LH Type', 'E2E_Pair', 'Origin RO', 'Route Path', 'Origin', 'Destination', 'Leg_Num', 'Legwise', 'Legs'])
-            leg_sum.to_excel(writer, sheet_name='Legwise_Route_Summary', index=False)
+            data_for_export['Legwise_Route_Summary'] = leg_sum
             
             dt_cols = ['Scheduled Departure Time', 'Actual Departure Time', 'Scheduled Arrival Time', 'Actual Arrival Time']
             for c in dt_cols: df_leg[c] = df_leg[c].dt.strftime('%d-%m-%Y %H:%M').fillna('')
             df_leg['MCD_StartDate'] = pd.to_datetime(df_leg['MCD_StartDate_DT']).dt.strftime('%d-%m-%Y')
             df_leg_final = df_leg.drop(columns=['Leg_Num', 'E2E_Pair'], errors='ignore')
-            df_leg_final.to_excel(writer, sheet_name='Legwise_Processed_Data', index=False)
-
+            data_for_export['Legwise_Processed_Data'] = df_leg_final
+            
+            del df_leg, df_rte, df_brn, route_tat_master
         else:
             st.warning("⚠️ Operations files missing. Skipping Operations module.")
 
@@ -688,18 +684,20 @@ def process_all_data():
                         mask = route_mask & cap_mask & date_mask
                         df_raw.loc[mask, 'Cost'] = float(corr['new_cost']) * df_raw.loc[mask, 'Trips']
                 except Exception as e:
-                    pass
+                    print(f"Error applying rate corrections: {e}")
             
             df_updn = df_raw[~df_raw['Final_Type'].str.upper().str.contains('OFD|PICKUP', na=False)].copy()
             target_keys = df_updn[df_updn['RO_Clean'].isin(target_ros)]['SortKey'].unique()
             df_updn = df_updn[df_updn['SortKey'].isin(target_keys)]
             
-            df_updn.to_excel(writer, sheet_name='CPK_Raw_Data', index=False)
+            data_for_export['CPK_Raw_Data'] = df_updn
 
             if not df_updn.empty:
+                # Calculate Trip Rate for each raw entry before grouping
                 df_updn['Trip_Rate'] = np.where(df_updn['Trips'] > 0, df_updn['Cost'] / df_updn['Trips'], 0).round(2)
                 df_updn['Trip_Rate_Str'] = "₹" + df_updn['Trip_Rate'].astype(str)
                 
+                # Group strictly by Route, Type, and Capacity (Merge all matching trips and vendors into one row)
                 agg_updn = df_updn.groupby(['RO_Clean', 'Zone', 'Final_Route', 'Final_Type', 'Cap', 'SortKey', 'Trip_Rate']).agg(
                     Total_Trips=('Trips', 'sum'),
                     Total_Carried_Wt=('Wt', 'sum'),
@@ -712,6 +710,7 @@ def process_all_data():
                 agg_updn['Overall CPK'] = np.where(agg_updn['Total_Carried_Wt'] > 0, agg_updn['Total_Trip_Cost'] / agg_updn['Total_Carried_Wt'], 0)
                 agg_updn['Overall Util %'] = np.where(agg_updn['Total Capacity'] > 0, agg_updn['Total_Carried_Wt'] / agg_updn['Total Capacity'], 0)
                 
+                # Column selection matching the requested output format exactly
                 updn_final = agg_updn[['Zone', 'RO_Clean', 'Final_Route', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Cap', 'Total Capacity', 'Total_Carried_Wt', 'Avg_Trip_Cost', 'Total_Trip_Cost', 'Total_Trips', 'VendorName', 'SortKey']]
                 updn_final.columns = ["Zone", "VendorRO", "Route (UP/DOWN)", "Type", "Overall CPK", "Overall Util %", "VehCap (Base)", "Total Capacity", "Total Carried Wt", "Avg Trip Cost", "Total Trip Cost", "Total Trips", "Vendor(s)", "SortKey"]
 
@@ -719,28 +718,37 @@ def process_all_data():
                 updn_final['TypeSort'] = updn_final['Type'].map(lambda x: type_order.get(x, 99))
                 updn_final = updn_final.sort_values(by=['TypeSort', 'SortKey', 'Route (UP/DOWN)'], ascending=[True, True, True]).drop(columns=['TypeSort'])
 
-                updn_final.to_excel(writer, sheet_name='Up_Down_Route_Summary', index=False)
+                data_for_export['Up_Down_Route_Summary'] = updn_final
 
+            del df_raw, df_lookup
         else:
             st.warning("⚠️ CPK files missing. Skipping CPK module.")
             
+        progress.progress(80)
+        
+        # 1. SAVE RAW FILE FOR DASHBOARD
+        status_text.text("⚙️ Saving Raw Database...")
+        with pd.ExcelWriter(FILE_MAP["FINAL_OUTPUT"], engine='xlsxwriter') as writer:
+            for k, v in data_for_export.items():
+                v.to_excel(writer, sheet_name=k, index=False)
+                
         progress.progress(90)
-        writer.close()
         
-        # --- GENERATE VIP EXCEL DIRECTLY TO DISK DURING PROCESSING ---
+        # 2. GENERATE VIP EXECUTIVE EXCEL (Directly to disk)
         status_text.text("⚙️ Generating VIP Executive Report...")
-        generate_vip_executive_report_to_disk()
-        
+        generate_vip_executive_report(data_for_export)
+
         progress.progress(100)
         status_text.success("✅ Data Processed & VIP Report Generated Successfully!")
         
-        st.cache_data.clear()
-    
+        load_dashboard_data.clear() # Clear specific cache safely
+        gc.collect() # Force free memory
+        
     except Exception as e:
         status_text.error(f"❌ Error during processing: {e}")
 
 # ==========================================
-# 6. SIDEBAR: ADMIN PANEL
+# 6. SIDEBAR: ADMIN PANEL & RATE CORRECTIONS
 # ==========================================
 st.sidebar.title(f"Welcome, {st.session_state['role']}")
 if st.sidebar.button("Logout", key="logout_btn"):
@@ -817,7 +825,7 @@ if st.session_state['role'] == 'Admin':
         st.rerun()
 
 # ==========================================
-# 7. DATA LOADING & EXPORT BUTTON
+# 7. DASHBOARD UI & DOWNLOAD BUTTON
 # ==========================================
 @st.cache_data
 def load_dashboard_data():
@@ -830,21 +838,19 @@ def load_dashboard_data():
 
 data = load_dashboard_data()
 
-# EXPORT MASTER BUTTON IN SIDEBAR (Zero Processing, Just Read from Disk)
+# 📥 EXPORT REPORT - DIRECT FILE STREAM (100% Crash-Free)
 if os.path.exists(FILE_MAP["EXECUTIVE_REPORT"]):
     st.sidebar.markdown("---")
     st.sidebar.header("📥 Export Reports")
     
     with open(FILE_MAP["EXECUTIVE_REPORT"], "rb") as f:
-        excel_bytes = f.read()
-        
-    st.sidebar.download_button(
-        label="📄 Download VIP Executive Report",
-        data=excel_bytes,
-        file_name=f"Trackon_Executive_Master_Report_{datetime.datetime.now().strftime('%d_%b_%Y')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
-    )
+        st.sidebar.download_button(
+            label="📄 Download VIP Executive Report",
+            data=f,
+            file_name=f"Trackon_Executive_Master_Report_{datetime.datetime.now().strftime('%d_%b_%Y')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
 
 if os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
     ts = os.path.getmtime(FILE_MAP["FINAL_OUTPUT"])
