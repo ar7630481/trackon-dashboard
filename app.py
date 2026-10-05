@@ -136,7 +136,16 @@ def format_pct_cnt(count, total):
 def generate_vip_executive_report_to_disk(data_dict, output_path=None):
     with pd.ExcelWriter(output_path or FILE_MAP["EXECUTIVE_REPORT"], engine='xlsxwriter') as writer:
         workbook = writer.book
-        header_format = workbook.add_format({'bold': True, 'bg_color': '#1E3A8A', 'font_color': 'white', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'text_wrap': True})
+        
+        header_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#1E3A8A',
+            'font_color': 'white',
+            'border': 1,
+            'align': 'center',
+            'valign': 'vcenter',
+            'text_wrap': True
+        })
         
         def apply_manager_formatting(sheet_name, df_to_write):
             worksheet = writer.sheets[sheet_name]
@@ -312,7 +321,9 @@ def process_all_data():
             df_vperf['Delay Hours'] = df_vperf['Delay Hours_Raw'].apply(format_hrs_safe)
             
             perf_cols = ['Route Path', 'Legwise', 'Legs', 'Given Driving Hours', 'Actual Driving Hours', 'Delay Hours', 'Remark with 15 min waiver', 'VendorName', 'VehicleNo', 'MasterCDNo', 'RouteCode', 'Zone', 'Origin RO']
-            df_vperf_raw = df_vperf[perf_cols].copy()
+            df_vperf_raw = df_vperf[perf_cols + ['MCD_StartDate_DT']].copy()
+            df_vperf_raw['Date'] = df_vperf_raw['MCD_StartDate_DT'].dt.strftime('%d-%m-%Y')
+            df_vperf_raw = df_vperf_raw.drop(columns=['MCD_StartDate_DT'])
             
             sum_cols = ['Zone', 'Origin RO', 'Route Path', 'Legwise', 'Legs', 'VendorName']
             perf_sum = df_vperf_raw.groupby(sum_cols).agg(
@@ -369,6 +380,11 @@ def process_all_data():
             df_leg['MCD_StartDate'] = pd.to_datetime(df_leg['MCD_StartDate_DT']).dt.strftime('%d-%m-%Y')
             df_leg_final = df_leg.drop(columns=['Leg_Num', 'E2E_Pair'], errors='ignore')
             data_for_export['Legwise_Processed_Data'] = df_leg_final
+            
+            del df_leg, df_leg_all, df_rte, route_tat_master
+        else:
+            st.warning("⚠️ Operations files missing. Skipping Operations module.")
+
         progress.progress(60)
 
         status_text.text("⚙️ Calculating CPK & Utilization...")
@@ -515,7 +531,7 @@ if st.session_state['role'] == 'Admin':
         st.stop()
 
 # ==========================================
-# 7. DASHBOARD UI
+# 7. DASHBOARD UI & DOWNLOAD BUTTON
 # ==========================================
 MENU_SHEETS = {
     "📊 Operations Summary": ('Legwise_Route_Summary', 'Legwise_Processed_Data'),
@@ -598,24 +614,40 @@ if choice == "📊 Operations Summary":
 
         search_q = col3.text_input("🔍 Quick Search:", placeholder="Search Route, Leg...")
         display_cols = ['Route Path', 'Legwise', 'Legs', 'Total_Trips', 'Ontime Dep, Ontime Arr %', 'Ontime Dep, Late Arr %', 'Late Dep, Late Arr %', 'Late Dep, Ontime Arr %']
+        
+        display_cols = [c for c in display_cols if c in df_leg_sum.columns]
         df_display = df_leg_sum[display_cols].copy()
         
         if search_q: df_display = df_display[df_display.astype(str).apply(lambda x: x.str.contains(search_q, case=False, regex=False, na=False)).any(axis=1)]
 
-        def highlight_cells(val, col):
-            if not isinstance(val, str) or '%' not in val: return ''
-            try: pct = float(val.split('%')[0].strip())
-            except: return ''
-            if pct == 0: return 'color: #78909C;' 
-            if 'Late Dep, Late Arr' in col: return 'background-color: rgba(211, 47, 47, 0.15); color: #ff5252; font-weight: bold;'
-            elif 'Ontime Dep, Ontime Arr' in col: return 'background-color: rgba(56, 142, 60, 0.15); color: #69f0ae; font-weight: bold;'
-            elif 'Ontime Dep, Late Arr' in col: return 'background-color: rgba(245, 127, 23, 0.15); color: #ffd740; font-weight: bold;'
-            elif 'Late Dep, Ontime Arr' in col: return 'background-color: rgba(123, 31, 162, 0.15); color: #e040fb; font-weight: bold;'
-            return ''
+        styled_df = df_display.style
+        pct_cols = [c for c in df_display.columns if '%' in c]
+        for col in pct_cols:
+            def highlight_cells(val, c=col):
+                if not isinstance(val, str) or '%' not in val: return ''
+                try: pct = float(val.split('%')[0].strip())
+                except: return ''
+                if pct == 0: return 'color: #78909C;' 
+                if 'Late Dep, Late Arr' in c: return 'background-color: rgba(211, 47, 47, 0.15); color: #ff5252; font-weight: bold;'
+                elif 'Ontime Dep, Ontime Arr' in c: return 'background-color: rgba(56, 142, 60, 0.15); color: #69f0ae; font-weight: bold;'
+                elif 'Ontime Dep, Late Arr' in c: return 'background-color: rgba(245, 127, 23, 0.15); color: #ffd740; font-weight: bold;'
+                elif 'Late Dep, Ontime Arr' in c: return 'background-color: rgba(123, 31, 162, 0.15); color: #e040fb; font-weight: bold;'
+                return ''
+            if hasattr(styled_df, 'map'): styled_df = styled_df.map(highlight_cells, subset=[col])
+            else: styled_df = styled_df.applymap(highlight_cells, subset=[col])
 
-        styled_df = df_display.style.map(lambda x, c=col: highlight_cells(x, c), subset=[c for c in df_display.columns if '%' in c])
         st.markdown("### Top Priority Routes Summary")
-        st.dataframe(styled_df, use_container_width=True, height=300, on_select="rerun", selection_mode="single-row")
+        selection = st.dataframe(styled_df, use_container_width=True, height=300, on_select="rerun", selection_mode="single-row")
+        
+        if selection and selection.get('selection', {}).get('rows'):
+            selected_idx = selection['selection']['rows'][0]
+            selected_route = df_display.iloc[selected_idx]['Route Path']
+            selected_leg = df_display.iloc[selected_idx]['Legwise']
+            
+            st.markdown("---")
+            st.markdown(f"### 📄 Details for `{selected_route}` - `{selected_leg}`")
+            filtered_raw = df_raw_leg[(df_raw_leg['Route Path'] == selected_route) & (df_raw_leg['Legwise'] == selected_leg)].copy()
+            st.dataframe(filtered_raw, use_container_width=True)
 
 # -------------------------------------------------------------
 # B. VENDOR PERFORMANCE 
@@ -641,25 +673,26 @@ elif choice == "🚚 Vendor Performance":
 
         search_q = col3.text_input("🔍 Quick Search:", placeholder="Search Route, Vendor, Leg...")
         display_cols = ['Route Path', 'Legwise', 'Legs', 'VendorName', 'Total_Trips', 'Ontime Arrival', 'Late Arrival', 'In-Transit']
+        
+        display_cols = [c for c in display_cols if c in df_vperf_sum.columns]
         df_display = df_vperf_sum[display_cols].copy()
         
         if search_q: df_display = df_display[df_display.astype(str).apply(lambda x: x.str.contains(search_q, case=False, regex=False, na=False)).any(axis=1)]
             
-        def highlight_perf(val, col):
-            if not isinstance(val, str) or '%' not in val: return ''
-            try: pct = float(val.split('%')[0].strip())
-            except: return ''
-            if pct == 0: return 'color: #78909C;' 
-            if col == 'Late Arrival': return 'background-color: rgba(211, 47, 47, 0.15); color: #ff5252; font-weight: bold;'
-            elif col == 'Ontime Arrival': return 'background-color: rgba(56, 142, 60, 0.15); color: #69f0ae; font-weight: bold;'
-            elif col == 'In-Transit': return 'background-color: rgba(245, 127, 23, 0.15); color: #ffd740; font-weight: bold;'
-            return ''
-
         styled_df = df_display.style
-        pct_cols = ['Ontime Arrival', 'Late Arrival', 'In-Transit']
+        pct_cols = [c for c in ['Ontime Arrival', 'Late Arrival', 'In-Transit'] if c in df_display.columns]
         for col in pct_cols:
-            if hasattr(styled_df, 'map'): styled_df = styled_df.map(lambda x, c=col: highlight_perf(x, c), subset=[col])
-            else: styled_df = styled_df.applymap(lambda x, c=col: highlight_perf(x, c), subset=[col])
+            def highlight_perf(val, c=col):
+                if not isinstance(val, str) or '%' not in val: return ''
+                try: pct = float(val.split('%')[0].strip())
+                except: return ''
+                if pct == 0: return 'color: #78909C;' 
+                if c == 'Late Arrival': return 'background-color: rgba(211, 47, 47, 0.15); color: #ff5252; font-weight: bold;'
+                elif c == 'Ontime Arrival': return 'background-color: rgba(56, 142, 60, 0.15); color: #69f0ae; font-weight: bold;'
+                elif c == 'In-Transit': return 'background-color: rgba(245, 127, 23, 0.15); color: #ffd740; font-weight: bold;'
+                return ''
+            if hasattr(styled_df, 'map'): styled_df = styled_df.map(highlight_perf, subset=[col])
+            else: styled_df = styled_df.applymap(highlight_perf, subset=[col])
 
         st.markdown("### Vendor Arrival Performance Summary")
         selection = st.dataframe(styled_df, use_container_width=True, height=300, on_select="rerun", selection_mode="single-row")
@@ -680,9 +713,9 @@ elif choice == "🚚 Vendor Performance":
 # -------------------------------------------------------------
 elif choice == "📱 Vendor Communication Hub":
     st.markdown("<h2>Vendor Alerts & Messaging Hub</h2>", unsafe_allow_html=True)
-    if 'Vendor_Perf_Raw' in data:
+    if 'Vendor_Perf_Raw' in data and 'Vendor_Perf_Summary' in data:
         df_vperf_raw = data['Vendor_Perf_Raw'].copy()
-        df_late = df_vperf_raw[df_vperf_raw['Remark with 15 min waiver'] == 'Late Arrival'].copy()
+        df_vperf_sum = data['Vendor_Perf_Summary'].copy()
         
         vendor_master_dict = {}
         if os.path.exists(FILE_MAP.get("VENDOR_MASTER", "")):
@@ -696,97 +729,185 @@ elif choice == "📱 Vendor Communication Hub":
                     }
             except: pass
 
-        col1, col2, col3 = st.columns([1, 1, 2])
+        st.markdown("### ⚡ Bulk Auto-Send Alert (To ALL Late Vendors)")
+        st.caption("Select Zone/RO if you only want to bulk send to specific regions. Leaving it as 'ALL' will target everyone.")
+        
+        df_late = df_vperf_raw[df_vperf_raw['Remark with 15 min waiver'] == 'Late Arrival'].copy()
+        
+        bc1, bc2 = st.columns(2)
         all_zones = sorted(df_late['Zone'].dropna().unique().tolist())
-        sel_zone = col1.selectbox("Filter Zone:", ["ALL"] + all_zones)
-        if sel_zone != "ALL": df_late = df_late[df_late['Zone'] == sel_zone]
+        bulk_zone = bc1.selectbox("Bulk Filter Zone:", ["ALL"] + all_zones)
+        if bulk_zone != "ALL": df_late = df_late[df_late['Zone'] == bulk_zone]
             
         all_ros = sorted(df_late['Origin RO'].dropna().unique().tolist())
-        sel_ro = col2.selectbox("Filter RO:", ["ALL"] + all_ros)
-        if sel_ro != "ALL": df_late = df_late[df_late['Origin RO'] == sel_ro]
+        bulk_ro = bc2.selectbox("Bulk Filter RO:", ["ALL"] + all_ros)
+        if bulk_ro != "ALL": df_late = df_late[df_late['Origin RO'] == bulk_ro]
+
+        all_late_vendors = sorted(df_late['VendorName'].dropna().unique().tolist())
         
-        all_vendors = sorted(df_late['VendorName'].dropna().unique().tolist())
-        sel_vendor = col3.selectbox("Select Vendor to Alert (from late trips):", all_vendors)
+        with st.expander("🚀 Execute Bulk Email Send"):
+            st.warning(f"This will send individual performance Excel reports AND Summaries to {len(all_late_vendors)} vendors matching the filters.")
+            with st.form("bulk_email_form"):
+                sc1, sc2 = st.columns(2)
+                sender_email_bulk = sc1.text_input("Your Email (Gmail/Outlook):", placeholder="ops@company.com", key="bulk_email")
+                sender_pass_bulk = sc2.text_input("App Password:", type="password", placeholder="16-digit app password", key="bulk_pass")
+                cc_email_bulk = st.text_input("CC Email ID (Optional, goes to all):", key="bulk_cc")
+                bulk_send_btn = st.form_submit_button("Send Bulk Emails Now")
+                
+                if bulk_send_btn:
+                    if not sender_email_bulk or not sender_pass_bulk:
+                        st.error("Please provide Sender Email and App Password.")
+                    elif len(all_late_vendors) == 0:
+                        st.info("No late vendors found in the selected filters.")
+                    else:
+                        progress_bar = st.progress(0)
+                        status_txt = st.empty()
+                        sent_count = 0
+                        
+                        try:
+                            smtp_server = "smtp.gmail.com" if "@gmail" in sender_email_bulk else "smtp.office365.com"
+                            server = smtplib.SMTP(smtp_server, 587)
+                            server.starttls()
+                            server.login(sender_email_bulk, sender_pass_bulk)
+                            
+                            for i, vendor in enumerate(all_late_vendors):
+                                vendor_email = vendor_master_dict.get(vendor.upper(), {}).get('email', '')
+                                if not vendor_email or vendor_email == 'nan':
+                                    continue
+                                    
+                                vendor_trips = df_late[df_late['VendorName'] == vendor]
+                                top_trips = vendor_trips.head(5)
+                                trip_str = ""
+                                for _, row in top_trips.iterrows(): 
+                                    trip_str += f"- Route: {row['Route Path']} | Veh: {row['VehicleNo']} | Delay: {row['Delay Hours']}
+"
+                                
+                                # Fetch vendor specific summary for the text message
+                                vendor_summary_df = df_vperf_sum[df_vperf_sum['VendorName'] == vendor]
+                                sum_str = ""
+                                if not vendor_summary_df.empty:
+                                    sum_str = "
+Here is your overall Route-wise performance summary:
+"
+                                    for _, s_row in vendor_summary_df.iterrows():
+                                        sum_str += f"Route: {s_row['Route Path']} ({s_row['Legs']}) | Total Trips: {s_row['Total_Trips']} | Ontime: {s_row['Ontime Arrival']} | Late: {s_row['Late Arrival']}
+"
+                                
+                                msg_body = f"Dear {vendor},
+
+Please find attached the arrival performance report for your vehicles. The following trips have been consistently reported as late:
+
+{trip_str}{sum_str}
+Kindly take necessary actions to ensure on-time arrivals in the future.
+
+Best Regards,
+Trackon Command Center"
+                                
+                                msg_email = MIMEMultipart()
+                                msg_email['From'] = sender_email_bulk
+                                msg_email['To'] = vendor_email
+                                if cc_email_bulk: msg_email['Cc'] = cc_email_bulk
+                                msg_email['Subject'] = f"Trackon Performance Alert: {vendor}"
+                                msg_email.attach(MIMEText(msg_body, 'plain'))
+                                
+                                output_ven = io.BytesIO()
+                                with pd.ExcelWriter(output_ven, engine='xlsxwriter') as v_writer:
+                                    df_v_all = df_vperf_raw[df_vperf_raw['VendorName'] == vendor].copy()
+                                    df_v_all.to_excel(v_writer, sheet_name='Vendor_Raw_Report', index=False)
+                                    df_v_sum_all = df_vperf_sum[df_vperf_sum['VendorName'] == vendor].copy()
+                                    df_v_sum_all.to_excel(v_writer, sheet_name='Vendor_Summary_Report', index=False)
+                                    
+                                    v_workbook = v_writer.book
+                                    v_format = v_workbook.add_format({'bold': True, 'bg_color': '#1E3A8A', 'font_color': 'white', 'border': 1})
+                                    
+                                    for s_name, d_frame in [('Vendor_Raw_Report', df_v_all), ('Vendor_Summary_Report', df_v_sum_all)]:
+                                        v_worksheet = v_writer.sheets[s_name]
+                                        for col_num, value in enumerate(d_frame.columns.values): v_worksheet.write(0, col_num, value, v_format)
+                                
+                                ven_file_name = f"{vendor}_Performance_Report.xlsx"
+                                part = MIMEApplication(output_ven.getvalue(), Name=ven_file_name)
+                                part['Content-Disposition'] = f'attachment; filename="{ven_file_name}"'
+                                msg_email.attach(part)
+                                
+                                recipients = [vendor_email]
+                                if cc_email_bulk: recipients.append(cc_email_bulk)
+                                server.sendmail(sender_email_bulk, recipients, msg_email.as_string())
+                                sent_count += 1
+                                
+                                progress_bar.progress((i + 1) / len(all_late_vendors))
+                                status_txt.text(f"Sent {sent_count} emails...")
+                                
+                            server.quit()
+                            status_txt.success(f"✅ Successfully sent {sent_count} emails to vendors in background!")
+                        except Exception as e:
+                            status_txt.error(f"Failed during bulk send. Error: {str(e)}")
+
+        st.markdown("---")
+        st.markdown("### 🎯 Single Vendor Manual Alert (WhatsApp & Mail)")
+        sel_vendor_manual = st.selectbox("Select Individual Vendor to Alert:", all_late_vendors)
         
-        if sel_vendor:
-            vendor_late_trips = df_late[df_late['VendorName'] == sel_vendor].copy()
-            st.markdown(f"### 🚨 Total Late Trips for {sel_vendor}: {len(vendor_late_trips)}")
+        if sel_vendor_manual:
+            vendor_late_trips = df_late[df_late['VendorName'] == sel_vendor_manual].copy()
+            vendor_sum_manual = df_vperf_sum[df_vperf_sum['VendorName'] == sel_vendor_manual].copy()
+            
+            st.markdown(f"**Total Late Trips for {sel_vendor_manual}: {len(vendor_late_trips)}**")
             
             top_trips = vendor_late_trips.head(5) 
             trip_str = ""
-            for idx, row in top_trips.iterrows(): trip_str += f"- Route: {row['Route Path']} | Veh: {row['VehicleNo']} | Delay: {row['Delay Hours']}\n"
+            for idx, row in top_trips.iterrows(): trip_str += f"- Route: {row['Route Path']} | Veh: {row['VehicleNo']} | Delay: {row['Delay Hours']}
+"
             
-            msg = f"Dear {sel_vendor},\n\nPlease find attached the arrival performance report for your vehicles. The following trips have been consistently reported as late:\n\n{trip_str}\nKindly take necessary actions to ensure on-time arrivals in the future.\n\nBest Regards,\nTrackon Command Center"
+            sum_str_manual = ""
+            if not vendor_sum_manual.empty:
+                sum_str_manual = "
+Here is your overall Route-wise performance summary:
+"
+                for _, s_row in vendor_sum_manual.iterrows():
+                    sum_str_manual += f"Route: {s_row['Route Path']} ({s_row['Legs']}) | Total Trips: {s_row['Total_Trips']} | Ontime: {s_row['Ontime Arrival']} | Late: {s_row['Late Arrival']}
+"
+
+            msg = f"Dear {sel_vendor_manual},
+
+Please find attached the arrival performance report for your vehicles. The following trips have been consistently reported as late:
+
+{trip_str}{sum_str_manual}
+Kindly take necessary actions to ensure on-time arrivals in the future.
+
+Best Regards,
+Trackon Command Center"
             
-            st.markdown("### ✉️ Prepare Message & Send")
-            default_wp = vendor_master_dict.get(sel_vendor.upper(), {}).get('whatsapp', '')
-            default_email = vendor_master_dict.get(sel_vendor.upper(), {}).get('email', '')
+            default_wp = vendor_master_dict.get(sel_vendor_manual.upper(), {}).get('whatsapp', '')
+            default_email = vendor_master_dict.get(sel_vendor_manual.upper(), {}).get('email', '')
             
-            with st.form("comm_form"):
-                st.subheader("1. Background Email Sender Setup")
-                sc1, sc2 = st.columns(2)
-                sender_email = sc1.text_input("Your Email (Gmail/Outlook):", placeholder="ops@company.com")
-                sender_pass = sc2.text_input("App Password:", type="password", placeholder="16-digit app password")
-                
-                st.subheader("2. Vendor Details")
+            with st.form("single_comm_form"):
                 mc1, mc2 = st.columns(2)
                 wp_num = mc1.text_input("Vendor WhatsApp Number (with Country Code):", value=default_wp)
                 email_id = mc2.text_input("Vendor Email ID:", value=default_email)
-                cc_email = mc2.text_input("CC Email ID:")
-                
-                body_text = st.text_area("Message Body (WhatsApp & Email):", value=msg, height=200)
-                st.markdown("---")
-                send_email_btn = st.form_submit_button("🚀 Send Excel Report via Background Email")
+                body_text = st.text_area("Message Body (English):", value=msg, height=300)
+                submit_comm = st.form_submit_button("Lock Message Format")
 
             output_ven = io.BytesIO()
             with pd.ExcelWriter(output_ven, engine='xlsxwriter') as v_writer:
-                df_v_all = df_vperf_raw[df_vperf_raw['VendorName'] == sel_vendor].copy()
-                df_v_all.to_excel(v_writer, sheet_name='Vendor_Report', index=False)
+                df_v_all = df_vperf_raw[df_vperf_raw['VendorName'] == sel_vendor_manual].copy()
+                df_v_all.to_excel(v_writer, sheet_name='Vendor_Raw_Report', index=False)
+                df_v_sum_manual_exp = df_vperf_sum[df_vperf_sum['VendorName'] == sel_vendor_manual].copy()
+                df_v_sum_manual_exp.to_excel(v_writer, sheet_name='Vendor_Summary_Report', index=False)
+                
                 v_workbook = v_writer.book
                 v_format = v_workbook.add_format({'bold': True, 'bg_color': '#1E3A8A', 'font_color': 'white', 'border': 1})
-                v_worksheet = v_writer.sheets['Vendor_Report']
-                for col_num, value in enumerate(df_v_all.columns.values): v_worksheet.write(0, col_num, value, v_format)
+                
+                for s_name, d_frame in [('Vendor_Raw_Report', df_v_all), ('Vendor_Summary_Report', df_v_sum_manual_exp)]:
+                    v_worksheet = v_writer.sheets[s_name]
+                    for col_num, value in enumerate(d_frame.columns.values): v_worksheet.write(0, col_num, value, v_format)
                     
-            ven_file_name = f"{sel_vendor}_Performance_Report.xlsx"
+            ven_file_name = f"{sel_vendor_manual}_Performance_Report.xlsx"
             
-            st.markdown("### Quick Actions")
             c1, c2 = st.columns(2)
             c1.download_button("1️⃣ Download Vendor Report (Excel)", data=output_ven.getvalue(), file_name=ven_file_name, mime="application/vnd.ms-excel", use_container_width=True)
             
             encoded_msg = urllib.parse.quote(body_text)
             wp_url = f"https://api.whatsapp.com/send?phone={wp_num}&text={encoded_msg}"
             c2.markdown(f'<a href="{wp_url}" target="_blank"><button style="background-color: #25D366; color: white; padding: 10px 24px; border: none; border-radius: 5px; width: 100%; cursor: pointer;">2️⃣ Send Smart Text via WhatsApp</button></a>', unsafe_allow_html=True)
-            
-            if send_email_btn:
-                if not sender_email or not sender_pass or not email_id:
-                    st.error("Please fill Your Email, App Password, and Vendor Email.")
-                else:
-                    with st.spinner("Sending email in background..."):
-                        try:
-                            msg_email = MIMEMultipart()
-                            msg_email['From'] = sender_email
-                            msg_email['To'] = email_id
-                            if cc_email: msg_email['Cc'] = cc_email
-                            msg_email['Subject'] = f"Trackon Performance Alert: {sel_vendor}"
-                            msg_email.attach(MIMEText(body_text, 'plain'))
-                            
-                            part = MIMEApplication(output_ven.getvalue(), Name=ven_file_name)
-                            part['Content-Disposition'] = f'attachment; filename="{ven_file_name}"'
-                            msg_email.attach(part)
-                            
-                            smtp_server = "smtp.gmail.com" if "@gmail" in sender_email else "smtp.office365.com"
-                            server = smtplib.SMTP(smtp_server, 587)
-                            server.starttls()
-                            server.login(sender_email, sender_pass)
-                            
-                            recipients = [email_id]
-                            if cc_email: recipients.append(cc_email)
-                            server.sendmail(sender_email, recipients, msg_email.as_string())
-                            server.quit()
-                            
-                            st.success(f"✅ Email successfully sent to {email_id}!")
-                        except Exception as e:
-                            st.error(f"Failed to send email. Check App Password. Error: {str(e)}")
 
 # -------------------------------------------------------------
 # D. PAYMENT DASHBOARD 
@@ -807,14 +928,18 @@ elif choice == "💳 Payment Dashboard":
         existing_cols = [c for c in cols_order if c in pvt.columns]
         pvt = pvt.reindex(columns=existing_cols)
         
-        def color_payment_columns(val, col_name):
-            if pd.isna(val) or val == 0: return ''
-            if col_name == '1. USER / DRAFT PENDING': return 'background-color: rgba(211, 47, 47, 0.3); color: #ff5252; font-weight: bold;' 
-            elif col_name == '2. COST CONTROL PENDING': return 'background-color: rgba(245, 127, 23, 0.3); color: #ffd740; font-weight: bold;'
-            elif col_name == '3. FINANCE PENDING': return 'background-color: rgba(245, 127, 23, 0.1); color: #ffe57f; font-weight: bold;'
-            return ''
+        styled_pvt = pvt.style
+        pay_cols = [c for c in existing_cols if c != 'Grand Total']
+        for col in pay_cols:
+            def color_payment_columns(val, c=col):
+                if pd.isna(val) or val == 0: return ''
+                if c == '1. USER / DRAFT PENDING': return 'background-color: rgba(211, 47, 47, 0.3); color: #ff5252; font-weight: bold;' 
+                elif c == '2. COST CONTROL PENDING': return 'background-color: rgba(245, 127, 23, 0.3); color: #ffd740; font-weight: bold;'
+                elif c == '3. FINANCE PENDING': return 'background-color: rgba(245, 127, 23, 0.1); color: #ffe57f; font-weight: bold;'
+                return ''
+            if hasattr(styled_pvt, 'map'): styled_pvt = styled_pvt.map(color_payment_columns, subset=[col])
+            else: styled_pvt = styled_pvt.applymap(color_payment_columns, subset=[col])
 
-        styled_pvt = pvt.style.map(lambda x, c=col: color_payment_columns(x, c), subset=[col for col in existing_cols if col != 'Grand Total'])
         st.markdown("### RO-Wise Summary")
         pay_selection = st.dataframe(styled_pvt, use_container_width=True, on_select="rerun", selection_mode="single-row")
 
