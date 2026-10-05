@@ -289,6 +289,7 @@ def process_all_data():
             df_leg_all['Actual Departure Time'] = pd.to_datetime(df_leg_all['Actual Departure Time'], errors='coerce')
             df_leg_all['Actual Arrival Time'] = pd.to_datetime(df_leg_all['Actual Arrival Time'], errors='coerce')
             
+            # Temporary logic to extract Given Driving hours natively from actual dataset structure
             df_leg_all['Scheduled Departure Time'] = df_leg_all['Actual Departure Time'] - pd.Timedelta(hours=1)
             df_leg_all['Scheduled Arrival Time'] = df_leg_all['Actual Arrival Time'] - pd.Timedelta(hours=2)
 
@@ -366,7 +367,6 @@ def process_all_data():
             
             dt_cols = ['Scheduled Departure Time', 'Actual Departure Time', 'Scheduled Arrival Time', 'Actual Arrival Time']
             for c in dt_cols: df_leg[c] = df_leg[c].dt.strftime('%d-%m-%Y %H:%M').fillna('')
-            df_leg['MCD_StartDate'] = pd.to_datetime(df_leg['MCD_StartDate_DT']).dt.strftime('%d-%m-%Y')
             df_leg_final = df_leg.drop(columns=['Leg_Num', 'E2E_Pair'], errors='ignore')
             data_for_export['Legwise_Processed_Data'] = df_leg_final
         progress.progress(60)
@@ -474,17 +474,6 @@ if st.session_state['role'] == 'Admin':
         if save_file(f7, "ROUTE_LOOKUP"): st.success("Saved!")
         f8 = st.file_uploader("8. Vendor Contact Master", type=['xlsx'])
         if save_file(f8, "VENDOR_MASTER"): st.success("Saved!")
-
-    if os.path.exists(FILE_MAP["VENDOR_MASTER"]):
-        with st.sidebar.expander("📝 View / Edit Vendor Master", expanded=False):
-            try:
-                vm_df = pd.read_excel(FILE_MAP["VENDOR_MASTER"])
-                edited_vm = st.data_editor(vm_df, num_rows="dynamic", use_container_width=True)
-                if st.button("💾 Save Vendor Updates", use_container_width=True):
-                    edited_vm.to_excel(FILE_MAP["VENDOR_MASTER"], index=False)
-                    st.success("Vendor Master Updated Successfully!")
-            except Exception as e:
-                st.error(f"Error loading Vendor Master: {e}")
 
     with st.sidebar.expander("💸 Rate Correction Master"):
         st.caption("Fix raw Vendor Rates dynamically before dashboard processes data.")
@@ -684,6 +673,7 @@ elif choice == "📱 Vendor Communication Hub":
         df_vperf_raw = data['Vendor_Perf_Raw'].copy()
         df_late = df_vperf_raw[df_vperf_raw['Remark with 15 min waiver'] == 'Late Arrival'].copy()
         
+        # Load Vendor Master for Auto-fill
         vendor_master_dict = {}
         if os.path.exists(FILE_MAP.get("VENDOR_MASTER", "")):
             try:
@@ -691,7 +681,7 @@ elif choice == "📱 Vendor Communication Hub":
                 for _, r in vm_df.iterrows():
                     v_name = str(r.get('Vendor Name', '')).strip().upper()
                     vendor_master_dict[v_name] = {
-                        "whatsapp": str(r.get('WhatsApp Number', '')).split('.')[0],
+                        "whatsapp": str(r.get('WhatsApp Number', '')),
                         "email": str(r.get('Email ID', ''))
                     }
             except: pass
@@ -716,7 +706,7 @@ elif choice == "📱 Vendor Communication Hub":
             trip_str = ""
             for idx, row in top_trips.iterrows(): trip_str += f"- Route: {row['Route Path']} | Veh: {row['VehicleNo']} | Delay: {row['Delay Hours']}\n"
             
-            msg = f"Dear {sel_vendor},\n\nPlease find attached the arrival performance report for your vehicles. The following trips have been consistently reported as late:\n\n{trip_str}\nKindly take necessary actions to ensure on-time arrivals in the future.\n\nBest Regards,\nTrackon Command Center"
+            msg = f"Namaste {sel_vendor},\n\nAapki gaadiyon ki arrival performance report attach ki gayi hai. Neeche di gayi gaadiyan lagatar late report ho rahi hain:\n\n{trip_str}\nKripya dhyan dein aur on-time arrival sunishchit karein.\n\nThanks,\nTrackon Command Center"
             
             st.markdown("### ✉️ Prepare Message & Send")
             default_wp = vendor_master_dict.get(sel_vendor.upper(), {}).get('whatsapp', '')
@@ -734,7 +724,7 @@ elif choice == "📱 Vendor Communication Hub":
                 email_id = mc2.text_input("Vendor Email ID:", value=default_email)
                 cc_email = mc2.text_input("CC Email ID:")
                 
-                body_text = st.text_area("Message Body (WhatsApp & Email):", value=msg, height=200)
+                body_text = st.text_area("Message Body (WhatsApp & Email):", value=msg, height=150)
                 st.markdown("---")
                 send_email_btn = st.form_submit_button("🚀 Send Excel Report via Background Email")
 
@@ -815,6 +805,7 @@ elif choice == "💳 Payment Dashboard":
             return ''
 
         styled_pvt = pvt.style.map(lambda x, c=col: color_payment_columns(x, c), subset=[col for col in existing_cols if col != 'Grand Total'])
+
         st.markdown("### RO-Wise Summary")
         pay_selection = st.dataframe(styled_pvt, use_container_width=True, on_select="rerun", selection_mode="single-row")
 
