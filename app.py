@@ -784,14 +784,15 @@ def process_all_data():
                         Total_Trip_Cost=('Cost', 'sum'),
                         Total_Capacity=('Total_Cap_Raw', 'sum'),
                         Unique_Vendors=('VendorName', lambda x: x.nunique()),
-                        VendorName=('VendorName', lambda x: ', '.join(sorted(set(x.dropna().astype(str)))))
+                        VendorName=('VendorName', lambda x: ', '.join(sorted(set(x.dropna().astype(str))))),
+                        Route_Path=('Final_Route', lambda x: ', '.join(sorted(set(x.dropna().astype(str)))))
                     ).reset_index()
                     agg_nz_master['Overall CPK'] = np.where(agg_nz_master['Total_Carried_Wt'] > 0, agg_nz_master['Total_Trip_Cost'] / agg_nz_master['Total_Carried_Wt'], 0)
                     agg_nz_master['Overall Util %'] = np.where(agg_nz_master['Total_Capacity'] > 0, agg_nz_master['Total_Carried_Wt'] / agg_nz_master['Total_Capacity'], 0)
                     agg_nz_master['Avg_Trip_Cost'] = np.where(agg_nz_master['Total_Trips'] > 0, agg_nz_master['Total_Trip_Cost'] / agg_nz_master['Total_Trips'], 0).round(2)
                     
-                    nz_master_final = agg_nz_master[['Zone', 'RO_Clean', 'SortKey', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Total_Capacity', 'Total_Carried_Wt', 'Avg_Trip_Cost', 'Total_Trip_Cost', 'Total_Trips', 'Unique_Vendors', 'VendorName']]
-                    nz_master_final.columns = ["Zone", "VendorRO", "Route Pair", "Type", "Overall CPK", "Overall Util %", "Total Capacity", "Total Carried Wt", "Avg Trip Cost (₹)", "Total Trip Cost", "Total Trips", "Unique Vendors", "Vendor(s)"]
+                    nz_master_final = agg_nz_master[['Zone', 'RO_Clean', 'Route_Path', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Total_Capacity', 'Total_Carried_Wt', 'Avg_Trip_Cost', 'Total_Trip_Cost', 'Total_Trips', 'Unique_Vendors', 'VendorName', 'SortKey']]
+                    nz_master_final.columns = ["Zone", "VendorRO", "Route Path", "Type", "Overall CPK", "Overall Util %", "Total Capacity", "Total Carried Wt", "Avg Trip Cost (₹)", "Total Trip Cost", "Total Trips", "Unique Vendors", "Vendor(s)", "Route Pair"]
                     data_for_export['CPK_National_Zonal_Master'] = nz_master_final.sort_values(by=['Type', 'Overall Util %'])
 
                 # 2. Feeder & Regional (Vehicle-wise)
@@ -1610,7 +1611,7 @@ elif choice == "💰 Network Utilization":
                 tot_dict = {c: '-' for c in df.columns}
                 if 'Zone' in df.columns: tot_dict['Zone'] = 'TOTAL'
                 if 'VendorRO' in df.columns: tot_dict['VendorRO'] = 'TOTAL'
-                if 'Route Pair' in df.columns: tot_dict['Route Pair'] = 'TOTAL'
+                if 'Route Path' in df.columns: tot_dict['Route Path'] = 'TOTAL'
                 if 'Unique Vendors' in df.columns: tot_dict['Unique Vendors'] = df['Unique Vendors'].sum() if not df['Unique Vendors'].empty else 0
                 if 'Total Trips' in df.columns: tot_dict['Total Trips'] = tot_trips
                 if 'Total Capacity' in df.columns: tot_dict['Total Capacity'] = tot_cap
@@ -1620,6 +1621,7 @@ elif choice == "💰 Network Utilization":
                 if 'Overall Util %' in df.columns: tot_dict['Overall Util %'] = tot_util
                 if 'Avg Trip Cost' in df.columns: tot_dict['Avg Trip Cost'] = f"₹{tot_avg_cost:.2f}"
                 if 'Avg Trip Cost (₹)' in df.columns: tot_dict['Avg Trip Cost (₹)'] = f"₹{tot_avg_cost:.2f}"
+                if 'Route Pair' in df.columns: tot_dict['Route Pair'] = 'TOTAL'
                 return pd.concat([df, pd.DataFrame([tot_dict])], ignore_index=True)
 
             disp_df = add_total_row(disp_df)
@@ -1668,12 +1670,6 @@ elif choice == "💰 Network Utilization":
                 if selected_idx >= len(df_cpk_view):
                     st.warning("Please click a valid row, not the TOTAL row.")
                 else:
-                    selected_ro_val = df_cpk_view.iloc[selected_idx]['VendorRO']
-                    selected_vendor = df_cpk_view.iloc[selected_idx].get('Vendor(s)', '')
-                    vendors_list = [v.strip().upper() for v in str(selected_vendor).split(',')] if selected_vendor else []
-
-                    raw_trips = df_cpk_raw[df_cpk_raw['RO_Clean'].astype(str).str.strip().str.upper() == str(selected_ro_val).strip().upper()].copy()
-
                     if view_type == "Route":
                         selected_sortkey = df_cpk_view.iloc[selected_idx]['Route Pair']
                         
@@ -1681,7 +1677,8 @@ elif choice == "💰 Network Utilization":
                         st.markdown(f"### 🔄 Up/Down Route Summary for `{selected_sortkey}`")
                         
                         if df_updown is not None and not df_updown.empty:
-                            updown_filtered = df_updown[(df_updown['SortKey'] == selected_sortkey) & (df_updown['VendorRO'] == selected_ro_val)].copy()
+                            # Completely INDEPENDENT of RO Filter. Only filtering by Route Pair!
+                            updown_filtered = df_updown[(df_updown['SortKey'] == selected_sortkey)].copy()
                             
                             updown_styled = updown_filtered.drop(columns=['SortKey']).style
                             if 'Overall Util %' in updown_filtered.columns:
@@ -1692,21 +1689,28 @@ elif choice == "💰 Network Utilization":
                             st.dataframe(updown_styled, use_container_width=True)
                             
                         st.markdown(f"### 📄 Raw Data for Route Pair `{selected_sortkey}`")
-                        raw_trips = raw_trips[(raw_trips['SortKey'] == selected_sortkey)]
+                        # Raw data is also perfectly independent, matching the Up/Down Summary
+                        raw_trips = df_cpk_raw[(df_cpk_raw['SortKey'] == selected_sortkey)]
 
                     elif view_type == "Vehicle":
+                        selected_ro_val = df_cpk_view.iloc[selected_idx]['VendorRO']
                         selected_vno = df_cpk_view.iloc[selected_idx]['Vehicle No']
-                        raw_trips = raw_trips[(raw_trips['Vehicle No'] == selected_vno)]
+                        raw_trips = df_cpk_raw[
+                            (df_cpk_raw['RO_Clean'].astype(str).str.strip().str.upper() == str(selected_ro_val).strip().upper()) & 
+                            (df_cpk_raw['Vehicle No'] == selected_vno)
+                        ]
                         st.markdown("---")
                         st.markdown(f"### 📄 Raw Data for Vehicle `{selected_vno}`")
                     else:
+                        selected_ro_val = df_cpk_view.iloc[selected_idx]['VendorRO']
                         selected_vno = df_cpk_view.iloc[selected_idx]['Vehicle No']
                         selected_vend = df_cpk_view.iloc[selected_idx]['Vendor(s)']
                         selected_rte = df_cpk_view.iloc[selected_idx]['Route']
-                        raw_trips = raw_trips[
-                            (raw_trips['VendorName'] == selected_vend) &
-                            (raw_trips['Final_Route'] == selected_rte) &
-                            (raw_trips['Vehicle No'] == selected_vno)
+                        raw_trips = df_cpk_raw[
+                            (df_cpk_raw['RO_Clean'].astype(str).str.strip().str.upper() == str(selected_ro_val).strip().upper()) &
+                            (df_cpk_raw['VendorName'] == selected_vend) &
+                            (df_cpk_raw['Final_Route'] == selected_rte) &
+                            (df_cpk_raw['Vehicle No'] == selected_vno)
                         ]
                         st.markdown("---")
                         st.markdown(f"### 📄 Raw Data for `{selected_vend}` (Vehicle: `{selected_vno}`) on `{selected_rte}`")
