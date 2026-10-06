@@ -269,7 +269,7 @@ def generate_vip_executive_report_to_disk(data_dict, output_path=None):
             cols_order = ["1. USER / DRAFT PENDING", "2. COST CONTROL PENDING", "3. FINANCE PENDING", "4. PAYMENT PENDING", "5. OTHER PENDING", "Grand Total"]
             existing_cols = [c for c in cols_order if c in pvt.columns]
             pvt = pvt.reindex(columns=existing_cols)
-            pvt = pvt.reset_index() # Adjusted for excel output
+            pvt = pvt.reset_index()
             
             def pay_excel_color(val, col_name):
                 if pd.isna(val) or val == 0: return ''
@@ -1027,55 +1027,6 @@ if not data:
     st.warning("No processed data for this page. Admin must upload the relevant files and process data.")
     st.stop()
 
-# --- HELPER FOR EDITABLE ACTION PLAN TABLES ---
-def render_interactive_table(df, module_name, row_key_col, editor_key, highlight_func=None, highlight_subset=None):
-    ap_data = load_action_plans()
-    mod_ap = ap_data.get(module_name, {})
-    
-    # Inject Action Plan mapping
-    df['Action Plan ✍️'] = df[row_key_col].map(mod_ap).fillna("")
-    
-    display_cols = [c for c in df.columns if c != row_key_col]
-    styled_df = df[display_cols].style
-    
-    if highlight_func and highlight_subset:
-        styled_df = styled_df.map(highlight_func, subset=highlight_subset)
-        
-    disabled_cols = [c for c in display_cols if c != 'Action Plan ✍️']
-    
-    edited_df = st.data_editor(
-        styled_df,
-        column_config={"Action Plan ✍️": st.column_config.TextColumn("Action Plan ✍️", width="large")},
-        disabled=disabled_cols,
-        use_container_width=True,
-        height=300,
-        on_select="rerun",
-        selection_mode="single-row",
-        key=editor_key
-    )
-    
-    # Save logic
-    changes = False
-    for idx, row in edited_df.iterrows():
-        r_key = str(df.loc[idx, row_key_col])
-        new_val = str(row['Action Plan ✍️']).strip()
-        old_val = str(mod_ap.get(r_key, "")).strip()
-        if new_val != old_val:
-            if new_val: mod_ap[r_key] = new_val
-            else: mod_ap.pop(r_key, None)
-            changes = True
-            
-    if changes:
-        ap_data[module_name] = mod_ap
-        save_action_plans(ap_data)
-        
-    selected_rows = []
-    state = st.session_state.get(editor_key, {})
-    if isinstance(state, dict) and 'selection' in state:
-        selected_rows = state['selection'].get('rows', [])
-        
-    return edited_df, selected_rows
-
 # -------------------------------------------------------------
 # A. DAILY STANDUP (Operations Summary)
 # -------------------------------------------------------------
@@ -1142,11 +1093,9 @@ if choice == "📊 Operations Summary":
             if not isinstance(val, str) or '%' not in val: return ''
             try: pct = float(val.split('%')[0].strip())
             except: return ''
-            
             if pct == 0: return 'color: #78909C;' 
             return ''
             
-        # Applying specific column colors
         def color_cols(val, col):
             res = highlight_cells(val)
             if res: return res
@@ -1158,20 +1107,17 @@ if choice == "📊 Operations Summary":
 
         st.markdown("### Top Priority Routes Summary")
         
-        # We need a wrapper to map column name correctly since Styler.map doesn't pass col name natively.
-        # Streamlit st.data_editor handles Styler mapping slightly differently. 
-        # For safety, let's keep formatting simple inside data_editor.
-        
+        df_display.insert(0, 'Select 👁️', False)
         ap_data = load_action_plans()
         mod_ap = ap_data.get("Operations Summary", {})
         df_display['Action Plan ✍️'] = df_display['RowKey'].map(mod_ap).fillna("")
         
-        disp_cols = [c for c in df_display.columns if c != 'RowKey']
+        disp_cols = ['Select 👁️'] + [c for c in df_display.columns if c not in ['RowKey', 'Select 👁️']]
         styled_df = df_display[disp_cols].style
         for col in pct_cols:
             styled_df = styled_df.map(lambda x, c=col: color_cols(x, c), subset=[col])
             
-        disabled_cols = [c for c in disp_cols if c != 'Action Plan ✍️']
+        disabled_cols = [c for c in disp_cols if c not in ['Action Plan ✍️', 'Select 👁️']]
         
         edited_df = st.data_editor(
             styled_df,
@@ -1179,12 +1125,9 @@ if choice == "📊 Operations Summary":
             disabled=disabled_cols,
             use_container_width=True,
             height=300,
-            on_select="rerun",
-            selection_mode="single-row",
             key="ops_editor"
         )
         
-        # Save logic
         changes = False
         for idx, row in edited_df.iterrows():
             r_key = str(df_display.loc[idx, 'RowKey'])
@@ -1198,8 +1141,7 @@ if choice == "📊 Operations Summary":
             ap_data["Operations Summary"] = mod_ap
             save_action_plans(ap_data)
         
-        state = st.session_state.get("ops_editor", {})
-        selected_rows = state.get('selection', {}).get('rows', []) if isinstance(state, dict) else []
+        selected_rows = edited_df[edited_df['Select 👁️'] == True].index.tolist()
 
         if selected_rows:
             selected_idx = selected_rows[0]
@@ -1229,7 +1171,7 @@ if choice == "📊 Operations Summary":
                 styled_raw = styled_raw.map(highlight_remarks, subset=['Remark'])
             st.dataframe(styled_raw, use_container_width=True)
         else:
-            st.info("👆 Click any row in the table above to view detailed trip records.")
+            st.info("👆 Check the 'Select 👁️' box in the table above to view detailed trip records.")
 
 # -------------------------------------------------------------
 # B. VENDOR PERFORMANCE 
@@ -1283,16 +1225,17 @@ elif choice == "🚚 Vendor Performance":
 
         st.markdown("### Vendor Arrival Performance Summary")
         
+        df_display.insert(0, 'Select 👁️', False)
         ap_data = load_action_plans()
         mod_ap = ap_data.get("Vendor Performance", {})
         df_display['Action Plan ✍️'] = df_display['RowKey'].map(mod_ap).fillna("")
         
-        disp_cols = [c for c in df_display.columns if c != 'RowKey']
+        disp_cols = ['Select 👁️'] + [c for c in df_display.columns if c not in ['RowKey', 'Select 👁️']]
         styled_df = df_display[disp_cols].style
         for col in ['Ontime Arrival', 'Late Arrival', 'In-Transit']:
             styled_df = styled_df.map(lambda x, c=col: highlight_perf(x, c), subset=[col])
             
-        disabled_cols = [c for c in disp_cols if c != 'Action Plan ✍️']
+        disabled_cols = [c for c in disp_cols if c not in ['Action Plan ✍️', 'Select 👁️']]
         
         edited_df = st.data_editor(
             styled_df,
@@ -1300,8 +1243,6 @@ elif choice == "🚚 Vendor Performance":
             disabled=disabled_cols,
             use_container_width=True,
             height=300,
-            on_select="rerun",
-            selection_mode="single-row",
             key="vend_editor"
         )
         
@@ -1318,8 +1259,7 @@ elif choice == "🚚 Vendor Performance":
             ap_data["Vendor Performance"] = mod_ap
             save_action_plans(ap_data)
 
-        state = st.session_state.get("vend_editor", {})
-        selected_rows = state.get('selection', {}).get('rows', []) if isinstance(state, dict) else []
+        selected_rows = edited_df[edited_df['Select 👁️'] == True].index.tolist()
         
         if selected_rows:
             selected_idx = selected_rows[0]
@@ -1362,7 +1302,7 @@ elif choice == "🚚 Vendor Performance":
                 styled_raw = styled_raw.map(highlight_raw_remark, subset=['Remark with 15 min waiver'])
             st.dataframe(styled_raw, use_container_width=True)
         else:
-            st.info("👆 Click any row in the table above to view detailed trip records.")
+            st.info("👆 Check the 'Select 👁️' box in the table above to view detailed trip records.")
 
 # -------------------------------------------------------------
 # C. VENDOR PAYMENT DASHBOARD 
@@ -1383,7 +1323,6 @@ elif choice == "💳 Payment Dashboard":
         existing_cols = [c for c in cols_order if c in pvt.columns]
         pvt = pvt.reindex(columns=existing_cols)
         
-        # Add RowKey for PVT Action Plan
         pvt = pvt.reset_index()
         pvt['RowKey'] = pvt['RO Name'].astype(str)
         
@@ -1396,24 +1335,23 @@ elif choice == "💳 Payment Dashboard":
 
         st.markdown("### RO-Wise Summary")
         
+        pvt.insert(0, 'Select 👁️', False)
         ap_data = load_action_plans()
         mod_ap = ap_data.get("Payment Dashboard", {})
         pvt['Action Plan ✍️'] = pvt['RowKey'].map(mod_ap).fillna("")
         
-        disp_cols = [c for c in pvt.columns if c != 'RowKey']
+        disp_cols = ['Select 👁️'] + [c for c in pvt.columns if c not in ['RowKey', 'Select 👁️']]
         styled_pvt = pvt[disp_cols].style
         for col in existing_cols:
             styled_pvt = styled_pvt.map(lambda x, c=col: color_payment_columns(x, c), subset=[col])
             
-        disabled_cols = [c for c in disp_cols if c != 'Action Plan ✍️']
+        disabled_cols = [c for c in disp_cols if c not in ['Action Plan ✍️', 'Select 👁️']]
         
         edited_pvt = st.data_editor(
             styled_pvt,
             column_config={"Action Plan ✍️": st.column_config.TextColumn("Action Plan ✍️", width="large")},
             disabled=disabled_cols,
             use_container_width=True,
-            on_select="rerun",
-            selection_mode="single-row",
             key="pay_editor"
         )
         
@@ -1430,8 +1368,7 @@ elif choice == "💳 Payment Dashboard":
             ap_data["Payment Dashboard"] = mod_ap
             save_action_plans(ap_data)
         
-        state = st.session_state.get("pay_editor", {})
-        selected_rows = state.get('selection', {}).get('rows', []) if isinstance(state, dict) else []
+        selected_rows = edited_pvt[edited_pvt['Select 👁️'] == True].index.tolist()
 
         if selected_rows:
             selected_idx = selected_rows[0]
@@ -1460,7 +1397,7 @@ elif choice == "💳 Payment Dashboard":
                 
             st.dataframe(filtered_pay, use_container_width=True)
         else:
-             st.info("👆 Click any RO row in the table above to view specific invoices.")
+             st.info("👆 Check the 'Select 👁️' box in the table above to view specific invoices.")
 
 # -------------------------------------------------------------
 # D. VENDOR COMMUNICATION HUB
@@ -1555,7 +1492,6 @@ elif choice == "📱 Vendor Communication Hub":
                 
                 total_trips = ven_sum['Total_Trips'].sum() if not ven_sum.empty else 0
                 
-                # Fixed Width Padded Table for structured Email viewing
                 summary_text_breakdown = "ROUTE & LEG".ljust(35) + "| TRIPS | ONTIME | LATE\n"
                 summary_text_breakdown += "-"*65 + "\n"
                 for _, row in ven_sum.iterrows():
@@ -1674,9 +1610,7 @@ elif choice == "💰 Network Utilization":
                 st.info("No data available for this category.")
                 return
             
-            # --- Filters ---
             col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
-            
             all_zones = sorted(df_master['Zone'].dropna().unique().tolist())
             zone_filter = col1.selectbox(f"Filter Zone ({view_type}):", ["ALL"] + all_zones, key=f"z_{view_type}")
             if zone_filter != "ALL": df_master = df_master[df_master['Zone'] == zone_filter]
@@ -1695,7 +1629,6 @@ elif choice == "💰 Network Utilization":
                 mask = df_master.astype(str).apply(lambda x: x.str.contains(search_q, case=False, regex=False, na=False)).any(axis=1)
                 df_master = df_master[mask]
 
-            # --- Metrics ---
             m1, m2, m3 = st.columns(3)
             m1.metric("Total Trips", int(df_master['Total Trips'].sum()))
             avg_util = (df_master['Total Carried Wt'].sum() / df_master['Total Capacity'].sum() * 100) if df_master['Total Capacity'].sum() > 0 else 0
@@ -1703,11 +1636,9 @@ elif choice == "💰 Network Utilization":
             avg_cpk = (df_master['Total Trip Cost'].sum() / df_master['Total Carried Wt'].sum()) if df_master['Total Carried Wt'].sum() > 0 else 0
             m3.metric("Overall CPK", f"₹ {avg_cpk:.2f}")
 
-            # --- Dataframe formatting ---
             df_cpk_view = df_master.sort_values(by='Overall Util %', ascending=True)
             disp_df = df_cpk_view.copy()
             
-            # Action Plan RowKey mapping
             if view_type == "Route":
                 disp_df['RowKey'] = disp_df['Route Pair'].astype(str) + " | " + disp_df['Type'].astype(str)
             elif view_type == "Vehicle":
@@ -1748,7 +1679,8 @@ elif choice == "💰 Network Utilization":
             if 'Overall Util %' in disp_df.columns:
                 disp_df['Overall Util %'] = disp_df['Overall Util %'].apply(lambda x: f"{x * 100:.2f}%" if isinstance(x, (int, float)) else x)
             
-            # Integrate Action Plan logic
+            disp_df.insert(0, 'Select 👁️', False)
+            
             ap_data = load_action_plans()
             mod_ap = ap_data.get(f"Network Utilization - {view_type}", {})
             disp_df['Action Plan ✍️'] = disp_df['RowKey'].map(mod_ap).fillna("")
@@ -1773,7 +1705,7 @@ elif choice == "💰 Network Utilization":
                 if col in view_df.columns:
                     styled_view = styled_view.map(lambda x, c=col: highlight_cpk_util(x, c), subset=[col])
 
-            disabled_cols = [c for c in view_df.columns if c != 'Action Plan ✍️']
+            disabled_cols = [c for c in view_df.columns if c not in ['Action Plan ✍️', 'Select 👁️️']]
             editor_k = f"cpk_editor_{view_type}"
             
             edited_cpk = st.data_editor(
@@ -1782,16 +1714,13 @@ elif choice == "💰 Network Utilization":
                 disabled=disabled_cols,
                 use_container_width=True, 
                 height=300, 
-                on_select="rerun", 
-                selection_mode="single-row",
                 key=editor_k
             )
             
-            # Save logic
             changes = False
             for idx, row in edited_cpk.iterrows():
                 r_key = str(disp_df.loc[idx, 'RowKey'])
-                if r_key == 'nan': continue # skip total row
+                if r_key == 'nan': continue 
                 new_val = str(row['Action Plan ✍️']).strip()
                 old_val = str(mod_ap.get(r_key, "")).strip()
                 if new_val != old_val:
@@ -1802,8 +1731,7 @@ elif choice == "💰 Network Utilization":
                 ap_data[f"Network Utilization - {view_type}"] = mod_ap
                 save_action_plans(ap_data)
 
-            state = st.session_state.get(editor_k, {})
-            selected_rows = state.get('selection', {}).get('rows', []) if isinstance(state, dict) else []
+            selected_rows = edited_cpk[edited_cpk['Select 👁️'] == True].index.tolist()
 
             if selected_rows:
                 selected_idx = selected_rows[0]
@@ -1864,7 +1792,7 @@ elif choice == "💰 Network Utilization":
                     
                     st.dataframe(styled_raw_trips, use_container_width=True)
             else:
-                st.info("👆 Click any row above to view detailed split & raw data.")
+                st.info("👆 Check the 'Select 👁️' box in the table above to view detailed split & raw data.")
 
         with tab1:
             render_cpk_view(data.get('CPK_National_Zonal_Master', pd.DataFrame()), view_type="Route", df_updown=data.get('CPK_National_Zonal_UpDown', pd.DataFrame()))
