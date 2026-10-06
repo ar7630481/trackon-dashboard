@@ -35,7 +35,7 @@ FILE_MAP = {
     "EXECUTIVE_REPORT": os.path.join(DATA_DIR, "Trackon_VIP_Executive_Report.xlsx"),
     "RATE_CORRECTIONS": os.path.join(DATA_DIR, "rate_corrections.json"),
     "VENDOR_MASTER": os.path.join(DATA_DIR, "vendor_master.json"),
-    "ACTION_PLANS": os.path.join(DATA_DIR, "action_plans.json") # NEW ACTION PLAN DB
+    "ACTION_PLANS": os.path.join(DATA_DIR, "action_plans.json") 
 }
 
 def get_ist_now():
@@ -158,7 +158,6 @@ def format_pct_cnt(count, total):
     pct = (count / total) * 100
     return f"{pct:.1f}% ({int(count)})"
 
-# NEW: ACTION PLAN HELPER FUNCTIONS
 def load_action_plans():
     path = FILE_MAP["ACTION_PLANS"]
     if os.path.exists(path):
@@ -1053,12 +1052,12 @@ if choice == "📊 Operations Summary":
 
         search_q = col3.text_input("🔍 Quick Search:", placeholder="Search Route, Leg...")
 
-        display_cols = ['Route Path', 'Legwise', 'Legs', 'Total_Trips', 
+        display_cols = ['Origin RO', 'Route Path', 'Legwise', 'Legs', 'Total_Trips', 
                         'Ontime Dep, Ontime Arr %', 'Ontime Dep, Late Arr %', 
                         'Late Dep, Late Arr %', 'Late Dep, Ontime Arr %']
         
         df_display = df_leg_sum[display_cols].copy()
-        df_display['RowKey'] = df_display['Route Path'].astype(str) + " | " + df_display['Legwise'].astype(str)
+        df_display['RowKey'] = df_display['Origin RO'].astype(str) + " || " + df_display['Route Path'].astype(str) + " | " + df_display['Legwise'].astype(str)
         
         if search_q:
             mask = df_display.astype(str).apply(lambda x: x.str.contains(search_q, case=False, regex=False, na=False)).any(axis=1)
@@ -1205,9 +1204,9 @@ elif choice == "🚚 Vendor Performance":
 
         search_q = col4.text_input("🔍 Quick Search:", placeholder="Search Route, Leg...")
 
-        display_cols = ['Route Path', 'Legwise', 'Legs', 'VendorName', 'Total_Trips', 'Ontime Arrival', 'Late Arrival', 'In-Transit']
+        display_cols = ['Origin RO', 'Route Path', 'Legwise', 'Legs', 'VendorName', 'Total_Trips', 'Ontime Arrival', 'Late Arrival', 'In-Transit']
         df_display = df_vperf_sum[display_cols].copy()
-        df_display['RowKey'] = df_display['VendorName'].astype(str) + " | " + df_display['Route Path'].astype(str) + " | " + df_display['Legwise'].astype(str)
+        df_display['RowKey'] = df_display['Origin RO'].astype(str) + " || " + df_display['VendorName'].astype(str) + " | " + df_display['Route Path'].astype(str) + " | " + df_display['Legwise'].astype(str)
         
         if search_q:
             mask = df_display.astype(str).apply(lambda x: x.str.contains(search_q, case=False, regex=False, na=False)).any(axis=1)
@@ -1324,7 +1323,7 @@ elif choice == "💳 Payment Dashboard":
         pvt = pvt.reindex(columns=existing_cols)
         
         pvt = pvt.reset_index()
-        pvt['RowKey'] = pvt['RO Name'].astype(str)
+        pvt['RowKey'] = pvt['RO Name'].astype(str) + " || " + pvt['RO Name'].astype(str)
         
         def color_payment_columns(val, col_name):
             if pd.isna(val) or val == 0: return ''
@@ -1349,7 +1348,7 @@ elif choice == "💳 Payment Dashboard":
         
         edited_pvt = st.data_editor(
             styled_pvt,
-            column_config={"Action Plan ✍️": st.column_config.TextColumn("Action Plan ✍️", width="large")},
+            column_config={"Action Plan ✍️": st.column_config.TextColumn("Action Plan ✍️️", width="large")},
             disabled=disabled_cols,
             use_container_width=True,
             key="pay_editor"
@@ -1492,6 +1491,7 @@ elif choice == "📱 Vendor Communication Hub":
                 
                 total_trips = ven_sum['Total_Trips'].sum() if not ven_sum.empty else 0
                 
+                # Fixed Width Padded Table for structured Email viewing
                 summary_text_breakdown = "ROUTE & LEG".ljust(35) + "| TRIPS | ONTIME | LATE\n"
                 summary_text_breakdown += "-"*65 + "\n"
                 for _, row in ven_sum.iterrows():
@@ -1640,11 +1640,11 @@ elif choice == "💰 Network Utilization":
             disp_df = df_cpk_view.copy()
             
             if view_type == "Route":
-                disp_df['RowKey'] = disp_df['Route Pair'].astype(str) + " | " + disp_df['Type'].astype(str)
+                disp_df['RowKey'] = disp_df['VendorRO'].astype(str) + " || " + disp_df['Route Pair'].astype(str) + " | " + disp_df['Type'].astype(str)
             elif view_type == "Vehicle":
-                disp_df['RowKey'] = disp_df['Vehicle No'].astype(str)
+                disp_df['RowKey'] = disp_df['VendorRO'].astype(str) + " || " + disp_df['Vehicle No'].astype(str)
             else:
-                disp_df['RowKey'] = disp_df['Vendor(s)'].astype(str) + " | " + disp_df['Vehicle No'].astype(str) + " | " + disp_df['Route'].astype(str)
+                disp_df['RowKey'] = disp_df['VendorRO'].astype(str) + " || " + disp_df['Vendor(s)'].astype(str) + " | " + disp_df['Vehicle No'].astype(str) + " | " + disp_df['Route'].astype(str)
 
             def add_total_row(df):
                 if df.empty: return df
@@ -1705,7 +1705,7 @@ elif choice == "💰 Network Utilization":
                 if col in view_df.columns:
                     styled_view = styled_view.map(lambda x, c=col: highlight_cpk_util(x, c), subset=[col])
 
-            disabled_cols = [c for c in view_df.columns if c not in ['Action Plan ✍️', 'Select 👁️️']]
+            disabled_cols = [c for c in view_df.columns if c not in ['Action Plan ✍️', 'Select 👁️']]
             editor_k = f"cpk_editor_{view_type}"
             
             edited_cpk = st.data_editor(
@@ -1814,14 +1814,35 @@ elif choice == "📝 Today's Call Action Plan":
     ap_data = load_action_plans()
     records = []
     
+    sr_no = 1
     for mod, plans in ap_data.items():
         for ref, plan in plans.items():
-            records.append({"Module Name": mod, "Reference (Route/Vendor/Invoice)": ref, "Action Plan Details": plan})
+            if " || " in ref:
+                ro_part, ref_part = ref.split(" || ", 1)
+            else:
+                ro_part, ref_part = "UNKNOWN", ref
+                
+            records.append({
+                "S.No.": sr_no,
+                "Origin RO": ro_part,
+                "Module Name": mod, 
+                "Reference (Route/Vendor/Invoice)": ref_part, 
+                "Action Plan Details": plan
+            })
+            sr_no += 1
             
     if not records:
         st.info("❌ Koi Action Plan save nahi hua hai. Dusre modules mein jakar tables mein apna 'Action Plan' type karein!")
     else:
         df_ap = pd.DataFrame(records)
+        
+        # --- Add Filter for Origin RO ---
+        all_ros_ap = sorted(df_ap['Origin RO'].unique().tolist())
+        filter_ro_ap = st.selectbox("Filter Action Plans by Origin RO:", ["ALL"] + all_ros_ap)
+        
+        if filter_ro_ap != "ALL":
+            df_ap = df_ap[df_ap['Origin RO'] == filter_ro_ap]
+            df_ap['S.No.'] = range(1, len(df_ap) + 1) # Recalculate Serial Number
         
         st.dataframe(df_ap, use_container_width=True, hide_index=True)
         
@@ -1847,7 +1868,7 @@ elif choice == "📝 Today's Call Action Plan":
             if r['Module Name'] != current_mod:
                 email_body += f"\n--- {r['Module Name'].upper()} ---\n"
                 current_mod = r['Module Name']
-            email_body += f"🔹 Ref: {r['Reference (Route/Vendor/Invoice)']}\n"
+            email_body += f"{r['S.No.']}. [{r['Origin RO']}] Ref: {r['Reference (Route/Vendor/Invoice)']}\n"
             email_body += f"   👉 Action: {r['Action Plan Details']}\n\n"
             
         email_body += "Thanks,\nAjay Singh Rawat\nFleet Operation Executive"
