@@ -1144,8 +1144,9 @@ if choice == "📊 Operations Summary":
 
         if selected_rows:
             selected_idx = selected_rows[0]
-            selected_route = df_display.iloc[selected_idx]['Route Path']
-            selected_leg = df_display.iloc[selected_idx]['Legwise']
+            # BUG FIX: changed .iloc to .loc here to handle preserved index labels correctly
+            selected_route = df_display.loc[selected_idx, 'Route Path']
+            selected_leg = df_display.loc[selected_idx, 'Legwise']
             
             st.markdown("---")
             st.markdown(f"### 📄 Details for `{selected_route}` - `{selected_leg}`")
@@ -1262,9 +1263,10 @@ elif choice == "🚚 Vendor Performance":
         
         if selected_rows:
             selected_idx = selected_rows[0]
-            selected_route = df_display.iloc[selected_idx]['Route Path']
-            selected_leg = df_display.iloc[selected_idx]['Legwise']
-            selected_vendor = df_display.iloc[selected_idx]['VendorName']
+            # BUG FIX: changed .iloc to .loc here to handle preserved index labels correctly
+            selected_route = df_display.loc[selected_idx, 'Route Path']
+            selected_leg = df_display.loc[selected_idx, 'Legwise']
+            selected_vendor = df_display.loc[selected_idx, 'VendorName']
             
             st.markdown("---")
             st.markdown(f"### 📄 Raw Data for `{selected_vendor}` on `{selected_route}` - `{selected_leg}`")
@@ -1348,7 +1350,7 @@ elif choice == "💳 Payment Dashboard":
         
         edited_pvt = st.data_editor(
             styled_pvt,
-            column_config={"Action Plan ✍️": st.column_config.TextColumn("Action Plan ✍️️", width="large")},
+            column_config={"Action Plan ✍️": st.column_config.TextColumn("Action Plan ✍", width="large")},
             disabled=disabled_cols,
             use_container_width=True,
             key="pay_editor"
@@ -1367,7 +1369,7 @@ elif choice == "💳 Payment Dashboard":
             ap_data["Payment Dashboard"] = mod_ap
             save_action_plans(ap_data)
         
-        selected_rows = edited_pvt[edited_pvt['Select 👁️'] == True].index.tolist()
+        selected_rows = edited_pvt[edited_pvt['Select 👁️️'] == True].index.tolist()
 
         if selected_rows:
             selected_idx = selected_rows[0]
@@ -1410,7 +1412,7 @@ elif choice == "📱 Vendor Communication Hub":
         
         # --- 1. VENDOR MASTER PANEL (ADMIN ONLY) ---
         if st.session_state.get('role') == 'Admin':
-            with st.expander("🛠️ Manage Vendor Master Contacts", expanded=False):
+            with st.expander("🛠️️ Manage Vendor Master Contacts", expanded=False):
                 st.caption("Save Vendor WhatsApp and Email IDs for quick communication.")
                 
                 vendor_master_file = FILE_MAP.get("VENDOR_MASTER", os.path.join(DATA_DIR, "vendor_master.json"))
@@ -1710,7 +1712,7 @@ elif choice == "💰 Network Utilization":
             
             edited_cpk = st.data_editor(
                 styled_view,
-                column_config={"Action Plan ✍️": st.column_config.TextColumn("Action Plan ✍️", width="large")},
+                column_config={"Action Plan ✍️️": st.column_config.TextColumn("Action Plan ✍️", width="large")},
                 disabled=disabled_cols,
                 use_container_width=True, 
                 height=300, 
