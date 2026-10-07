@@ -1144,7 +1144,6 @@ if choice == "📊 Operations Summary":
 
         if selected_rows:
             selected_idx = selected_rows[0]
-            # BUG FIX: changed .iloc to .loc here to handle preserved index labels correctly
             selected_route = df_display.loc[selected_idx, 'Route Path']
             selected_leg = df_display.loc[selected_idx, 'Legwise']
             
@@ -1263,7 +1262,6 @@ elif choice == "🚚 Vendor Performance":
         
         if selected_rows:
             selected_idx = selected_rows[0]
-            # BUG FIX: changed .iloc to .loc here to handle preserved index labels correctly
             selected_route = df_display.loc[selected_idx, 'Route Path']
             selected_leg = df_display.loc[selected_idx, 'Legwise']
             selected_vendor = df_display.loc[selected_idx, 'VendorName']
@@ -1350,7 +1348,7 @@ elif choice == "💳 Payment Dashboard":
         
         edited_pvt = st.data_editor(
             styled_pvt,
-            column_config={"Action Plan ✍️": st.column_config.TextColumn("Action Plan ✍", width="large")},
+            column_config={"Action Plan ✍️": st.column_config.TextColumn("Action Plan ✍️", width="large")},
             disabled=disabled_cols,
             use_container_width=True,
             key="pay_editor"
@@ -1369,7 +1367,8 @@ elif choice == "💳 Payment Dashboard":
             ap_data["Payment Dashboard"] = mod_ap
             save_action_plans(ap_data)
         
-        selected_rows = edited_pvt[edited_pvt['Select 👁️️'] == True].index.tolist()
+        # --- FIXED KeyError BUG HERE (Select 👁️) ---
+        selected_rows = edited_pvt[edited_pvt['Select 👁️'] == True].index.tolist()
 
         if selected_rows:
             selected_idx = selected_rows[0]
@@ -1398,7 +1397,7 @@ elif choice == "💳 Payment Dashboard":
                 
             st.dataframe(filtered_pay, use_container_width=True)
         else:
-             st.info("👆 Check the 'Select 👁️' box in the table above to view specific invoices.")
+            st.info("👆 Check the 'Select 👁️' box in the table above to view specific invoices.")
 
 # -------------------------------------------------------------
 # D. VENDOR COMMUNICATION HUB
@@ -1412,7 +1411,7 @@ elif choice == "📱 Vendor Communication Hub":
         
         # --- 1. VENDOR MASTER PANEL (ADMIN ONLY) ---
         if st.session_state.get('role') == 'Admin':
-            with st.expander("🛠️️ Manage Vendor Master Contacts", expanded=False):
+            with st.expander("🛠 Manage Vendor Master Contacts", expanded=False):
                 st.caption("Save Vendor WhatsApp and Email IDs for quick communication.")
                 
                 vendor_master_file = FILE_MAP.get("VENDOR_MASTER", os.path.join(DATA_DIR, "vendor_master.json"))
@@ -1712,7 +1711,7 @@ elif choice == "💰 Network Utilization":
             
             edited_cpk = st.data_editor(
                 styled_view,
-                column_config={"Action Plan ✍️️": st.column_config.TextColumn("Action Plan ✍️", width="large")},
+                column_config={"Action Plan ✍️": st.column_config.TextColumn("Action Plan ✍️", width="large")},
                 disabled=disabled_cols,
                 use_container_width=True, 
                 height=300, 
@@ -1822,7 +1821,41 @@ elif choice == "📝 Today's Call Action Plan":
             if " || " in ref:
                 ro_part, ref_part = ref.split(" || ", 1)
             else:
-                ro_part, ref_part = "UNKNOWN", ref
+                ro_part = "UNKNOWN"
+                ref_part = ref
+                
+                # --- LEGACY LOOKUP TO FETCH ORIGIN RO FROM SOURCE DATA ---
+                try:
+                    if mod == "Operations Summary" and 'Legwise_Route_Summary' in data:
+                        pts = ref_part.split(" | ")
+                        if len(pts) >= 2:
+                            m = data['Legwise_Route_Summary'][(data['Legwise_Route_Summary']['Route Path'] == pts[0].strip()) & (data['Legwise_Route_Summary']['Legwise'] == pts[1].strip())]
+                            if not m.empty: ro_part = str(m['Origin RO'].iloc[0])
+                    elif mod == "Vendor Performance" and 'Vendor_Perf_Summary' in data:
+                        pts = ref_part.split(" | ")
+                        if len(pts) >= 3:
+                            m = data['Vendor_Perf_Summary'][(data['Vendor_Perf_Summary']['VendorName'] == pts[0].strip()) & (data['Vendor_Perf_Summary']['Route Path'] == pts[1].strip()) & (data['Vendor_Perf_Summary']['Legwise'] == pts[2].strip())]
+                            if not m.empty: ro_part = str(m['Origin RO'].iloc[0])
+                    elif mod == "Payment Dashboard":
+                        ro_part = ref_part.split(" | ")[0].strip()
+                    elif mod == "Network Utilization - Route" and 'CPK_National_Zonal_Master' in data:
+                        pts = ref_part.split(" | ")
+                        if len(pts) >= 2:
+                            m = data['CPK_National_Zonal_Master'][(data['CPK_National_Zonal_Master']['Route Pair'] == pts[0].strip()) & (data['CPK_National_Zonal_Master']['Type'] == pts[1].strip())]
+                            if not m.empty: ro_part = str(m['VendorRO'].iloc[0])
+                    elif mod == "Network Utilization - Vehicle" and 'CPK_Feeder_Regional' in data:
+                        pts = ref_part.split(" | ")
+                        if len(pts) >= 1:
+                            m = data['CPK_Feeder_Regional'][data['CPK_Feeder_Regional']['Vehicle No'] == pts[0].strip()]
+                            if not m.empty: ro_part = str(m['VendorRO'].iloc[0])
+                    elif mod == "Network Utilization - Coloader" and 'CPK_Coloader' in data:
+                        pts = ref_part.split(" | ")
+                        if len(pts) >= 3:
+                            m = data['CPK_Coloader'][(data['CPK_Coloader']['Vendor(s)'] == pts[0].strip()) & (data['CPK_Coloader']['Vehicle No'] == pts[1].strip()) & (data['CPK_Coloader']['Route'] == pts[2].strip())]
+                            if not m.empty: ro_part = str(m['VendorRO'].iloc[0])
+                except Exception:
+                    pass
+                # ---------------------------------------------------------
                 
             records.append({
                 "S.No.": sr_no,
