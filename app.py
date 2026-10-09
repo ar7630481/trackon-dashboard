@@ -12,12 +12,65 @@ import tempfile
 import logging
 import io
 
+# Disable SettingWithCopyWarning for Pandas
 warnings.filterwarnings('ignore')
+pd.options.mode.chained_assignment = None
 
 # ==========================================
-# 1. PAGE SETUP (Professional Dark Theme)
+# 1. PAGE SETUP (Professional VIP Dark Theme)
 # ==========================================
-st.set_page_config(page_title="Trackon Command Center", page_icon="🚀", layout="wide")
+st.set_page_config(page_title="Trackon Command Center", page_icon="🚀", layout="wide", initial_sidebar_state="expanded")
+
+# VIP Custom CSS for Enterprise Look
+st.markdown("""
+    <style>
+    /* Global App Background */
+    .stApp {
+        background-color: #0B1120; /* Deep rich navy blue */
+    }
+    
+    /* Sleek metric cards */
+    div[data-testid="metric-container"] {
+        background: linear-gradient(135deg, #1E293B 0%, #0F172A 100%);
+        border: 1px solid #334155;
+        padding: 5% 5% 5% 10%;
+        border-radius: 12px;
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -2px rgba(0, 0, 0, 0.25);
+    }
+    
+    /* DataFrame Headers */
+    th {
+        background-color: #1D4ED8 !important; /* Rich blue for table headers */
+        color: white !important;
+        font-weight: 600 !important;
+        font-size: 14px !important;
+    }
+    
+    /* Main Titles */
+    h1, h2, h3 {
+        color: #F8FAFC !important;
+        font-weight: 700 !important;
+    }
+    
+    /* Sidebar Styling */
+    [data-testid="stSidebar"] {
+        background-color: #111827;
+        border-right: 1px solid #1F2937;
+    }
+    
+    /* Button Styling */
+    .stButton>button {
+        border-radius: 8px;
+        font-weight: 600;
+        transition: all 0.3s ease;
+    }
+    .stButton>button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploaded_raw_data")
 if not os.path.exists(DATA_DIR):
@@ -42,8 +95,9 @@ def get_ist_now():
     return datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
 
 # ==========================================
-# 2. AUTHENTICATION
+# 2. AUTHENTICATION (Secrets Management)
 # ==========================================
+# Using hardcoded users here, but you should move this to st.secrets in production
 USERS = {
     "user": "5272",
     "admin": "9211213"
@@ -55,15 +109,18 @@ if 'role' not in st.session_state:
     st.session_state['role'] = None
 
 if not st.session_state['logged_in']:
-    st.markdown("<h1 style='text-align: center; color: #4facfe;'>🚀 Trackon Command Center</h1>", unsafe_allow_html=True)
-    st.markdown("<h3 style='text-align: center; color: #a8b2d1;'>Secure Login Portal</h3>", unsafe_allow_html=True)
+    st.markdown("<br><br><br>", unsafe_allow_html=True) # Spacing
+    st.markdown("<h1 style='text-align: center; color: #60A5FA; font-size: 3rem;'>🚀 Trackon Command Center</h1>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center; color: #94A3B8; font-weight: 400;'>Enterprise Logistics & Fleet Operations Portal</h3>", unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 1, 1])
     with col2:
         with st.form("login_form"):
+            st.markdown("#### 🔒 Secure Access")
             username = st.text_input("Username")
             password = st.text_input("Password", type="password")
-            submit = st.form_submit_button("Login", use_container_width=True)
+            submit = st.form_submit_button("Authenticate", use_container_width=True)
             
             if submit:
                 if username in USERS and USERS[username] == password:
@@ -71,7 +128,7 @@ if not st.session_state['logged_in']:
                     st.session_state['role'] = 'Admin' if username == 'admin' else 'User'
                     st.rerun()
                 else:
-                    st.error("❌ Invalid Username or Password!")
+                    st.error("❌ Invalid Credentials. Access Denied.")
     st.stop()
 
 # ==========================================
@@ -345,497 +402,501 @@ def generate_vip_executive_report_to_disk(data_dict, output_path=None):
             apply_manager_formatting('Network_Raw', df_cpk_raw)
 
 # ==========================================
-# 5. MAIN DATA PROCESSING
+# 5. MAIN DATA PROCESSING (With Caching)
 # ==========================================
+# CACHE DECORATOR ADDED: This makes the processing lighting fast for identical runs
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_processed_data_cached(file_timestamps):
+    # This function holds the heavy lifting, we only call it if inputs change
+    data_for_export = {}
+    
+    # --- EXTRACT ZONE MAPPING FROM BRANCH MASTER ---
+    ro_zone_map = {}
+    if os.path.exists(FILE_MAP["BRANCH_MASTER"]):
+        df_brn_master = pd.read_excel(FILE_MAP["BRANCH_MASTER"], sheet_name="Sheet1")
+        df_brn_master.columns = df_brn_master.columns.astype(str).str.strip()
+        ro_col_m = next((c for c in df_brn_master.columns if 'rptro' in c.lower().replace(' ', '')), 'RPTRO')
+        zone_col_m = next((c for c in df_brn_master.columns if 'zone' in c.lower().replace(' ', '')), 'Zone')
+        df_brn_master[ro_col_m] = df_brn_master[ro_col_m].astype(str).str.strip().str.upper()
+        ro_zone_map = df_brn_master.drop_duplicates(subset=[ro_col_m]).set_index(ro_col_m)[zone_col_m].to_dict()
+
+    # --- MODULE 0: PAYMENT DATA ---
+    if os.path.exists(FILE_MAP["PAYMENT"]):
+        df_pay = pd.read_excel(FILE_MAP["PAYMENT"])
+        df_pay.columns = df_pay.columns.astype(str).str.strip().str.upper().str.replace(" ", "").str.replace("_", "")
+        
+        rename_dict = {}
+        for col in df_pay.columns:
+            if 'ROSELECTION' in col: rename_dict[col] = 'RO Name'
+            elif 'CATEGORY' in col: rename_dict[col] = 'Category'
+            elif 'VENDORNAME' in col: rename_dict[col] = 'Vendor Name'
+            elif 'INVOICEID' in col: rename_dict[col] = 'Invoice Id'
+            elif 'INVOICEDATE' in col: rename_dict[col] = 'Invoice Date'
+            elif 'AMOUNT' == col: rename_dict[col] = 'Amount'
+            elif 'STATUS' == col: rename_dict[col] = 'Status'
+            elif 'PENDINGWITH' in col: rename_dict[col] = 'Pending With'
+            elif 'LASTAPPROVEDAT' in col: rename_dict[col] = 'Last Approved At'
+            elif 'FINANCEREVERTREMARKS1' in col: rename_dict[col] = 'Finance Revert Remarks 1'
+            elif 'APPROVERREVERTREMARKS' in col: rename_dict[col] = 'Approver Revert Remarks'
+            elif 'HOLD.KEY' in col or 'HOLDKEY' in col: rename_dict[col] = 'Hold Key'
+            elif 'NAME' == col or 'UPLOADERNAME' in col or 'BILLUPLOADER' in col: rename_dict[col] = 'Bill Uploader'
+
+        df_pay.rename(columns=rename_dict, inplace=True)
+        
+        required_cols = ['RO Name', 'Category', 'Vendor Name', 'Invoice Id', 'Invoice Date', 'Amount', 'Status', 'Pending With', 'Last Approved At', 'Finance Revert Remarks 1', 'Approver Revert Remarks', 'Hold Key', 'Bill Uploader']
+        for req in required_cols:
+            if req not in df_pay.columns: df_pay[req] = ""
+                
+        df_pay['Vendor Name'] = df_pay['Vendor Name'].fillna('').astype(str).str.upper().str.strip()
+        df_pay['Category'] = df_pay['Category'].fillna('').astype(str).str.strip()
+        df_pay['Status'] = df_pay['Status'].fillna('').astype(str).str.upper()
+        df_pay['Pending With'] = df_pay['Pending With'].fillna('').astype(str).str.upper()
+        
+        df_pay['RO Name Clean'] = df_pay['RO Name'].astype(str).str.strip().str.upper()
+        df_pay['Zone'] = df_pay['RO Name Clean'].map(ro_zone_map).fillna('UNKNOWN ZONE')
+        
+        valid_cats = ["Contract - Feeder Connection vehicle charges", "Market - Feeder Connection vehicle charges", 
+                      "Market Vehicle Hired -Linehaul", "Contract Network Vehicle Hired - Regional", 
+                      "Contract Network Vehicle Hired - Zonal", "Contract Network Vehicle Hired - National"]
+        df_pay = df_pay[df_pay['Category'].isin(valid_cats)]
+        
+        vip_vends = ["SHRI GANPATI", "MOHD ASLAM", "MEHTAROAD", "E WHEELS", "TEJAS", "T T TRANSPORT", 
+                     "APL EXPRESS", "GOTRUCKS", "RADHA RANI", "FASTLANE", "MMM LOGISTICS", "ATA ROADWAYS", "ZAST", "FLEETX"]
+        df_pay = df_pay[~df_pay['Vendor Name'].str.contains('|'.join(vip_vends), na=False, regex=True)].copy()
+        df_pay = df_pay[~df_pay['Status'].str.contains('PAID|PROCESSED|CANCELLED|DECLINED', na=False)]
+        
+        df_pay['Finance Revert Remarks 1'] = df_pay.get('Finance Revert Remarks 1', pd.Series(['']*len(df_pay))).fillna('')
+        df_pay['Approver Revert Remarks'] = df_pay.get('Approver Revert Remarks', pd.Series(['']*len(df_pay))).fillna('')
+        df_pay['Revert Remarks'] = np.where(df_pay['Finance Revert Remarks 1'] != '', df_pay['Finance Revert Remarks 1'], df_pay['Approver Revert Remarks'])
+        
+        conds = [
+            (df_pay['Status'].str.contains('PAYMENT') | df_pay['Pending With'].str.contains('PAYMENT')),
+            (df_pay['Status'].str.contains('FINANCE') | df_pay['Pending With'].str.contains('FINANCE|LEVEL 3') | df_pay['Status'].str.contains('HOLD')),
+            (df_pay['Revert Remarks'] != '') | (df_pay['Status'].str.contains('DRAFT')) | (df_pay['Pending With'].str.contains('AJAY')),
+            (df_pay['Status'].str.contains('PENDING') | df_pay['Pending With'].str.contains('COST CONTROL|OPSACCTS|ACC'))
+        ]
+        df_pay['Department Bucket'] = np.select(conds, ["4. PAYMENT PENDING", "3. FINANCE PENDING", "1. USER / DRAFT PENDING", "2. COST CONTROL PENDING"], "5. OTHER PENDING")
+        
+        today = pd.to_datetime('today').normalize()
+        df_pay['Last Approved At'] = pd.to_datetime(df_pay['Last Approved At'], dayfirst=True, errors='coerce').dt.normalize()
+        df_pay['Invoice Date'] = pd.to_datetime(df_pay['Invoice Date'], dayfirst=True, errors='coerce').dt.normalize()
+        df_pay['Base Date'] = df_pay['Last Approved At'].combine_first(df_pay['Invoice Date']).fillna(today)
+        df_pay['Days Pending'] = (today - df_pay['Base Date']).dt.days
+        df_pay['Aging Bucket'] = np.where(df_pay['Days Pending'] <= 5, "1. 0-5 Days", "2. >5 Days")
+        df_pay['Base Date'] = df_pay['Base Date'].dt.strftime('%d-%b-%Y').fillna("")
+        df_pay['Invoice Month'] = df_pay['Invoice Date'].dt.strftime('%b-%Y').fillna("UNKNOWN")
+        
+        df_master = df_pay[["Zone", "RO Name", "Category", "Vendor Name", "Bill Uploader", "Invoice Id", "Hold Key", "Aging Bucket", "Invoice Month", "Days Pending", "Status", "Pending With", "Revert Remarks", "Department Bucket", "Amount", "Base Date"]]
+        data_for_export['Master_Database'] = df_master
+        del df_pay
+
+    # --- MODULE 1: LEGWISE OPERATIONS & VENDOR PERFORMANCE ---
+    if os.path.exists(FILE_MAP["LEGWISE"]) and os.path.exists(FILE_MAP["ROUTE_MASTER"]) and os.path.exists(FILE_MAP["BRANCH_MASTER"]):
+        df_leg_all = pd.read_excel(FILE_MAP["LEGWISE"], sheet_name="Sheet1")
+        df_rte = pd.read_excel(FILE_MAP["ROUTE_MASTER"], sheet_name="RoutePathReportModel")
+        df_brn = pd.read_excel(FILE_MAP["BRANCH_MASTER"], sheet_name="Sheet1")
+        
+        df_rte_tat = df_rte.copy()
+        df_rte_tat['Dep_Hrs'] = df_rte_tat['Schedule Departure Time'].apply(time_to_hrs)
+        df_rte_tat['Arr_Hrs'] = df_rte_tat['Schedule Arrival Time'].apply(time_to_hrs)
+        df_rte_tat['Day_Offset'] = df_rte_tat['Route Day'].apply(get_day_offset)
+        df_rte_tat['Abs_Dep'] = df_rte_tat['Day_Offset'] + df_rte_tat['Dep_Hrs']
+        df_rte_tat['Abs_Arr'] = df_rte_tat['Day_Offset'] + df_rte_tat['Arr_Hrs']
+        
+        route_tat_master = df_rte_tat.groupby('Route Code').agg(Min_Dep=('Abs_Dep', 'min'), Max_Arr=('Abs_Arr', 'max')).reset_index()
+        route_tat_master['Master_Sch_E2E_Hrs'] = route_tat_master['Max_Arr'] - route_tat_master['Min_Dep']
+        route_tat_master['Scheduled TAT Till Destination'] = route_tat_master['Master_Sch_E2E_Hrs'].apply(format_hrs_safe)
+
+        df_leg_all.columns = df_leg_all.columns.str.strip()
+        df_leg_all['MCD_StartDate_DT'] = pd.to_datetime(df_leg_all['MCD_StartDate'], dayfirst=True, errors='coerce')
+        df_leg_all['Leg_Num'] = df_leg_all['Legwise'].astype(str).str.extract(r'(\d+)').astype(float).fillna(1)
+        
+        # Base Cleaning
+        df_leg_all = df_leg_all.sort_values(by=['RouteCode', 'MCD_StartDate_DT', 'Min_CD_StartDatetime'])
+        dedup = df_leg_all.groupby(['RouteCode', 'MCD_StartDate_DT'])['MasterCDNo'].first().reset_index()
+        df_leg_all = df_leg_all.merge(dedup, on=['RouteCode', 'MCD_StartDate_DT', 'MasterCDNo'])
+        df_leg_all['Legs'] = df_leg_all['CD_FromBranch'].astype(str) + " to " + df_leg_all['CD_ToBranch'].astype(str)
+        df_leg_all.rename(columns={'Min_CD_StartDatetime': 'Actual Departure Time', 'Max_CD_EndDatetime': 'Actual Arrival Time', 'Route': 'Route Path'}, inplace=True)
+        
+        df_leg_all['CD_FromBranch_Clean'] = df_leg_all['CD_FromBranch'].astype(str).str.strip().str.upper()
+        df_brn.columns = df_brn.columns.astype(str).str.strip()
+        brn_col = next((c for c in df_brn.columns if 'branchcode' in c.lower().replace(' ', '')), 'RPTBranchcode')
+        ro_col = next((c for c in df_brn.columns if 'rptro' in c.lower().replace(' ', '')), 'RPTRO')
+        zone_col = next((c for c in df_brn.columns if 'zone' in c.lower().replace(' ', '')), 'Zone')
+
+        df_brn['RPTBranchcode_Clean'] = df_brn[brn_col].astype(str).str.strip().str.upper()
+        df_brn_clean = df_brn[['RPTBranchcode_Clean', ro_col, zone_col]].drop_duplicates('RPTBranchcode_Clean')
+        df_leg_all = df_leg_all.merge(df_brn_clean, left_on='CD_FromBranch_Clean', right_on='RPTBranchcode_Clean', how='left')
+        df_leg_all.rename(columns={ro_col: 'Origin RO', zone_col: 'Zone'}, inplace=True)
+        df_leg_all['Origin RO'] = df_leg_all['Origin RO'].fillna('Missing RO')
+        df_leg_all['Zone'] = df_leg_all['Zone'].fillna('UNKNOWN ZONE')
+        
+        df_leg_all[['Origin', 'Destination']] = df_leg_all['Route Path'].apply(lambda x: pd.Series(extract_orig_dest(x)))
+        df_leg_all['E2E_Pair'] = df_leg_all['Route Path'].apply(get_route_pair)
+        df_leg_all.rename(columns={'LH_Type': 'LH Type'}, inplace=True)
+        df_leg_all = df_leg_all.merge(route_tat_master[['Route Code', 'Scheduled TAT Till Destination']], left_on='RouteCode', right_on='Route Code', how='left')
+        
+        def get_sch_time(r, day_c, time_c):
+            try:
+                if pd.isna(r['MCD_StartDate_DT']) or pd.isna(r[day_c]): return pd.NaT
+                day_offset = float(r[day_c])
+                d = r['MCD_StartDate_DT'] + pd.to_timedelta(day_offset, unit='D')
+                t_str = str(r[time_c]).strip()
+                if t_str == 'nan' or not t_str: return pd.NaT
+                return pd.to_datetime(d.strftime('%Y-%m-%d') + ' ' + str(pd.to_datetime(t_str).time()))
+            except: return pd.NaT
+
+        df_rte = df_rte[['Route Code', 'Route Branch Code', 'Route Day', 'Schedule Departure Time', 'Schedule Arrival Time']]
+        df_leg_all = df_leg_all.merge(df_rte, left_on=['RouteCode', 'CD_FromBranch'], right_on=['Route Code', 'Route Branch Code'], how='left')
+        df_leg_all.rename(columns={'Route Day': 'Dep_Route_Day', 'Schedule Departure Time': 'Sch_Dep_Time_Raw'}, inplace=True)
+        df_leg_all.drop(columns=['Schedule Arrival Time'], inplace=True, errors='ignore')
+        
+        df_leg_all = df_leg_all.merge(df_rte[['Route Code', 'Route Branch Code', 'Route Day', 'Schedule Arrival Time']], left_on=['RouteCode', 'CD_ToBranch'], right_on=['Route Code', 'Route Branch Code'], how='left')
+        df_leg_all.rename(columns={'Route Day': 'Arr_Route_Day', 'Schedule Arrival Time': 'Sch_Arr_Time_Raw'}, inplace=True)
+
+        df_leg_all['Scheduled Departure Time'] = df_leg_all.apply(lambda r: get_sch_time(r, 'Dep_Route_Day', 'Sch_Dep_Time_Raw'), axis=1)
+        df_leg_all['Scheduled Arrival Time'] = df_leg_all.apply(lambda r: get_sch_time(r, 'Arr_Route_Day', 'Sch_Arr_Time_Raw'), axis=1)
+        df_leg_all['Actual Departure Time'] = pd.to_datetime(df_leg_all['Actual Departure Time'], dayfirst=True, errors='coerce')
+        df_leg_all['Actual Arrival Time'] = pd.to_datetime(df_leg_all['Actual Arrival Time'], dayfirst=True, errors='coerce')
+        
+        # -------------------------------------------------------------
+        # NEW LOGIC: VENDOR PERFORMANCE (Uses Unfiltered Data)
+        # -------------------------------------------------------------
+        df_vperf = df_leg_all.copy()
+        df_vperf['Given_Secs'] = (df_vperf['Scheduled Arrival Time'] - df_vperf['Scheduled Departure Time']).dt.total_seconds()
+        df_vperf['Actual_Secs'] = (df_vperf['Actual Arrival Time'] - df_vperf['Actual Departure Time']).dt.total_seconds()
+        
+        df_vperf['Given Driving Hours_Raw'] = df_vperf['Given_Secs'] / 3600.0
+        df_vperf['Actual Driving Hours_Raw'] = df_vperf['Actual_Secs'] / 3600.0
+        df_vperf['Delay Hours_Raw'] = df_vperf['Actual Driving Hours_Raw'] - df_vperf['Given Driving Hours_Raw']
+        
+        def assign_vendor_remark(row):
+            if pd.isna(row['Actual Arrival Time']): return "In-Transit"
+            if pd.isna(row['Delay Hours_Raw']): return "Missing Schedule"
+            if row['Delay Hours_Raw'] <= 0.25: return "Ontime Arrival"
+            return "Late Arrival"
+            
+        df_vperf['Remark with 15 min waiver'] = df_vperf.apply(assign_vendor_remark, axis=1)
+        df_vperf['Given Driving Hours'] = df_vperf['Given Driving Hours_Raw'].apply(format_hrs_safe)
+        df_vperf['Actual Driving Hours'] = df_vperf['Actual Driving Hours_Raw'].apply(format_hrs_safe)
+        df_vperf['Delay Hours'] = df_vperf['Delay Hours_Raw'].apply(format_hrs_safe)
+        
+        # Format Datetime variables for proper Excel export
+        df_vperf['Actual Departure Time'] = df_vperf['Actual Departure Time'].dt.strftime('%d-%m-%Y %H:%M').fillna('-')
+        df_vperf['Actual Arrival Time'] = df_vperf['Actual Arrival Time'].dt.strftime('%d-%m-%Y %H:%M').fillna('-')
+        
+        perf_cols = ['Route Path', 'Legwise', 'Legs', 'Actual Departure Time', 'Actual Arrival Time', 'Given Driving Hours', 'Actual Driving Hours', 'Delay Hours', 'Remark with 15 min waiver', 'VendorName', 'VehicleNo', 'MasterCDNo', 'RouteCode', 'Zone', 'Origin RO']
+        df_vperf_raw = df_vperf[perf_cols + ['MCD_StartDate_DT']].copy()
+        df_vperf_raw['Date'] = df_vperf_raw['MCD_StartDate_DT'].dt.strftime('%d-%m-%Y')
+        df_vperf_raw = df_vperf_raw.drop(columns=['MCD_StartDate_DT'])
+        
+        sum_cols = ['Zone', 'Origin RO', 'Route Path', 'Legwise', 'Legs', 'VendorName']
+        perf_sum = df_vperf_raw.groupby(sum_cols).agg(
+            Total_Trips=('MasterCDNo', 'count'),
+            Ontime_Cnt=('Remark with 15 min waiver', lambda x: (x == 'Ontime Arrival').sum()),
+            Late_Cnt=('Remark with 15 min waiver', lambda x: (x == 'Late Arrival').sum()),
+            Transit_Cnt=('Remark with 15 min waiver', lambda x: (x == 'In-Transit').sum())
+        ).reset_index()
+        
+        perf_sum['Ontime Arrival'] = perf_sum.apply(lambda r: format_pct_cnt(r['Ontime_Cnt'], r['Total_Trips']), axis=1)
+        perf_sum['Late Arrival'] = perf_sum.apply(lambda r: format_pct_cnt(r['Late_Cnt'], r['Total_Trips']), axis=1)
+        perf_sum['In-Transit'] = perf_sum.apply(lambda r: format_pct_cnt(r['Transit_Cnt'], r['Total_Trips']), axis=1)
+        
+        perf_sum['Sort_Pct'] = np.where(perf_sum['Total_Trips'] > 0, perf_sum['Ontime_Cnt'] / perf_sum['Total_Trips'], 0)
+        perf_sum = perf_sum.sort_values('Sort_Pct', ascending=True).drop(columns=['Ontime_Cnt', 'Late_Cnt', 'Transit_Cnt', 'Sort_Pct'])
+        
+        data_for_export['Vendor_Perf_Summary'] = perf_sum
+        data_for_export['Vendor_Perf_Raw'] = df_vperf_raw
+        del df_vperf, df_vperf_raw, perf_sum
+        
+        # -------------------------------------------------------------
+        # ORIGINAL LOGIC: OPERATIONS EXCEPTION (Filtered)
+        # -------------------------------------------------------------
+        df_leg = df_leg_all[(df_leg_all['MCD_Created_By'] == 'SCHEDULED') & (df_leg_all['LH Type'].isin(['National LH', 'Zonal LH']))].copy()
+        
+        def calc_status(act, sch, mode):
+            if pd.isna(act): return f"No {mode}" if mode == 'Dep' else "In-Transit"
+            if pd.isna(sch): return "Missing Sch"
+            if (act - sch).total_seconds() / 60 <= 15: return f"Ontime {mode}"
+            return f"Late {mode}"
+            
+        df_leg['Dep_Status'] = df_leg.apply(lambda r: calc_status(r['Actual Departure Time'], r['Scheduled Departure Time'], 'Dep'), axis=1)
+        df_leg['Arr_Status'] = df_leg.apply(lambda r: calc_status(r['Actual Arrival Time'], r['Scheduled Arrival Time'], 'Arr'), axis=1)
+        df_leg['Remark'] = df_leg['Dep_Status'] + ", " + df_leg['Arr_Status']
+
+        df_leg['Late Dep'] = df_leg['Remark'].str.contains('Late Dep', case=False, na=False).astype(int)
+        df_leg['Late Arr'] = df_leg['Remark'].str.contains('Late Arr', case=False, na=False).astype(int)
+        df_leg['Missing'] = df_leg['Remark'].str.contains('No Dep|Missing', case=False, na=False, regex=True).astype(int)
+
+        def generate_summary(df_group, group_cols):
+            df_valid = df_group.copy()
+            trip_col = 'Total_Trips'
+            df_valid['OO_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Ontime Dep, Ontime Arr' in str(x) else 0)
+            df_valid['LL_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Late Dep, Late Arr' in str(x) else 0)
+            df_valid['LO_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Late Dep, Ontime Arr' in str(x) else 0)
+            df_valid['OL_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Ontime Dep, Late Arr' in str(x) else 0)
+            df_valid['Ontime_Dep_IT_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Ontime Dep, In-Transit' in str(x) else 0)
+            df_valid['Late_Dep_IT_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Late Dep, In-Transit' in str(x) else 0)
+            
+            agg_dict = {'MasterCDNo': 'count', 'OO_Cnt': 'sum', 'LO_Cnt': 'sum', 'OL_Cnt': 'sum', 'LL_Cnt': 'sum', 'Ontime_Dep_IT_Cnt': 'sum', 'Late_Dep_IT_Cnt': 'sum'}
+            summary = df_valid.groupby(group_cols).agg(agg_dict).reset_index()
+            summary.rename(columns={'MasterCDNo': trip_col}, inplace=True)
+            
+            summary['Ontime Dep, Ontime Arr %'] = summary.apply(lambda r: format_pct_cnt(r['OO_Cnt'], r[trip_col]), axis=1)
+            summary['Late Dep, Late Arr %'] = summary.apply(lambda r: format_pct_cnt(r['LL_Cnt'], r[trip_col]), axis=1)
+            summary['Late Dep, Ontime Arr %'] = summary.apply(lambda r: format_pct_cnt(r['LO_Cnt'], r[trip_col]), axis=1)
+            summary['Ontime Dep, Late Arr %'] = summary.apply(lambda r: format_pct_cnt(r['OL_Cnt'], r[trip_col]), axis=1)
+            summary['Ontime Dep, In-Transit'] = summary.apply(lambda r: format_pct_cnt(r['Ontime_Dep_IT_Cnt'], r[trip_col]), axis=1)
+            summary['Late Dep, In-Transit'] = summary.apply(lambda r: format_pct_cnt(r['Late_Dep_IT_Cnt'], r[trip_col]), axis=1)
+            
+            return summary.sort_values(by=['LH Type', 'E2E_Pair', 'Origin', 'Route Path', 'Leg_Num'])
+            
+        leg_sum = generate_summary(df_leg, ['Zone', 'LH Type', 'E2E_Pair', 'Origin RO', 'Route Path', 'Origin', 'Destination', 'Leg_Num', 'Legwise', 'Legs'])
+        data_for_export['Legwise_Route_Summary'] = leg_sum
+        
+        dt_cols = ['Scheduled Departure Time', 'Actual Departure Time', 'Scheduled Arrival Time', 'Actual Arrival Time']
+        for c in dt_cols: df_leg[c] = df_leg[c].dt.strftime('%d-%m-%Y %H:%M').fillna('')
+        df_leg['MCD_StartDate'] = pd.to_datetime(df_leg['MCD_StartDate_DT']).dt.strftime('%d-%m-%Y')
+        df_leg_final = df_leg.drop(columns=['Leg_Num', 'E2E_Pair'], errors='ignore')
+        data_for_export['Legwise_Processed_Data'] = df_leg_final
+        
+        del df_leg, df_leg_all, df_rte, df_brn, route_tat_master
+
+    # --- MODULE 2: CPK AND UTILIZATION ---
+    if os.path.exists(FILE_MAP["CPK_UTIL"]) and os.path.exists(FILE_MAP["ROUTE_LOOKUP"]):
+        try:
+            df_raw = pd.read_excel(FILE_MAP["CPK_UTIL"], sheet_name='ContractVehicle_DetailReport')
+        except:
+            df_raw = pd.read_excel(FILE_MAP["CPK_UTIL"])
+            
+        df_lookup = pd.read_excel(FILE_MAP["ROUTE_LOOKUP"])
+        df_raw.columns = df_raw.columns.astype(str).str.strip()
+        df_lookup.columns = df_lookup.columns.astype(str).str.strip()
+        if 'VehicleUsageType' in df_raw.columns:
+            df_raw = df_raw[df_raw['VehicleUsageType'] != 'VehicleUsageType']
+
+        vno_col = get_col(df_raw, ['vehicleno', 'vehicle']) or 'VehicleNo'
+        df_raw['Vehicle No'] = df_raw.get(vno_col, pd.Series(['Unlisted']*len(df_raw))).fillna('Unlisted')
+        date_col = get_col(df_raw, ['date', 'mcd_startdate']) or 'Date'
+        df_raw['Date'] = df_raw.get(date_col, pd.Series(['']*len(df_raw))).fillna('')
+        
+        raw_key_col = get_col(df_raw, ['refnumber', 'mastercdno', 'mcdno']) or 'RefNumber'
+        lkp_key_col = get_col(df_lookup, ['mastercdno', 'mcdno']) or 'MasterCDNo'
+        
+        if raw_key_col in df_raw.columns and lkp_key_col in df_lookup.columns:
+            df_raw['MergeKey'] = df_raw[raw_key_col].astype(str).str.strip().str.upper()
+            df_lookup['MergeKey'] = df_lookup[lkp_key_col].astype(str).str.strip().str.upper()
+            
+            lkp_route_col = get_col(df_lookup, ['route', 'routepath', 'routes'])
+            lkp_type_col = get_col(df_lookup, ['lh_type', 'lhtype', 'type'])
+            lkp_from_col = get_col(df_lookup, ['mcd_frombranch', 'frombranch'])
+            lkp_to_col = get_col(df_lookup, ['mcd_tobranch', 'tobranch'])
+            
+            cols_to_bring = ['MergeKey']
+            if lkp_route_col: cols_to_bring.append(lkp_route_col)
+            if lkp_type_col: cols_to_bring.append(lkp_type_col)
+            if lkp_from_col: cols_to_bring.append(lkp_from_col)
+            if lkp_to_col: cols_to_bring.append(lkp_to_col)
+                
+            lkp_sub = df_lookup[cols_to_bring].drop_duplicates(subset=['MergeKey'])
+            
+            rename_dict = {}
+            if lkp_route_col: rename_dict[lkp_route_col] = 'LKP_ROUTE'
+            if lkp_type_col: rename_dict[lkp_type_col] = 'LKP_TYPE'
+            if lkp_from_col: rename_dict[lkp_from_col] = 'LKP_FROM'
+            if lkp_to_col: rename_dict[lkp_to_col] = 'LKP_TO'
+            lkp_sub.rename(columns=rename_dict, inplace=True)
+            
+            df_raw = df_raw.merge(lkp_sub, on='MergeKey', how='left')
+            
+            df_raw['Final_Route'] = df_raw.get('LKP_ROUTE', pd.Series([np.nan]*len(df_raw)))
+            raw_route_col = get_col(df_raw, ['route', 'routepath', 'route(up/down)'])
+            if raw_route_col: df_raw['Final_Route'] = df_raw['Final_Route'].combine_first(df_raw[raw_route_col])
+                
+            df_raw['Final_Type'] = df_raw.get('LKP_TYPE', pd.Series([np.nan]*len(df_raw)))
+            raw_type_col = get_col(df_raw, ['type', 'vehicletype', 'category'])
+            if raw_type_col: df_raw['Final_Type'] = df_raw['Final_Type'].combine_first(df_raw[raw_type_col])
+                
+            df_raw['Final_From'] = df_raw.get('LKP_FROM', pd.Series([np.nan]*len(df_raw)))
+            df_raw['Final_To'] = df_raw.get('LKP_TO', pd.Series([np.nan]*len(df_raw)))
+        else:
+            df_raw['Final_Route'] = df_raw.get('Route', df_raw.get('Route Path', ''))
+            df_raw['Final_Type'] = df_raw.get('Type', df_raw.get('VehicleType', 'Unlisted Type'))
+            df_raw['Final_From'] = ''
+            df_raw['Final_To'] = ''
+
+        trips_col = get_col(df_raw, ['nooftrips', 'trips', 'noofdays'])
+        cost_col = get_col(df_raw, ['totalcost', 'contractcost', 'amount'])
+        wt_col = get_col(df_raw, ['totalwt', 'weight', 'mcdwt'])
+        cap_col = get_col(df_raw, ['vehiclecapacity', 'capacity', 'vehcap'])
+
+        df_raw['Trips'] = pd.to_numeric(df_raw[trips_col], errors='coerce').fillna(1) if trips_col else 1
+        df_raw['Cost'] = pd.to_numeric(df_raw[cost_col], errors='coerce').fillna(0) if cost_col else 0
+        df_raw['Wt'] = pd.to_numeric(df_raw[wt_col], errors='coerce').fillna(0) if wt_col else 0
+        df_raw['Cap'] = pd.to_numeric(df_raw[cap_col], errors='coerce').fillna(0) if cap_col else 0
+
+        df_raw['Final_Type'] = df_raw['Final_Type'].apply(lambda x: f"MCD-{x}" if isinstance(x, str) and "LH" in x.upper() and "MCD" not in x.upper() else x)
+        df_raw['Final_Type'] = df_raw['Final_Type'].fillna('Unlisted Type')
+
+        def fix_route(row):
+            r = str(row.get('Final_Route', '')).strip()
+            if pd.isna(r) or r.lower() in ['nan', 'na', '', 'manual']:
+                b = str(row.get('VendorBranch', '')).strip()
+                return b + " (Local)" if b and b.lower() not in ['nan', 'na', ''] else "Local Operations"
+            return r
+        df_raw['Final_Route'] = df_raw.apply(fix_route, axis=1)
+
+        def create_sort_key(row):
+            fb = str(row.get('Final_From', '')).strip().upper()
+            tb = str(row.get('Final_To', '')).strip().upper()
+            if fb and tb and fb != 'NAN' and tb != 'NAN':
+                return f"{min(fb, tb)}-{max(fb, tb)}"
+            r = str(row.get('Final_Route', '')).strip().upper()
+            pts = r.replace(' TO ', '-').split('-')
+            if len(pts) >= 2:
+                return f"{min(pts[0].strip(), pts[-1].strip())}-{max(pts[0].strip(), pts[-1].strip())}"
+            return r
+            
+        df_raw['SortKey'] = df_raw.apply(create_sort_key, axis=1)
+
+        ro_col = get_col(df_raw, ['vendorro', 'ro']) or 'VendorRO'
+        df_raw['RO_Clean'] = df_raw.get(ro_col, pd.Series(['UNKNOWN']*len(df_raw))).astype(str).str.upper().str.strip()
+        
+        # Map Zone to CPK Data
+        df_raw['Zone'] = df_raw['RO_Clean'].map(ro_zone_map).fillna('UNKNOWN ZONE')
+        
+        target_ros = ['PATRO', 'CCURO', 'BBSRO', 'GAURO', 'MUMRO', 'DELRO', 'LKORO']
+        
+        # --- APPLY RATE CORRECTIONS IF ANY ---
+        df_raw['Date_DT'] = pd.to_datetime(df_raw['Date'], errors='coerce', dayfirst=True)
+        if os.path.exists(FILE_MAP["RATE_CORRECTIONS"]):
+            try:
+                with open(FILE_MAP["RATE_CORRECTIONS"], 'r') as f:
+                    corrections = json.load(f)
+                
+                for corr in corrections:
+                    route_str = str(corr['route']).strip().upper()
+                    cap_val = float(corr['capacity'])
+                    new_cost = float(corr['new_cost'])
+                    eff_date = pd.to_datetime(corr['eff_date'])
+                    
+                    route_mask = df_raw['Final_Route'].astype(str).str.upper() == route_str
+                    cap_mask = pd.to_numeric(df_raw['Cap'], errors='coerce') == cap_val
+                    date_mask = df_raw['Date_DT'] >= eff_date
+                    
+                    mask = route_mask & cap_mask & date_mask
+                    df_raw.loc[mask, 'Cost'] = new_cost * df_raw.loc[mask, 'Trips']
+            except Exception as e:
+                pass 
+        
+        df_updn = df_raw[~df_raw['Final_Type'].str.upper().str.contains('OFD|PICKUP', na=False)].copy()
+        target_keys = df_updn[df_updn['RO_Clean'].isin(target_ros)]['SortKey'].unique()
+        df_updn = df_updn[df_updn['SortKey'].isin(target_keys)]
+        
+        # TYPE RENAMING FOR CLEANER DASHBOARD
+        df_updn['Final_Type'] = df_updn['Final_Type'].replace({
+            'MCD-National LH': 'National LH',
+            'MCD-Zonal LH': 'Zonal LH',
+            'MCD-Regional LH': 'Regional LH',
+            'MCD-Feeder': 'Feeder'
+        })
+        
+        data_for_export['CPK_Raw_Data'] = df_updn
+
+        if not df_updn.empty:
+            df_updn['Trip_Rate'] = np.where(df_updn['Trips'] > 0, df_updn['Cost'] / df_updn['Trips'], 0).round(2)
+            df_updn['Trip_Rate_Str'] = "₹" + df_updn['Trip_Rate'].astype(str)
+            df_updn['Total_Cap_Raw'] = df_updn['Cap'] * df_updn['Trips']
+            
+            # 1. National & Zonal (Master & Up/Down Grouping)
+            nz_mask = df_updn['Final_Type'].isin(['National LH', 'Zonal LH'])
+            if nz_mask.any():
+                agg_nz_updown = df_updn[nz_mask].groupby(['RO_Clean', 'Zone', 'Final_Route', 'Final_Type', 'Cap', 'SortKey', 'Trip_Rate']).agg(
+                    Total_Trips=('Trips', 'sum'),
+                    Total_Carried_Wt=('Wt', 'sum'),
+                    Total_Trip_Cost=('Cost', 'sum'),
+                    VendorName=('VendorName', lambda x: ', '.join(sorted(set(x.dropna().astype(str))))),
+                    Per_Trip_Cost=('Trip_Rate_Str', lambda x: ', '.join(sorted(set(x.dropna().astype(str)))))
+                ).reset_index()
+                agg_nz_updown['Total Capacity'] = agg_nz_updown['Cap'] * agg_nz_updown['Total_Trips']
+                agg_nz_updown['Overall CPK'] = np.where(agg_nz_updown['Total_Carried_Wt'] > 0, agg_nz_updown['Total_Trip_Cost'] / agg_nz_updown['Total_Carried_Wt'], 0)
+                agg_nz_updown['Overall Util %'] = np.where(agg_nz_updown['Total Capacity'] > 0, agg_nz_updown['Total_Carried_Wt'] / agg_nz_updown['Total Capacity'], 0)
+                nz_updown_final = agg_nz_updown[['Zone', 'RO_Clean', 'Final_Route', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Cap', 'Total Capacity', 'Total_Carried_Wt', 'Per_Trip_Cost', 'Total_Trip_Cost', 'Total_Trips', 'VendorName', 'SortKey']]
+                nz_updown_final.columns = ["Zone", "VendorRO", "Route (UP/DOWN)", "Type", "Overall CPK", "Overall Util %", "VehCap (Base)", "Total Capacity", "Total Carried Wt", "Per Trip Cost", "Total Trip Cost", "Total Trips", "Vendor(s)", "SortKey"]
+                data_for_export['CPK_National_Zonal_UpDown'] = nz_updown_final.sort_values(by=['Type', 'SortKey'])
+                
+                agg_nz_master = df_updn[nz_mask].groupby(['RO_Clean', 'Zone', 'SortKey', 'Final_Type']).agg(
+                    Total_Trips=('Trips', 'sum'),
+                    Total_Carried_Wt=('Wt', 'sum'),
+                    Total_Trip_Cost=('Cost', 'sum'),
+                    Total_Capacity=('Total_Cap_Raw', 'sum'),
+                    Unique_Vendors=('VendorName', lambda x: x.nunique()),
+                    VendorName=('VendorName', lambda x: ', '.join(sorted(set(x.dropna().astype(str))))),
+                    Route_Path=('Final_Route', lambda x: ', '.join(sorted(set(x.dropna().astype(str))))),
+                    Per_Trip_Cost=('Trip_Rate_Str', lambda x: ', '.join(sorted(set(x.dropna().astype(str)))))
+                ).reset_index()
+                agg_nz_master['Overall CPK'] = np.where(agg_nz_master['Total_Carried_Wt'] > 0, agg_nz_master['Total_Trip_Cost'] / agg_nz_master['Total_Carried_Wt'], 0)
+                agg_nz_master['Overall Util %'] = np.where(agg_nz_master['Total_Capacity'] > 0, agg_nz_master['Total_Carried_Wt'] / agg_nz_master['Total_Capacity'], 0)
+                
+                nz_master_final = agg_nz_master[['Zone', 'RO_Clean', 'Route_Path', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Total_Capacity', 'Total_Carried_Wt', 'Per_Trip_Cost', 'Total_Trip_Cost', 'Total_Trips', 'Unique_Vendors', 'VendorName', 'SortKey']]
+                nz_master_final.columns = ["Zone", "VendorRO", "Route Path", "Type", "Overall CPK", "Overall Util %", "Total Capacity", "Total Carried Wt", "Per Trip Cost", "Total Trip Cost", "Total Trips", "Unique Vendors", "Vendor(s)", "Route Pair"]
+                data_for_export['CPK_National_Zonal_Master'] = nz_master_final.sort_values(by=['Type', 'Overall Util %'])
+
+            # 2. Feeder & Regional (Vehicle-wise)
+            fr_mask = df_updn['Final_Type'].isin(['Regional LH', 'Feeder'])
+            if fr_mask.any():
+                agg_fr = df_updn[fr_mask].groupby(['RO_Clean', 'Zone', 'Vehicle No', 'Final_Type', 'Cap', 'Trip_Rate']).agg(
+                    Total_Trips=('Trips', 'sum'),
+                    Total_Carried_Wt=('Wt', 'sum'),
+                    Total_Trip_Cost=('Cost', 'sum'),
+                    VendorName=('VendorName', lambda x: ', '.join(sorted(set(x.dropna().astype(str))))),
+                    Per_Trip_Cost=('Trip_Rate_Str', lambda x: ', '.join(sorted(set(x.dropna().astype(str))))),
+                    Routes_Covered=('Final_Route', lambda x: ', '.join(sorted(set(x.dropna().astype(str)))))
+                ).reset_index()
+                agg_fr['Total Capacity'] = agg_fr['Cap'] * agg_fr['Total_Trips']
+                agg_fr['Overall CPK'] = np.where(agg_fr['Total_Carried_Wt'] > 0, agg_fr['Total_Trip_Cost'] / agg_fr['Total_Carried_Wt'], 0)
+                agg_fr['Overall Util %'] = np.where(agg_fr['Total Capacity'] > 0, agg_fr['Total_Carried_Wt'] / agg_fr['Total Capacity'], 0)
+                fr_final = agg_fr[['Zone', 'RO_Clean', 'Vehicle No', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Cap', 'Total Capacity', 'Total_Carried_Wt', 'Per_Trip_Cost', 'Total_Trip_Cost', 'Total_Trips', 'VendorName', 'Routes_Covered']]
+                fr_final.columns = ["Zone", "VendorRO", "Vehicle No", "Type", "Overall CPK", "Overall Util %", "VehCap (Base)", "Total Capacity", "Total Carried Wt", "Per Trip Cost", "Total Trip Cost", "Total Trips", "Vendor(s)", "Routes Covered"]
+                data_for_export['CPK_Feeder_Regional'] = fr_final.sort_values(by=['Type', 'VendorRO', 'Overall Util %'])
+            
+            # 3. Co-loader (Vehicle-wise)
+            col_mask = df_updn['Final_Type'] == 'CO-LOADER'
+            if col_mask.any():
+                agg_col = df_updn[col_mask].groupby(['RO_Clean', 'Zone', 'VendorName', 'Final_Route', 'Vehicle No', 'Trip_Rate']).agg(
+                    Total_Trips=('Trips', 'sum'),
+                    Total_Carried_Wt=('Wt', 'sum'),
+                    Total_Trip_Cost=('Cost', 'sum'),
+                    Per_Trip_Cost=('Trip_Rate_Str', lambda x: ', '.join(sorted(set(x.dropna().astype(str)))))
+                ).reset_index()
+                agg_col['Cap'] = df_updn[col_mask].groupby(['RO_Clean', 'Zone', 'VendorName', 'Final_Route', 'Vehicle No', 'Trip_Rate'])['Cap'].max().values
+                agg_col['Total Capacity'] = agg_col['Cap'] * agg_col['Total_Trips']
+                agg_col['Overall CPK'] = np.where(agg_col['Total_Carried_Wt'] > 0, agg_col['Total_Trip_Cost'] / agg_col['Total_Carried_Wt'], 0)
+                agg_col['Overall Util %'] = np.where(agg_col['Total Capacity'] > 0, agg_col['Total_Carried_Wt'] / agg_col['Total Capacity'], 0)
+                col_final = agg_col[['Zone', 'RO_Clean', 'VendorName', 'Final_Route', 'Vehicle No', 'Overall CPK', 'Overall Util %', 'Cap', 'Total Capacity', 'Total_Carried_Wt', 'Per_Trip_Cost', 'Total_Trip_Cost', 'Total_Trips']]
+                col_final.columns = ["Zone", "VendorRO", "Vendor(s)", "Route", "Vehicle No", "Overall CPK", "Overall Util %", "VehCap (Base)", "Total Capacity", "Total Carried Wt", "Per Trip Cost", "Total Trip Cost", "Total Trips"]
+                data_for_export['CPK_Coloader'] = col_final.sort_values(by=['VendorRO', 'Overall Util %'])
+
+        del df_raw, df_lookup
+
+    return data_for_export
+
+
 def process_all_data():
     progress = st.progress(0)
     status_text = st.empty()
-    data_for_export = {}
     temp_output = None
     
     try:
-        # --- EXTRACT ZONE MAPPING FROM BRANCH MASTER ---
-        ro_zone_map = {}
-        if os.path.exists(FILE_MAP["BRANCH_MASTER"]):
-            df_brn_master = pd.read_excel(FILE_MAP["BRANCH_MASTER"], sheet_name="Sheet1")
-            df_brn_master.columns = df_brn_master.columns.astype(str).str.strip()
-            ro_col_m = next((c for c in df_brn_master.columns if 'rptro' in c.lower().replace(' ', '')), 'RPTRO')
-            zone_col_m = next((c for c in df_brn_master.columns if 'zone' in c.lower().replace(' ', '')), 'Zone')
-            df_brn_master[ro_col_m] = df_brn_master[ro_col_m].astype(str).str.strip().str.upper()
-            ro_zone_map = df_brn_master.drop_duplicates(subset=[ro_col_m]).set_index(ro_col_m)[zone_col_m].to_dict()
-
-        # --- MODULE 0: PAYMENT DATA ---
-        status_text.text("⚙️ Processing Payment Data...")
-        if os.path.exists(FILE_MAP["PAYMENT"]):
-            df_pay = pd.read_excel(FILE_MAP["PAYMENT"])
-            df_pay.columns = df_pay.columns.astype(str).str.strip().str.upper().str.replace(" ", "").str.replace("_", "")
-            
-            rename_dict = {}
-            for col in df_pay.columns:
-                if 'ROSELECTION' in col: rename_dict[col] = 'RO Name'
-                elif 'CATEGORY' in col: rename_dict[col] = 'Category'
-                elif 'VENDORNAME' in col: rename_dict[col] = 'Vendor Name'
-                elif 'INVOICEID' in col: rename_dict[col] = 'Invoice Id'
-                elif 'INVOICEDATE' in col: rename_dict[col] = 'Invoice Date'
-                elif 'AMOUNT' == col: rename_dict[col] = 'Amount'
-                elif 'STATUS' == col: rename_dict[col] = 'Status'
-                elif 'PENDINGWITH' in col: rename_dict[col] = 'Pending With'
-                elif 'LASTAPPROVEDAT' in col: rename_dict[col] = 'Last Approved At'
-                elif 'FINANCEREVERTREMARKS1' in col: rename_dict[col] = 'Finance Revert Remarks 1'
-                elif 'APPROVERREVERTREMARKS' in col: rename_dict[col] = 'Approver Revert Remarks'
-                elif 'HOLD.KEY' in col or 'HOLDKEY' in col: rename_dict[col] = 'Hold Key'
-                elif 'NAME' == col or 'UPLOADERNAME' in col or 'BILLUPLOADER' in col: rename_dict[col] = 'Bill Uploader'
-
-            df_pay.rename(columns=rename_dict, inplace=True)
-            
-            required_cols = ['RO Name', 'Category', 'Vendor Name', 'Invoice Id', 'Invoice Date', 'Amount', 'Status', 'Pending With', 'Last Approved At', 'Finance Revert Remarks 1', 'Approver Revert Remarks', 'Hold Key', 'Bill Uploader']
-            for req in required_cols:
-                if req not in df_pay.columns: df_pay[req] = ""
-                    
-            df_pay['Vendor Name'] = df_pay['Vendor Name'].fillna('').astype(str).str.upper().str.strip()
-            df_pay['Category'] = df_pay['Category'].fillna('').astype(str).str.strip()
-            df_pay['Status'] = df_pay['Status'].fillna('').astype(str).str.upper()
-            df_pay['Pending With'] = df_pay['Pending With'].fillna('').astype(str).str.upper()
-            
-            df_pay['RO Name Clean'] = df_pay['RO Name'].astype(str).str.strip().str.upper()
-            df_pay['Zone'] = df_pay['RO Name Clean'].map(ro_zone_map).fillna('UNKNOWN ZONE')
-            
-            valid_cats = ["Contract - Feeder Connection vehicle charges", "Market - Feeder Connection vehicle charges", 
-                          "Market Vehicle Hired -Linehaul", "Contract Network Vehicle Hired - Regional", 
-                          "Contract Network Vehicle Hired - Zonal", "Contract Network Vehicle Hired - National"]
-            df_pay = df_pay[df_pay['Category'].isin(valid_cats)]
-            
-            vip_vends = ["SHRI GANPATI", "MOHD ASLAM", "MEHTAROAD", "E WHEELS", "TEJAS", "T T TRANSPORT", 
-                         "APL EXPRESS", "GOTRUCKS", "RADHA RANI", "FASTLANE", "MMM LOGISTICS", "ATA ROADWAYS", "ZAST", "FLEETX"]
-            df_pay = df_pay[~df_pay['Vendor Name'].str.contains('|'.join(vip_vends), na=False, regex=True)].copy()
-            df_pay = df_pay[~df_pay['Status'].str.contains('PAID|PROCESSED|CANCELLED|DECLINED', na=False)]
-            
-            df_pay['Finance Revert Remarks 1'] = df_pay.get('Finance Revert Remarks 1', pd.Series(['']*len(df_pay))).fillna('')
-            df_pay['Approver Revert Remarks'] = df_pay.get('Approver Revert Remarks', pd.Series(['']*len(df_pay))).fillna('')
-            df_pay['Revert Remarks'] = np.where(df_pay['Finance Revert Remarks 1'] != '', df_pay['Finance Revert Remarks 1'], df_pay['Approver Revert Remarks'])
-            
-            conds = [
-                (df_pay['Status'].str.contains('PAYMENT') | df_pay['Pending With'].str.contains('PAYMENT')),
-                (df_pay['Status'].str.contains('FINANCE') | df_pay['Pending With'].str.contains('FINANCE|LEVEL 3') | df_pay['Status'].str.contains('HOLD')),
-                (df_pay['Revert Remarks'] != '') | (df_pay['Status'].str.contains('DRAFT')) | (df_pay['Pending With'].str.contains('AJAY')),
-                (df_pay['Status'].str.contains('PENDING') | df_pay['Pending With'].str.contains('COST CONTROL|OPSACCTS|ACC'))
-            ]
-            df_pay['Department Bucket'] = np.select(conds, ["4. PAYMENT PENDING", "3. FINANCE PENDING", "1. USER / DRAFT PENDING", "2. COST CONTROL PENDING"], "5. OTHER PENDING")
-            
-            today = pd.to_datetime('today').normalize()
-            df_pay['Last Approved At'] = pd.to_datetime(df_pay['Last Approved At'], dayfirst=True, errors='coerce').dt.normalize()
-            df_pay['Invoice Date'] = pd.to_datetime(df_pay['Invoice Date'], dayfirst=True, errors='coerce').dt.normalize()
-            df_pay['Base Date'] = df_pay['Last Approved At'].combine_first(df_pay['Invoice Date']).fillna(today)
-            df_pay['Days Pending'] = (today - df_pay['Base Date']).dt.days
-            df_pay['Aging Bucket'] = np.where(df_pay['Days Pending'] <= 5, "1. 0-5 Days", "2. >5 Days")
-            df_pay['Base Date'] = df_pay['Base Date'].dt.strftime('%d-%b-%Y').fillna("")
-            df_pay['Invoice Month'] = df_pay['Invoice Date'].dt.strftime('%b-%Y').fillna("UNKNOWN")
-            
-            df_master = df_pay[["Zone", "RO Name", "Category", "Vendor Name", "Bill Uploader", "Invoice Id", "Hold Key", "Aging Bucket", "Invoice Month", "Days Pending", "Status", "Pending With", "Revert Remarks", "Department Bucket", "Amount", "Base Date"]]
-            data_for_export['Master_Database'] = df_master
-            del df_pay
-        else:
-            st.warning("⚠️ Payment file missing.")
-
-        progress.progress(20)
-
-        # --- MODULE 1: LEGWISE OPERATIONS & VENDOR PERFORMANCE ---
-        status_text.text("⚙️ Processing Legwise Operations Data...")
-        if os.path.exists(FILE_MAP["LEGWISE"]) and os.path.exists(FILE_MAP["ROUTE_MASTER"]) and os.path.exists(FILE_MAP["BRANCH_MASTER"]):
-            df_leg_all = pd.read_excel(FILE_MAP["LEGWISE"], sheet_name="Sheet1")
-            df_rte = pd.read_excel(FILE_MAP["ROUTE_MASTER"], sheet_name="RoutePathReportModel")
-            df_brn = pd.read_excel(FILE_MAP["BRANCH_MASTER"], sheet_name="Sheet1")
-            
-            df_rte_tat = df_rte.copy()
-            df_rte_tat['Dep_Hrs'] = df_rte_tat['Schedule Departure Time'].apply(time_to_hrs)
-            df_rte_tat['Arr_Hrs'] = df_rte_tat['Schedule Arrival Time'].apply(time_to_hrs)
-            df_rte_tat['Day_Offset'] = df_rte_tat['Route Day'].apply(get_day_offset)
-            df_rte_tat['Abs_Dep'] = df_rte_tat['Day_Offset'] + df_rte_tat['Dep_Hrs']
-            df_rte_tat['Abs_Arr'] = df_rte_tat['Day_Offset'] + df_rte_tat['Arr_Hrs']
-            
-            route_tat_master = df_rte_tat.groupby('Route Code').agg(Min_Dep=('Abs_Dep', 'min'), Max_Arr=('Abs_Arr', 'max')).reset_index()
-            route_tat_master['Master_Sch_E2E_Hrs'] = route_tat_master['Max_Arr'] - route_tat_master['Min_Dep']
-            route_tat_master['Scheduled TAT Till Destination'] = route_tat_master['Master_Sch_E2E_Hrs'].apply(format_hrs_safe)
-
-            df_leg_all.columns = df_leg_all.columns.str.strip()
-            df_leg_all['MCD_StartDate_DT'] = pd.to_datetime(df_leg_all['MCD_StartDate'], dayfirst=True, errors='coerce')
-            df_leg_all['Leg_Num'] = df_leg_all['Legwise'].astype(str).str.extract(r'(\d+)').astype(float).fillna(1)
-            
-            # Base Cleaning
-            df_leg_all = df_leg_all.sort_values(by=['RouteCode', 'MCD_StartDate_DT', 'Min_CD_StartDatetime'])
-            dedup = df_leg_all.groupby(['RouteCode', 'MCD_StartDate_DT'])['MasterCDNo'].first().reset_index()
-            df_leg_all = df_leg_all.merge(dedup, on=['RouteCode', 'MCD_StartDate_DT', 'MasterCDNo'])
-            df_leg_all['Legs'] = df_leg_all['CD_FromBranch'].astype(str) + " to " + df_leg_all['CD_ToBranch'].astype(str)
-            df_leg_all.rename(columns={'Min_CD_StartDatetime': 'Actual Departure Time', 'Max_CD_EndDatetime': 'Actual Arrival Time', 'Route': 'Route Path'}, inplace=True)
-            
-            df_leg_all['CD_FromBranch_Clean'] = df_leg_all['CD_FromBranch'].astype(str).str.strip().str.upper()
-            df_brn.columns = df_brn.columns.astype(str).str.strip()
-            brn_col = next((c for c in df_brn.columns if 'branchcode' in c.lower().replace(' ', '')), 'RPTBranchcode')
-            ro_col = next((c for c in df_brn.columns if 'rptro' in c.lower().replace(' ', '')), 'RPTRO')
-            zone_col = next((c for c in df_brn.columns if 'zone' in c.lower().replace(' ', '')), 'Zone')
-
-            df_brn['RPTBranchcode_Clean'] = df_brn[brn_col].astype(str).str.strip().str.upper()
-            df_brn_clean = df_brn[['RPTBranchcode_Clean', ro_col, zone_col]].drop_duplicates('RPTBranchcode_Clean')
-            df_leg_all = df_leg_all.merge(df_brn_clean, left_on='CD_FromBranch_Clean', right_on='RPTBranchcode_Clean', how='left')
-            df_leg_all.rename(columns={ro_col: 'Origin RO', zone_col: 'Zone'}, inplace=True)
-            df_leg_all['Origin RO'] = df_leg_all['Origin RO'].fillna('Missing RO')
-            df_leg_all['Zone'] = df_leg_all['Zone'].fillna('UNKNOWN ZONE')
-            
-            df_leg_all[['Origin', 'Destination']] = df_leg_all['Route Path'].apply(lambda x: pd.Series(extract_orig_dest(x)))
-            df_leg_all['E2E_Pair'] = df_leg_all['Route Path'].apply(get_route_pair)
-            df_leg_all.rename(columns={'LH_Type': 'LH Type'}, inplace=True)
-            df_leg_all = df_leg_all.merge(route_tat_master[['Route Code', 'Scheduled TAT Till Destination']], left_on='RouteCode', right_on='Route Code', how='left')
-            
-            def get_sch_time(r, day_c, time_c):
-                try:
-                    if pd.isna(r['MCD_StartDate_DT']) or pd.isna(r[day_c]): return pd.NaT
-                    day_offset = float(r[day_c])
-                    d = r['MCD_StartDate_DT'] + pd.to_timedelta(day_offset, unit='D')
-                    t_str = str(r[time_c]).strip()
-                    if t_str == 'nan' or not t_str: return pd.NaT
-                    return pd.to_datetime(d.strftime('%Y-%m-%d') + ' ' + str(pd.to_datetime(t_str).time()))
-                except: return pd.NaT
-
-            df_rte = df_rte[['Route Code', 'Route Branch Code', 'Route Day', 'Schedule Departure Time', 'Schedule Arrival Time']]
-            df_leg_all = df_leg_all.merge(df_rte, left_on=['RouteCode', 'CD_FromBranch'], right_on=['Route Code', 'Route Branch Code'], how='left')
-            df_leg_all.rename(columns={'Route Day': 'Dep_Route_Day', 'Schedule Departure Time': 'Sch_Dep_Time_Raw'}, inplace=True)
-            df_leg_all.drop(columns=['Schedule Arrival Time'], inplace=True, errors='ignore')
-            
-            df_leg_all = df_leg_all.merge(df_rte[['Route Code', 'Route Branch Code', 'Route Day', 'Schedule Arrival Time']], left_on=['RouteCode', 'CD_ToBranch'], right_on=['Route Code', 'Route Branch Code'], how='left')
-            df_leg_all.rename(columns={'Route Day': 'Arr_Route_Day', 'Schedule Arrival Time': 'Sch_Arr_Time_Raw'}, inplace=True)
-
-            df_leg_all['Scheduled Departure Time'] = df_leg_all.apply(lambda r: get_sch_time(r, 'Dep_Route_Day', 'Sch_Dep_Time_Raw'), axis=1)
-            df_leg_all['Scheduled Arrival Time'] = df_leg_all.apply(lambda r: get_sch_time(r, 'Arr_Route_Day', 'Sch_Arr_Time_Raw'), axis=1)
-            df_leg_all['Actual Departure Time'] = pd.to_datetime(df_leg_all['Actual Departure Time'], dayfirst=True, errors='coerce')
-            df_leg_all['Actual Arrival Time'] = pd.to_datetime(df_leg_all['Actual Arrival Time'], dayfirst=True, errors='coerce')
-            
-            # -------------------------------------------------------------
-            # NEW LOGIC: VENDOR PERFORMANCE (Uses Unfiltered Data)
-            # -------------------------------------------------------------
-            df_vperf = df_leg_all.copy()
-            df_vperf['Given_Secs'] = (df_vperf['Scheduled Arrival Time'] - df_vperf['Scheduled Departure Time']).dt.total_seconds()
-            df_vperf['Actual_Secs'] = (df_vperf['Actual Arrival Time'] - df_vperf['Actual Departure Time']).dt.total_seconds()
-            
-            df_vperf['Given Driving Hours_Raw'] = df_vperf['Given_Secs'] / 3600.0
-            df_vperf['Actual Driving Hours_Raw'] = df_vperf['Actual_Secs'] / 3600.0
-            df_vperf['Delay Hours_Raw'] = df_vperf['Actual Driving Hours_Raw'] - df_vperf['Given Driving Hours_Raw']
-            
-            def assign_vendor_remark(row):
-                if pd.isna(row['Actual Arrival Time']): return "In-Transit"
-                if pd.isna(row['Delay Hours_Raw']): return "Missing Schedule"
-                if row['Delay Hours_Raw'] <= 0.25: return "Ontime Arrival"
-                return "Late Arrival"
-                
-            df_vperf['Remark with 15 min waiver'] = df_vperf.apply(assign_vendor_remark, axis=1)
-            df_vperf['Given Driving Hours'] = df_vperf['Given Driving Hours_Raw'].apply(format_hrs_safe)
-            df_vperf['Actual Driving Hours'] = df_vperf['Actual Driving Hours_Raw'].apply(format_hrs_safe)
-            df_vperf['Delay Hours'] = df_vperf['Delay Hours_Raw'].apply(format_hrs_safe)
-            
-            # Format Datetime variables for proper Excel export
-            df_vperf['Actual Departure Time'] = df_vperf['Actual Departure Time'].dt.strftime('%d-%m-%Y %H:%M').fillna('-')
-            df_vperf['Actual Arrival Time'] = df_vperf['Actual Arrival Time'].dt.strftime('%d-%m-%Y %H:%M').fillna('-')
-            
-            perf_cols = ['Route Path', 'Legwise', 'Legs', 'Actual Departure Time', 'Actual Arrival Time', 'Given Driving Hours', 'Actual Driving Hours', 'Delay Hours', 'Remark with 15 min waiver', 'VendorName', 'VehicleNo', 'MasterCDNo', 'RouteCode', 'Zone', 'Origin RO']
-            df_vperf_raw = df_vperf[perf_cols + ['MCD_StartDate_DT']].copy()
-            df_vperf_raw['Date'] = df_vperf_raw['MCD_StartDate_DT'].dt.strftime('%d-%m-%Y')
-            df_vperf_raw = df_vperf_raw.drop(columns=['MCD_StartDate_DT'])
-            
-            sum_cols = ['Zone', 'Origin RO', 'Route Path', 'Legwise', 'Legs', 'VendorName']
-            perf_sum = df_vperf_raw.groupby(sum_cols).agg(
-                Total_Trips=('MasterCDNo', 'count'),
-                Ontime_Cnt=('Remark with 15 min waiver', lambda x: (x == 'Ontime Arrival').sum()),
-                Late_Cnt=('Remark with 15 min waiver', lambda x: (x == 'Late Arrival').sum()),
-                Transit_Cnt=('Remark with 15 min waiver', lambda x: (x == 'In-Transit').sum())
-            ).reset_index()
-            
-            perf_sum['Ontime Arrival'] = perf_sum.apply(lambda r: format_pct_cnt(r['Ontime_Cnt'], r['Total_Trips']), axis=1)
-            perf_sum['Late Arrival'] = perf_sum.apply(lambda r: format_pct_cnt(r['Late_Cnt'], r['Total_Trips']), axis=1)
-            perf_sum['In-Transit'] = perf_sum.apply(lambda r: format_pct_cnt(r['Transit_Cnt'], r['Total_Trips']), axis=1)
-            
-            perf_sum['Sort_Pct'] = np.where(perf_sum['Total_Trips'] > 0, perf_sum['Ontime_Cnt'] / perf_sum['Total_Trips'], 0)
-            perf_sum = perf_sum.sort_values('Sort_Pct', ascending=True).drop(columns=['Ontime_Cnt', 'Late_Cnt', 'Transit_Cnt', 'Sort_Pct'])
-            
-            data_for_export['Vendor_Perf_Summary'] = perf_sum
-            data_for_export['Vendor_Perf_Raw'] = df_vperf_raw
-            del df_vperf, df_vperf_raw, perf_sum
-            
-            # -------------------------------------------------------------
-            # ORIGINAL LOGIC: OPERATIONS EXCEPTION (Filtered)
-            # -------------------------------------------------------------
-            df_leg = df_leg_all[(df_leg_all['MCD_Created_By'] == 'SCHEDULED') & (df_leg_all['LH Type'].isin(['National LH', 'Zonal LH']))].copy()
-            
-            def calc_status(act, sch, mode):
-                if pd.isna(act): return f"No {mode}" if mode == 'Dep' else "In-Transit"
-                if pd.isna(sch): return "Missing Sch"
-                if (act - sch).total_seconds() / 60 <= 15: return f"Ontime {mode}"
-                return f"Late {mode}"
-                
-            df_leg['Dep_Status'] = df_leg.apply(lambda r: calc_status(r['Actual Departure Time'], r['Scheduled Departure Time'], 'Dep'), axis=1)
-            df_leg['Arr_Status'] = df_leg.apply(lambda r: calc_status(r['Actual Arrival Time'], r['Scheduled Arrival Time'], 'Arr'), axis=1)
-            df_leg['Remark'] = df_leg['Dep_Status'] + ", " + df_leg['Arr_Status']
-
-            df_leg['Late Dep'] = df_leg['Remark'].str.contains('Late Dep', case=False, na=False).astype(int)
-            df_leg['Late Arr'] = df_leg['Remark'].str.contains('Late Arr', case=False, na=False).astype(int)
-            df_leg['Missing'] = df_leg['Remark'].str.contains('No Dep|Missing', case=False, na=False, regex=True).astype(int)
-
-            def generate_summary(df_group, group_cols):
-                df_valid = df_group.copy()
-                trip_col = 'Total_Trips'
-                df_valid['OO_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Ontime Dep, Ontime Arr' in str(x) else 0)
-                df_valid['LL_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Late Dep, Late Arr' in str(x) else 0)
-                df_valid['LO_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Late Dep, Ontime Arr' in str(x) else 0)
-                df_valid['OL_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Ontime Dep, Late Arr' in str(x) else 0)
-                df_valid['Ontime_Dep_IT_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Ontime Dep, In-Transit' in str(x) else 0)
-                df_valid['Late_Dep_IT_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Late Dep, In-Transit' in str(x) else 0)
-                
-                agg_dict = {'MasterCDNo': 'count', 'OO_Cnt': 'sum', 'LO_Cnt': 'sum', 'OL_Cnt': 'sum', 'LL_Cnt': 'sum', 'Ontime_Dep_IT_Cnt': 'sum', 'Late_Dep_IT_Cnt': 'sum'}
-                summary = df_valid.groupby(group_cols).agg(agg_dict).reset_index()
-                summary.rename(columns={'MasterCDNo': trip_col}, inplace=True)
-                
-                summary['Ontime Dep, Ontime Arr %'] = summary.apply(lambda r: format_pct_cnt(r['OO_Cnt'], r[trip_col]), axis=1)
-                summary['Late Dep, Late Arr %'] = summary.apply(lambda r: format_pct_cnt(r['LL_Cnt'], r[trip_col]), axis=1)
-                summary['Late Dep, Ontime Arr %'] = summary.apply(lambda r: format_pct_cnt(r['LO_Cnt'], r[trip_col]), axis=1)
-                summary['Ontime Dep, Late Arr %'] = summary.apply(lambda r: format_pct_cnt(r['OL_Cnt'], r[trip_col]), axis=1)
-                summary['Ontime Dep, In-Transit'] = summary.apply(lambda r: format_pct_cnt(r['Ontime_Dep_IT_Cnt'], r[trip_col]), axis=1)
-                summary['Late Dep, In-Transit'] = summary.apply(lambda r: format_pct_cnt(r['Late_Dep_IT_Cnt'], r[trip_col]), axis=1)
-                
-                return summary.sort_values(by=['LH Type', 'E2E_Pair', 'Origin', 'Route Path', 'Leg_Num'])
-                
-            leg_sum = generate_summary(df_leg, ['Zone', 'LH Type', 'E2E_Pair', 'Origin RO', 'Route Path', 'Origin', 'Destination', 'Leg_Num', 'Legwise', 'Legs'])
-            data_for_export['Legwise_Route_Summary'] = leg_sum
-            
-            dt_cols = ['Scheduled Departure Time', 'Actual Departure Time', 'Scheduled Arrival Time', 'Actual Arrival Time']
-            for c in dt_cols: df_leg[c] = df_leg[c].dt.strftime('%d-%m-%Y %H:%M').fillna('')
-            df_leg['MCD_StartDate'] = pd.to_datetime(df_leg['MCD_StartDate_DT']).dt.strftime('%d-%m-%Y')
-            df_leg_final = df_leg.drop(columns=['Leg_Num', 'E2E_Pair'], errors='ignore')
-            data_for_export['Legwise_Processed_Data'] = df_leg_final
-            
-            del df_leg, df_leg_all, df_rte, df_brn, route_tat_master
-        else:
-            st.warning("⚠️ Operations files missing. Skipping Operations module.")
-
-        progress.progress(60)
+        status_text.text("⚙️ Aggregating & Processing all files...")
         
-        # --- MODULE 2: CPK AND UTILIZATION ---
-        status_text.text("⚙️ Calculating CPK & Utilization...")
-        if os.path.exists(FILE_MAP["CPK_UTIL"]) and os.path.exists(FILE_MAP["ROUTE_LOOKUP"]):
-            try:
-                df_raw = pd.read_excel(FILE_MAP["CPK_UTIL"], sheet_name='ContractVehicle_DetailReport')
-            except:
-                df_raw = pd.read_excel(FILE_MAP["CPK_UTIL"])
-                
-            df_lookup = pd.read_excel(FILE_MAP["ROUTE_LOOKUP"])
-            df_raw.columns = df_raw.columns.astype(str).str.strip()
-            df_lookup.columns = df_lookup.columns.astype(str).str.strip()
-            if 'VehicleUsageType' in df_raw.columns:
-                df_raw = df_raw[df_raw['VehicleUsageType'] != 'VehicleUsageType']
-
-            vno_col = get_col(df_raw, ['vehicleno', 'vehicle']) or 'VehicleNo'
-            df_raw['Vehicle No'] = df_raw.get(vno_col, pd.Series(['Unlisted']*len(df_raw))).fillna('Unlisted')
-            date_col = get_col(df_raw, ['date', 'mcd_startdate']) or 'Date'
-            df_raw['Date'] = df_raw.get(date_col, pd.Series(['']*len(df_raw))).fillna('')
+        # Get timestamps to trigger cache invalidation automatically
+        file_timestamps = {}
+        for k, v in FILE_MAP.items():
+            if os.path.exists(v): file_timestamps[k] = os.path.getmtime(v)
             
-            raw_key_col = get_col(df_raw, ['refnumber', 'mastercdno', 'mcdno']) or 'RefNumber'
-            lkp_key_col = get_col(df_lookup, ['mastercdno', 'mcdno']) or 'MasterCDNo'
-            
-            if raw_key_col in df_raw.columns and lkp_key_col in df_lookup.columns:
-                df_raw['MergeKey'] = df_raw[raw_key_col].astype(str).str.strip().str.upper()
-                df_lookup['MergeKey'] = df_lookup[lkp_key_col].astype(str).str.strip().str.upper()
-                
-                lkp_route_col = get_col(df_lookup, ['route', 'routepath', 'routes'])
-                lkp_type_col = get_col(df_lookup, ['lh_type', 'lhtype', 'type'])
-                lkp_from_col = get_col(df_lookup, ['mcd_frombranch', 'frombranch'])
-                lkp_to_col = get_col(df_lookup, ['mcd_tobranch', 'tobranch'])
-                
-                cols_to_bring = ['MergeKey']
-                if lkp_route_col: cols_to_bring.append(lkp_route_col)
-                if lkp_type_col: cols_to_bring.append(lkp_type_col)
-                if lkp_from_col: cols_to_bring.append(lkp_from_col)
-                if lkp_to_col: cols_to_bring.append(lkp_to_col)
-                    
-                lkp_sub = df_lookup[cols_to_bring].drop_duplicates(subset=['MergeKey'])
-                
-                rename_dict = {}
-                if lkp_route_col: rename_dict[lkp_route_col] = 'LKP_ROUTE'
-                if lkp_type_col: rename_dict[lkp_type_col] = 'LKP_TYPE'
-                if lkp_from_col: rename_dict[lkp_from_col] = 'LKP_FROM'
-                if lkp_to_col: rename_dict[lkp_to_col] = 'LKP_TO'
-                lkp_sub.rename(columns=rename_dict, inplace=True)
-                
-                df_raw = df_raw.merge(lkp_sub, on='MergeKey', how='left')
-                
-                df_raw['Final_Route'] = df_raw.get('LKP_ROUTE', pd.Series([np.nan]*len(df_raw)))
-                raw_route_col = get_col(df_raw, ['route', 'routepath', 'route(up/down)'])
-                if raw_route_col: df_raw['Final_Route'] = df_raw['Final_Route'].combine_first(df_raw[raw_route_col])
-                    
-                df_raw['Final_Type'] = df_raw.get('LKP_TYPE', pd.Series([np.nan]*len(df_raw)))
-                raw_type_col = get_col(df_raw, ['type', 'vehicletype', 'category'])
-                if raw_type_col: df_raw['Final_Type'] = df_raw['Final_Type'].combine_first(df_raw[raw_type_col])
-                    
-                df_raw['Final_From'] = df_raw.get('LKP_FROM', pd.Series([np.nan]*len(df_raw)))
-                df_raw['Final_To'] = df_raw.get('LKP_TO', pd.Series([np.nan]*len(df_raw)))
-            else:
-                df_raw['Final_Route'] = df_raw.get('Route', df_raw.get('Route Path', ''))
-                df_raw['Final_Type'] = df_raw.get('Type', df_raw.get('VehicleType', 'Unlisted Type'))
-                df_raw['Final_From'] = ''
-                df_raw['Final_To'] = ''
-
-            trips_col = get_col(df_raw, ['nooftrips', 'trips', 'noofdays'])
-            cost_col = get_col(df_raw, ['totalcost', 'contractcost', 'amount'])
-            wt_col = get_col(df_raw, ['totalwt', 'weight', 'mcdwt'])
-            cap_col = get_col(df_raw, ['vehiclecapacity', 'capacity', 'vehcap'])
-
-            df_raw['Trips'] = pd.to_numeric(df_raw[trips_col], errors='coerce').fillna(1) if trips_col else 1
-            df_raw['Cost'] = pd.to_numeric(df_raw[cost_col], errors='coerce').fillna(0) if cost_col else 0
-            df_raw['Wt'] = pd.to_numeric(df_raw[wt_col], errors='coerce').fillna(0) if wt_col else 0
-            df_raw['Cap'] = pd.to_numeric(df_raw[cap_col], errors='coerce').fillna(0) if cap_col else 0
-
-            df_raw['Final_Type'] = df_raw['Final_Type'].apply(lambda x: f"MCD-{x}" if isinstance(x, str) and "LH" in x.upper() and "MCD" not in x.upper() else x)
-            df_raw['Final_Type'] = df_raw['Final_Type'].fillna('Unlisted Type')
-
-            def fix_route(row):
-                r = str(row.get('Final_Route', '')).strip()
-                if pd.isna(r) or r.lower() in ['nan', 'na', '', 'manual']:
-                    b = str(row.get('VendorBranch', '')).strip()
-                    return b + " (Local)" if b and b.lower() not in ['nan', 'na', ''] else "Local Operations"
-                return r
-            df_raw['Final_Route'] = df_raw.apply(fix_route, axis=1)
-
-            def create_sort_key(row):
-                fb = str(row.get('Final_From', '')).strip().upper()
-                tb = str(row.get('Final_To', '')).strip().upper()
-                if fb and tb and fb != 'NAN' and tb != 'NAN':
-                    return f"{min(fb, tb)}-{max(fb, tb)}"
-                r = str(row.get('Final_Route', '')).strip().upper()
-                pts = r.replace(' TO ', '-').split('-')
-                if len(pts) >= 2:
-                    return f"{min(pts[0].strip(), pts[-1].strip())}-{max(pts[0].strip(), pts[-1].strip())}"
-                return r
-                
-            df_raw['SortKey'] = df_raw.apply(create_sort_key, axis=1)
-
-            ro_col = get_col(df_raw, ['vendorro', 'ro']) or 'VendorRO'
-            df_raw['RO_Clean'] = df_raw.get(ro_col, pd.Series(['UNKNOWN']*len(df_raw))).astype(str).str.upper().str.strip()
-            
-            # Map Zone to CPK Data
-            df_raw['Zone'] = df_raw['RO_Clean'].map(ro_zone_map).fillna('UNKNOWN ZONE')
-            
-            target_ros = ['PATRO', 'CCURO', 'BBSRO', 'GAURO', 'MUMRO', 'DELRO', 'LKORO']
-            
-            # --- APPLY RATE CORRECTIONS IF ANY ---
-            df_raw['Date_DT'] = pd.to_datetime(df_raw['Date'], errors='coerce', dayfirst=True)
-            if os.path.exists(FILE_MAP["RATE_CORRECTIONS"]):
-                try:
-                    with open(FILE_MAP["RATE_CORRECTIONS"], 'r') as f:
-                        corrections = json.load(f)
-                    
-                    for corr in corrections:
-                        route_str = str(corr['route']).strip().upper()
-                        cap_val = float(corr['capacity'])
-                        new_cost = float(corr['new_cost'])
-                        eff_date = pd.to_datetime(corr['eff_date'])
-                        
-                        route_mask = df_raw['Final_Route'].astype(str).str.upper() == route_str
-                        cap_mask = pd.to_numeric(df_raw['Cap'], errors='coerce') == cap_val
-                        date_mask = df_raw['Date_DT'] >= eff_date
-                        
-                        mask = route_mask & cap_mask & date_mask
-                        df_raw.loc[mask, 'Cost'] = new_cost * df_raw.loc[mask, 'Trips']
-                except Exception as e:
-                    pass 
-            
-            df_updn = df_raw[~df_raw['Final_Type'].str.upper().str.contains('OFD|PICKUP', na=False)].copy()
-            target_keys = df_updn[df_updn['RO_Clean'].isin(target_ros)]['SortKey'].unique()
-            df_updn = df_updn[df_updn['SortKey'].isin(target_keys)]
-            
-            # TYPE RENAMING FOR CLEANER DASHBOARD
-            df_updn['Final_Type'] = df_updn['Final_Type'].replace({
-                'MCD-National LH': 'National LH',
-                'MCD-Zonal LH': 'Zonal LH',
-                'MCD-Regional LH': 'Regional LH',
-                'MCD-Feeder': 'Feeder'
-            })
-            
-            data_for_export['CPK_Raw_Data'] = df_updn
-
-            if not df_updn.empty:
-                df_updn['Trip_Rate'] = np.where(df_updn['Trips'] > 0, df_updn['Cost'] / df_updn['Trips'], 0).round(2)
-                df_updn['Trip_Rate_Str'] = "₹" + df_updn['Trip_Rate'].astype(str)
-                df_updn['Total_Cap_Raw'] = df_updn['Cap'] * df_updn['Trips']
-                
-                # 1. National & Zonal (Master & Up/Down Grouping)
-                nz_mask = df_updn['Final_Type'].isin(['National LH', 'Zonal LH'])
-                if nz_mask.any():
-                    agg_nz_updown = df_updn[nz_mask].groupby(['RO_Clean', 'Zone', 'Final_Route', 'Final_Type', 'Cap', 'SortKey', 'Trip_Rate']).agg(
-                        Total_Trips=('Trips', 'sum'),
-                        Total_Carried_Wt=('Wt', 'sum'),
-                        Total_Trip_Cost=('Cost', 'sum'),
-                        VendorName=('VendorName', lambda x: ', '.join(sorted(set(x.dropna().astype(str))))),
-                        Per_Trip_Cost=('Trip_Rate_Str', lambda x: ', '.join(sorted(set(x.dropna().astype(str)))))
-                    ).reset_index()
-                    agg_nz_updown['Total Capacity'] = agg_nz_updown['Cap'] * agg_nz_updown['Total_Trips']
-                    agg_nz_updown['Overall CPK'] = np.where(agg_nz_updown['Total_Carried_Wt'] > 0, agg_nz_updown['Total_Trip_Cost'] / agg_nz_updown['Total_Carried_Wt'], 0)
-                    agg_nz_updown['Overall Util %'] = np.where(agg_nz_updown['Total Capacity'] > 0, agg_nz_updown['Total_Carried_Wt'] / agg_nz_updown['Total Capacity'], 0)
-                    nz_updown_final = agg_nz_updown[['Zone', 'RO_Clean', 'Final_Route', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Cap', 'Total Capacity', 'Total_Carried_Wt', 'Per_Trip_Cost', 'Total_Trip_Cost', 'Total_Trips', 'VendorName', 'SortKey']]
-                    nz_updown_final.columns = ["Zone", "VendorRO", "Route (UP/DOWN)", "Type", "Overall CPK", "Overall Util %", "VehCap (Base)", "Total Capacity", "Total Carried Wt", "Per Trip Cost", "Total Trip Cost", "Total Trips", "Vendor(s)", "SortKey"]
-                    data_for_export['CPK_National_Zonal_UpDown'] = nz_updown_final.sort_values(by=['Type', 'SortKey'])
-                    
-                    agg_nz_master = df_updn[nz_mask].groupby(['RO_Clean', 'Zone', 'SortKey', 'Final_Type']).agg(
-                        Total_Trips=('Trips', 'sum'),
-                        Total_Carried_Wt=('Wt', 'sum'),
-                        Total_Trip_Cost=('Cost', 'sum'),
-                        Total_Capacity=('Total_Cap_Raw', 'sum'),
-                        Unique_Vendors=('VendorName', lambda x: x.nunique()),
-                        VendorName=('VendorName', lambda x: ', '.join(sorted(set(x.dropna().astype(str))))),
-                        Route_Path=('Final_Route', lambda x: ', '.join(sorted(set(x.dropna().astype(str))))),
-                        Per_Trip_Cost=('Trip_Rate_Str', lambda x: ', '.join(sorted(set(x.dropna().astype(str)))))
-                    ).reset_index()
-                    agg_nz_master['Overall CPK'] = np.where(agg_nz_master['Total_Carried_Wt'] > 0, agg_nz_master['Total_Trip_Cost'] / agg_nz_master['Total_Carried_Wt'], 0)
-                    agg_nz_master['Overall Util %'] = np.where(agg_nz_master['Total_Capacity'] > 0, agg_nz_master['Total_Carried_Wt'] / agg_nz_master['Total_Capacity'], 0)
-                    
-                    nz_master_final = agg_nz_master[['Zone', 'RO_Clean', 'Route_Path', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Total_Capacity', 'Total_Carried_Wt', 'Per_Trip_Cost', 'Total_Trip_Cost', 'Total_Trips', 'Unique_Vendors', 'VendorName', 'SortKey']]
-                    nz_master_final.columns = ["Zone", "VendorRO", "Route Path", "Type", "Overall CPK", "Overall Util %", "Total Capacity", "Total Carried Wt", "Per Trip Cost", "Total Trip Cost", "Total Trips", "Unique Vendors", "Vendor(s)", "Route Pair"]
-                    data_for_export['CPK_National_Zonal_Master'] = nz_master_final.sort_values(by=['Type', 'Overall Util %'])
-
-                # 2. Feeder & Regional (Vehicle-wise)
-                fr_mask = df_updn['Final_Type'].isin(['Regional LH', 'Feeder'])
-                if fr_mask.any():
-                    agg_fr = df_updn[fr_mask].groupby(['RO_Clean', 'Zone', 'Vehicle No', 'Final_Type', 'Cap', 'Trip_Rate']).agg(
-                        Total_Trips=('Trips', 'sum'),
-                        Total_Carried_Wt=('Wt', 'sum'),
-                        Total_Trip_Cost=('Cost', 'sum'),
-                        VendorName=('VendorName', lambda x: ', '.join(sorted(set(x.dropna().astype(str))))),
-                        Per_Trip_Cost=('Trip_Rate_Str', lambda x: ', '.join(sorted(set(x.dropna().astype(str))))),
-                        Routes_Covered=('Final_Route', lambda x: ', '.join(sorted(set(x.dropna().astype(str)))))
-                    ).reset_index()
-                    agg_fr['Total Capacity'] = agg_fr['Cap'] * agg_fr['Total_Trips']
-                    agg_fr['Overall CPK'] = np.where(agg_fr['Total_Carried_Wt'] > 0, agg_fr['Total_Trip_Cost'] / agg_fr['Total_Carried_Wt'], 0)
-                    agg_fr['Overall Util %'] = np.where(agg_fr['Total Capacity'] > 0, agg_fr['Total_Carried_Wt'] / agg_fr['Total Capacity'], 0)
-                    fr_final = agg_fr[['Zone', 'RO_Clean', 'Vehicle No', 'Final_Type', 'Overall CPK', 'Overall Util %', 'Cap', 'Total Capacity', 'Total_Carried_Wt', 'Per_Trip_Cost', 'Total_Trip_Cost', 'Total_Trips', 'VendorName', 'Routes_Covered']]
-                    fr_final.columns = ["Zone", "VendorRO", "Vehicle No", "Type", "Overall CPK", "Overall Util %", "VehCap (Base)", "Total Capacity", "Total Carried Wt", "Per Trip Cost", "Total Trip Cost", "Total Trips", "Vendor(s)", "Routes Covered"]
-                    data_for_export['CPK_Feeder_Regional'] = fr_final.sort_values(by=['Type', 'VendorRO', 'Overall Util %'])
-                
-                # 3. Co-loader (Vehicle-wise)
-                col_mask = df_updn['Final_Type'] == 'CO-LOADER'
-                if col_mask.any():
-                    agg_col = df_updn[col_mask].groupby(['RO_Clean', 'Zone', 'VendorName', 'Final_Route', 'Vehicle No', 'Trip_Rate']).agg(
-                        Total_Trips=('Trips', 'sum'),
-                        Total_Carried_Wt=('Wt', 'sum'),
-                        Total_Trip_Cost=('Cost', 'sum'),
-                        Per_Trip_Cost=('Trip_Rate_Str', lambda x: ', '.join(sorted(set(x.dropna().astype(str)))))
-                    ).reset_index()
-                    agg_col['Cap'] = df_updn[col_mask].groupby(['RO_Clean', 'Zone', 'VendorName', 'Final_Route', 'Vehicle No', 'Trip_Rate'])['Cap'].max().values
-                    agg_col['Total Capacity'] = agg_col['Cap'] * agg_col['Total_Trips']
-                    agg_col['Overall CPK'] = np.where(agg_col['Total_Carried_Wt'] > 0, agg_col['Total_Trip_Cost'] / agg_col['Total_Carried_Wt'], 0)
-                    agg_col['Overall Util %'] = np.where(agg_col['Total Capacity'] > 0, agg_col['Total_Carried_Wt'] / agg_col['Total Capacity'], 0)
-                    col_final = agg_col[['Zone', 'RO_Clean', 'VendorName', 'Final_Route', 'Vehicle No', 'Overall CPK', 'Overall Util %', 'Cap', 'Total Capacity', 'Total_Carried_Wt', 'Per_Trip_Cost', 'Total_Trip_Cost', 'Total_Trips']]
-                    col_final.columns = ["Zone", "VendorRO", "Vendor(s)", "Route", "Vehicle No", "Overall CPK", "Overall Util %", "VehCap (Base)", "Total Capacity", "Total Carried Wt", "Per Trip Cost", "Total Trip Cost", "Total Trips"]
-                    data_for_export['CPK_Coloader'] = col_final.sort_values(by=['VendorRO', 'Overall Util %'])
-
-            del df_raw, df_lookup
-        else:
-            st.warning("⚠️ CPK files missing. Skipping CPK module.")
-            
+        data_for_export = get_processed_data_cached(file_timestamps)
+        
         progress.progress(80)
         
         if not data_for_export:
@@ -869,7 +930,6 @@ def process_all_data():
         st.exception(e)
         return False
     finally:
-        data_for_export.clear()
         if temp_output and os.path.exists(temp_output):
             os.remove(temp_output)
         gc.collect()
@@ -877,8 +937,8 @@ def process_all_data():
 # ==========================================
 # 6. SIDEBAR: ADMIN PANEL & RATE CORRECTIONS
 # ==========================================
-st.sidebar.title(f"Welcome, {st.session_state['role']}")
-if st.sidebar.button("Logout", key="logout_btn"):
+st.sidebar.markdown(f"### Welcome, **{st.session_state['role']}**")
+if st.sidebar.button("Logout", key="logout_btn", use_container_width=True):
     st.session_state['logged_in'] = False
     st.session_state['role'] = None
     st.rerun()
@@ -916,7 +976,6 @@ if st.session_state['role'] == 'Admin':
         if save_file(f7, "ROUTE_LOOKUP"): st.success("Saved!")
         st.caption(f"Last updated: {get_file_time('ROUTE_LOOKUP')}")
 
-    # NEW RATE CORRECTION MASTER
     with st.sidebar.expander("💸 Rate Correction Master"):
         st.caption("Fix raw Vendor Rates dynamically before dashboard processes data.")
         with st.form("rate_form"):
@@ -947,8 +1006,9 @@ if st.session_state['role'] == 'Admin':
                 st.success("✅ Correction Saved! Press Process & Refresh below.")
 
     st.sidebar.markdown("---")
-    if st.sidebar.button("🚀 PROCESS & REFRESH DATA", use_container_width=True):
+    if st.sidebar.button("🚀 PROCESS & REFRESH DATA", use_container_width=True, type="primary"):
         st.session_state.pop('_dashboard_cache', None)
+        get_processed_data_cached.clear() # Clear specific cache
         gc.collect()
         if process_all_data():
             st.session_state['_processing_success'] = True
@@ -1012,19 +1072,27 @@ if os.path.exists(FILE_MAP["FINAL_OUTPUT"]) and os.path.exists(FILE_MAP["EXECUTI
                 "📄 Download VIP Executive Report", data=report_file,
                 file_name=f"Trackon_Executive_Master_Report_{get_ist_now():%d_%b_%Y}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True, on_click="ignore")
+                use_container_width=True, type="primary")
     except Exception as exc:
         st.sidebar.error(f"Could not load download: {exc}")
         
     ts = os.path.getmtime(FILE_MAP["FINAL_OUTPUT"])
     ist = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
     dt = datetime.datetime.fromtimestamp(ts, tz=ist).strftime('%d %b %Y, %I:%M %p')
-    st.sidebar.info(f"📊 Dashboard Refreshed: {dt} (IST)")
+    st.sidebar.caption(f"📊 Dashboard Refreshed: {dt} (IST)")
 
 data = load_dashboard_data(choice)
 if not data:
     st.warning("No processed data for this page. Admin must upload the relevant files and process data.")
     st.stop()
+
+# Plotly Import for optional Charts
+try:
+    import plotly.express as px
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    PLOTLY_AVAILABLE = False
+
 
 # -------------------------------------------------------------
 # A. DAILY STANDUP (Operations Summary)
@@ -1098,10 +1166,10 @@ if choice == "📊 Operations Summary":
         def color_cols(val, col):
             res = highlight_cells(val)
             if res: return res
-            if 'Late Dep, Late Arr' in col: return 'background-color: rgba(211, 47, 47, 0.15); color: #ff5252; font-weight: bold;'
-            elif 'Ontime Dep, Ontime Arr' in col: return 'background-color: rgba(56, 142, 60, 0.15); color: #69f0ae; font-weight: bold;'
-            elif 'Ontime Dep, Late Arr' in col: return 'background-color: rgba(245, 127, 23, 0.15); color: #ffd740; font-weight: bold;'
-            elif 'Late Dep, Ontime Arr' in col: return 'background-color: rgba(123, 31, 162, 0.15); color: #e040fb; font-weight: bold;'
+            if 'Late Dep, Late Arr' in col: return 'background-color: rgba(211, 47, 47, 0.2); color: #ff8a80; font-weight: bold;'
+            elif 'Ontime Dep, Ontime Arr' in col: return 'background-color: rgba(56, 142, 60, 0.2); color: #b9f6ca; font-weight: bold;'
+            elif 'Ontime Dep, Late Arr' in col: return 'background-color: rgba(245, 127, 23, 0.2); color: #ffe57f; font-weight: bold;'
+            elif 'Late Dep, Ontime Arr' in col: return 'background-color: rgba(123, 31, 162, 0.2); color: #ea80fc; font-weight: bold;'
             return ''
 
         st.markdown("### Top Priority Routes Summary")
@@ -1161,8 +1229,8 @@ if choice == "📊 Operations Summary":
             
             def highlight_remarks(val):
                 if isinstance(val, str):
-                    if 'Late Dep, Late Arr' in val: return 'color: #ff5252; font-weight: bold;'
-                    elif 'Ontime Dep, Ontime Arr' in val: return 'color: #69f0ae;'
+                    if 'Late Dep, Late Arr' in val: return 'color: #ff8a80; font-weight: bold;'
+                    elif 'Ontime Dep, Ontime Arr' in val: return 'color: #b9f6ca;'
                 return ''
                 
             styled_raw = filtered_raw.style
@@ -1217,9 +1285,9 @@ elif choice == "🚚 Vendor Performance":
             try: pct = float(val.split('%')[0].strip())
             except: return ''
             if pct == 0: return 'color: #78909C;' 
-            if col == 'Late Arrival': return 'background-color: rgba(211, 47, 47, 0.15); color: #ff5252; font-weight: bold;'
-            elif col == 'Ontime Arrival': return 'background-color: rgba(56, 142, 60, 0.15); color: #69f0ae; font-weight: bold;'
-            elif col == 'In-Transit': return 'background-color: rgba(245, 127, 23, 0.15); color: #ffd740; font-weight: bold;'
+            if col == 'Late Arrival': return 'background-color: rgba(211, 47, 47, 0.2); color: #ff8a80; font-weight: bold;'
+            elif col == 'Ontime Arrival': return 'background-color: rgba(56, 142, 60, 0.2); color: #b9f6ca; font-weight: bold;'
+            elif col == 'In-Transit': return 'background-color: rgba(245, 127, 23, 0.2); color: #ffe57f; font-weight: bold;'
             return ''
 
         st.markdown("### Vendor Arrival Performance Summary")
@@ -1291,9 +1359,9 @@ elif choice == "🚚 Vendor Performance":
             
             def highlight_raw_remark(val):
                 if isinstance(val, str):
-                    if 'Late Arrival' in val: return 'color: #ff5252; font-weight: bold;'
-                    elif 'Ontime Arrival' in val: return 'color: #69f0ae;'
-                    elif 'In-Transit' in val: return 'color: #ffd740;'
+                    if 'Late Arrival' in val: return 'color: #ff8a80; font-weight: bold;'
+                    elif 'Ontime Arrival' in val: return 'color: #b9f6ca;'
+                    elif 'In-Transit' in val: return 'color: #ffe57f;'
                 return ''
                 
             styled_raw = filtered_raw.style
@@ -1311,6 +1379,17 @@ elif choice == "💳 Payment Dashboard":
     
     if 'Master_Database' in data:
         df_pay = data['Master_Database'].copy()
+        
+        # --- PLOTLY VIP CHART ---
+        if PLOTLY_AVAILABLE:
+            st.markdown("### 📊 Payment Buckets Overview")
+            pvt_chart = pd.pivot_table(df_pay, values='Invoice Id', index='Department Bucket', aggfunc='count').reset_index()
+            fig_pay = px.pie(pvt_chart, values='Invoice Id', names='Department Bucket', hole=0.4,
+                             color_discrete_sequence=['#F87171', '#FBBF24', '#34D399', '#60A5FA', '#A78BFA'])
+            fig_pay.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color="white", height=350)
+            st.plotly_chart(fig_pay, use_container_width=True)
+            st.markdown("---")
+
         col1, col2 = st.columns([1, 2])
         all_zones = sorted(df_pay['Zone'].dropna().unique().tolist())
         selected_zone = col1.selectbox("Filter by Zone:", ["ALL"] + all_zones)
@@ -1327,9 +1406,9 @@ elif choice == "💳 Payment Dashboard":
         
         def color_payment_columns(val, col_name):
             if pd.isna(val) or val == 0: return ''
-            if col_name == '1. USER / DRAFT PENDING': return 'background-color: rgba(211, 47, 47, 0.3); color: #ff5252; font-weight: bold;' 
-            elif col_name == '2. COST CONTROL PENDING': return 'background-color: rgba(245, 127, 23, 0.3); color: #ffd740; font-weight: bold;'
-            elif col_name == '3. FINANCE PENDING': return 'background-color: rgba(245, 127, 23, 0.1); color: #ffe57f; font-weight: bold;'
+            if col_name == '1. USER / DRAFT PENDING': return 'background-color: rgba(211, 47, 47, 0.3); color: #ff8a80; font-weight: bold;' 
+            elif col_name == '2. COST CONTROL PENDING': return 'background-color: rgba(245, 127, 23, 0.3); color: #ffe57f; font-weight: bold;'
+            elif col_name == '3. FINANCE PENDING': return 'background-color: rgba(245, 127, 23, 0.1); color: #ffb74d; font-weight: bold;'
             return ''
 
         st.markdown("### RO-Wise Summary")
@@ -1367,7 +1446,6 @@ elif choice == "💳 Payment Dashboard":
             ap_data["Payment Dashboard"] = mod_ap
             save_action_plans(ap_data)
         
-        # --- FIXED KeyError BUG HERE (Select 👁️) ---
         selected_rows = edited_pvt[edited_pvt['Select 👁️'] == True].index.tolist()
 
         if selected_rows:
@@ -1492,7 +1570,6 @@ elif choice == "📱 Vendor Communication Hub":
                 
                 total_trips = ven_sum['Total_Trips'].sum() if not ven_sum.empty else 0
                 
-                # Fixed Width Padded Table for structured Email viewing
                 summary_text_breakdown = "ROUTE & LEG".ljust(35) + "| TRIPS | ONTIME | LATE\n"
                 summary_text_breakdown += "-"*65 + "\n"
                 for _, row in ven_sum.iterrows():
@@ -1536,11 +1613,11 @@ elif choice == "📱 Vendor Communication Hub":
                 
                 encoded_msg = urllib.parse.quote(msg)
                 wp_url = f"https://api.whatsapp.com/send?phone={wp_num}&text={encoded_msg}"
-                c2.markdown(f'<a href="{wp_url}" target="_blank"><button style="background-color: #25D366; color: white; padding: 10px; border: none; border-radius: 5px; width: 100%; cursor: pointer;">2️⃣ Open WhatsApp 💬</button></a>', unsafe_allow_html=True)
+                c2.markdown(f'<a href="{wp_url}" target="_blank"><button style="background-color: #25D366; color: white; padding: 10px; border: none; border-radius: 8px; width: 100%; cursor: pointer; font-weight: 600;">2️⃣ Open WhatsApp 💬</button></a>', unsafe_allow_html=True)
                 
                 subject = urllib.parse.quote(f"Trackon Performance Report: {target_vendor}")
                 gmail_url = f"https://mail.google.com/mail/?view=cm&fs=1&to={urllib.parse.quote(email_id)}&su={subject}&body={encoded_msg}&authuser=lh.fleetops@trackon.in"
-                c3.markdown(f'<a href="{gmail_url}" target="_blank"><button style="background-color: #DB4437; color: white; padding: 10px; border: none; border-radius: 5px; width: 100%; cursor: pointer;">3️⃣ Open in Gmail 🌐</button></a>', unsafe_allow_html=True)
+                c3.markdown(f'<a href="{gmail_url}" target="_blank"><button style="background-color: #EF4444; color: white; padding: 10px; border: none; border-radius: 8px; width: 100%; cursor: pointer; font-weight: 600;">3️⃣ Open in Gmail 🌐</button></a>', unsafe_allow_html=True)
             else:
                 st.info("🔒 Message Sending & Downloading features are restricted to Admin access.")
 
@@ -1549,7 +1626,7 @@ elif choice == "📱 Vendor Communication Hub":
         # --- 3. BULK MESSAGING HUB (ADMIN ONLY) ---
         if st.session_state.get('role') == 'Admin':
             st.markdown("### 🚀 Bulk Messaging Hub (All Saved Vendors)")
-            st.caption("Fatafat sabhi saved vendors ko mail bhejne ke liye yahan se click karein.")
+            st.caption("Send performance emails to all vendors saved in your contact master instantly.")
             
             v_master_data_live = {}
             if os.path.exists(FILE_MAP.get("VENDOR_MASTER")):
@@ -1561,7 +1638,7 @@ elif choice == "📱 Vendor Communication Hub":
             saved_vendors_in_data = [v for v in v_master_data_live.keys() if v in all_vendors_filtered]
             
             if not saved_vendors_in_data:
-                st.info("Koi bhi saved vendor current filtered data mein nahi mila. Vendor Master mein details save karein.")
+                st.info("No saved vendors found in current filtered data. Save them in Vendor Master first.")
             else:
                 for v_name in saved_vendors_in_data:
                     v_email = v_master_data_live[v_name].get("email", "")
@@ -1590,7 +1667,7 @@ elif choice == "📱 Vendor Communication Hub":
                     
                     b1, b2 = st.columns([3, 1])
                     b1.markdown(f"**{v_name}** (Trips: {v_total_trips} | Email: {v_email})")
-                    b2.markdown(f'<a href="{v_gmail_url}" target="_blank"><button style="background-color: #DB4437; color: white; padding: 5px 15px; border: none; border-radius: 4px; width: 100%; cursor: pointer; font-size: 14px;">✉️ Compose Gmail</button></a>', unsafe_allow_html=True)
+                    b2.markdown(f'<a href="{v_gmail_url}" target="_blank"><button style="background-color: #EF4444; color: white; padding: 5px 15px; border: none; border-radius: 6px; width: 100%; cursor: pointer; font-size: 14px; font-weight: 600;">✉️ Compose</button></a>', unsafe_allow_html=True)
                     st.divider()
 
     else:
@@ -1600,10 +1677,9 @@ elif choice == "📱 Vendor Communication Hub":
 # E. CPK & UTILIZATION (TABS BASED)
 # -------------------------------------------------------------
 elif choice == "💰 Network Utilization":
-    st.markdown("<h2>Network Utilization & CPK</h2>", unsafe_allow_html=True)
+    st.markdown("<h2>Network Utilization & CPK Dashboard</h2>", unsafe_allow_html=True)
     if 'CPK_National_Zonal_Master' in data and 'CPK_Raw_Data' in data:
         
-        tab1, tab2, tab3 = st.tabs(["🛣️ National & Zonal (Routewise)", "🚚 Feeder & Regional (Vehiclewise)", "📦 Co-Loader (Vehiclewise)"])
         df_cpk_raw = data['CPK_Raw_Data']
 
         def render_cpk_view(df_master, view_type="Route", df_updown=None):
@@ -1611,6 +1687,30 @@ elif choice == "💰 Network Utilization":
                 st.info("No data available for this category.")
                 return
             
+            # --- PLOTLY VIP CHART ---
+            if PLOTLY_AVAILABLE:
+                st.markdown(f"### 📊 Overview: {view_type}")
+                col_chart1, col_chart2 = st.columns(2)
+                
+                with col_chart1:
+                    if 'Zone' in df_master.columns:
+                        fig1 = px.pie(df_master, values='Total Trip Cost', names='Zone', 
+                                    title='Total Cost by Zone', hole=0.4, 
+                                    color_discrete_sequence=px.colors.sequential.Teal)
+                        fig1.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color="white", margin=dict(t=30, b=0, l=0, r=0))
+                        st.plotly_chart(fig1, use_container_width=True)
+
+                with col_chart2:
+                    vendor_col = 'Vendor(s)' if 'Vendor(s)' in df_master.columns else ('VendorName' if 'VendorName' in df_master.columns else None)
+                    if vendor_col:
+                        top_vendors = df_master.groupby(vendor_col)['Total Trips'].sum().nlargest(5).reset_index()
+                        fig2 = px.bar(top_vendors, x=vendor_col, y='Total Trips', 
+                                    title='Top 5 Vendors by Volume', text_auto=True,
+                                    color_discrete_sequence=['#3B82F6'])
+                        fig2.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color="white", margin=dict(t=30, b=0, l=0, r=0))
+                        st.plotly_chart(fig2, use_container_width=True)
+                st.markdown("---")
+
             col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
             all_zones = sorted(df_master['Zone'].dropna().unique().tolist())
             zone_filter = col1.selectbox(f"Filter Zone ({view_type}):", ["ALL"] + all_zones, key=f"z_{view_type}")
@@ -1631,7 +1731,7 @@ elif choice == "💰 Network Utilization":
                 df_master = df_master[mask]
 
             m1, m2, m3 = st.columns(3)
-            m1.metric("Total Trips", int(df_master['Total Trips'].sum()))
+            m1.metric("Total Trips", f"{int(df_master['Total Trips'].sum()):,}")
             avg_util = (df_master['Total Carried Wt'].sum() / df_master['Total Capacity'].sum() * 100) if df_master['Total Capacity'].sum() > 0 else 0
             m2.metric("Overall Utilization", f"{avg_util:.1f}%")
             avg_cpk = (df_master['Total Trip Cost'].sum() / df_master['Total Carried Wt'].sum()) if df_master['Total Carried Wt'].sum() > 0 else 0
@@ -1693,12 +1793,12 @@ elif choice == "💰 Network Utilization":
                 if col == 'Overall Util %':
                     try:
                         pct = float(str(val).replace('%', '').strip())
-                        if pct < 50: return 'color: #ff5252; font-weight: bold;' 
-                        elif pct < 80: return 'color: #ffd740; font-weight: bold;'
-                        else: return 'color: #69f0ae; font-weight: bold;'
+                        if pct < 50: return 'color: #ff8a80; font-weight: bold;' 
+                        elif pct < 80: return 'color: #ffe57f; font-weight: bold;'
+                        else: return 'color: #b9f6ca; font-weight: bold;'
                     except: return ''
                 elif col == 'Overall CPK':
-                    return 'color: #40c4ff; font-weight: bold;'
+                    return 'color: #60A5FA; font-weight: bold;'
                 return ''
 
             styled_view = view_df.style
@@ -1795,6 +1895,7 @@ elif choice == "💰 Network Utilization":
             else:
                 st.info("👆 Check the 'Select 👁️' box in the table above to view detailed split & raw data.")
 
+        tab1, tab2, tab3 = st.tabs(["🛣️ National & Zonal (Routewise)", "🚚 Feeder & Regional (Vehiclewise)", "📦 Co-Loader (Vehiclewise)"])
         with tab1:
             render_cpk_view(data.get('CPK_National_Zonal_Master', pd.DataFrame()), view_type="Route", df_updown=data.get('CPK_National_Zonal_UpDown', pd.DataFrame()))
         with tab2:
@@ -1810,7 +1911,7 @@ elif choice == "💰 Network Utilization":
 # -------------------------------------------------------------
 elif choice == "📝 Today's Call Action Plan":
     st.markdown("<h2>Today's Call Action Plan (MOM)</h2>", unsafe_allow_html=True)
-    st.caption("Yahan aap saare modules se save kiye gaye action plans ek saath dekh aur bhej sakte hain.")
+    st.caption("Here you can view, export, and email all the action plans you saved across modules.")
     
     ap_data = load_action_plans()
     records = []
@@ -1917,12 +2018,13 @@ elif choice == "📝 Today's Call Action Plan":
             data=output_ap.getvalue(), 
             file_name=f"Action_Plan_MOM_{datetime.datetime.now().strftime('%d%b%Y')}.xlsx", 
             mime="application/vnd.ms-excel", 
-            use_container_width=True
+            use_container_width=True,
+            type="primary"
         )
         
         encoded_msg = urllib.parse.quote(email_body)
         subject = urllib.parse.quote(f"Today's Call Action Plan (MOM) - {datetime.datetime.now().strftime('%d %b %Y')}")
         gmail_url = f"https://mail.google.com/mail/?view=cm&fs=1&su={subject}&body={encoded_msg}&authuser=lh.fleetops@trackon.in"
         
-        c2.markdown(f'<a href="{gmail_url}" target="_blank"><button style="background-color: #DB4437; color: white; padding: 10px; border: none; border-radius: 5px; width: 100%; cursor: pointer;">2️⃣ Compose Email (Gmail) ✉️</button></a>', unsafe_allow_html=True)
+        c2.markdown(f'<a href="{gmail_url}" target="_blank"><button style="background-color: #EF4444; color: white; padding: 10px; border: none; border-radius: 8px; width: 100%; cursor: pointer; font-weight: 600;">2️⃣ Compose Email (Gmail) ✉️</button></a>', unsafe_allow_html=True)
         st.caption("Tip: Download ki hui Action Plan ki Excel sheet ko compose hote waqt attach kar dena.")
