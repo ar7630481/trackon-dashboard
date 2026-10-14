@@ -94,8 +94,21 @@ FILE_MAP = {
     "EXECUTIVE_REPORT": os.path.join(DATA_DIR, "Trackon_VIP_Executive_Report.xlsx"),
     "RATE_CORRECTIONS": os.path.join(DATA_DIR, "rate_corrections.json"),
     "VENDOR_MASTER": os.path.join(DATA_DIR, "vendor_master.json"),
-    "ACTION_PLANS": os.path.join(DATA_DIR, "action_plans.json") 
+    "ACTION_PLANS": os.path.join(DATA_DIR, "action_plans.json"),
+    "USERS_DB": os.path.join(DATA_DIR, "users_master.json")
 }
+
+ALL_PORTAL_MODULES = [
+    "📊 Operations Summary",
+    "🚚 Vendor Performance",
+    "💳 Payment Dashboard",
+    "📱 Communication Hub",
+    "💰 Network Utilization",
+    "📝 Today's Call Action Plan",
+    "🔐 User & Access Control"
+]
+
+STANDARD_MODULES = [m for m in ALL_PORTAL_MODULES if m != "🔐 User & Access Control"]
 
 # Pre-defined National Route Pairs for Communication Hub
 NATIONAL_ROUTE_PAIRS = {
@@ -132,37 +145,111 @@ def get_ist_now():
     return datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
 
 # ==========================================
-# 2. AUTHENTICATION (Users, Admins & Vendors)
+# 2. DYNAMIC USER & ACCESS MANAGEMENT DB
 # ==========================================
-USERS = {
-    "user": {"pass": "5272", "role": "User", "vendors": [], "label": "Standard User"},
-    "admin": {"pass": "9211213", "role": "Admin", "vendors": [], "label": "Master Admin"},
-    "admin2": {"pass": "1234", "role": "Admin", "vendors": [], "label": "Operations Admin"},
+DEFAULT_USERS_SEED = {
+    "admin": {
+        "pass": "9211213",
+        "role": "Admin",
+        "label": "Master Admin",
+        "active": True,
+        "all_vendors": True,
+        "vendors": [],
+        "modules": ALL_PORTAL_MODULES
+    },
+    "admin2": {
+        "pass": "1234",
+        "role": "Admin",
+        "label": "Operations Admin",
+        "active": True,
+        "all_vendors": True,
+        "vendors": [],
+        "modules": ALL_PORTAL_MODULES
+    },
+    "user": {
+        "pass": "5272",
+        "role": "User",
+        "label": "Standard User",
+        "active": True,
+        "all_vendors": True,
+        "vendors": [],
+        "modules": STANDARD_MODULES
+    },
     "EWL": {
         "pass": "1234",
         "role": "Vendor",
+        "label": "E Wheels & Logistics",
+        "active": True,
+        "all_vendors": False,
         "vendors": ["E WHEELS AND LOGISTICS", "AAGFE8904K-E WHEELS AND LOGISTICS"],
-        "label": "E Wheels & Logistics"
+        "modules": ["🚚 Vendor Performance"]
     },
     "MRT": {
         "pass": "1234",
         "role": "Vendor",
+        "label": "Mehtaroad India Transport",
+        "active": True,
+        "all_vendors": False,
         "vendors": ["MEHTAROAD INDIA TRANSPORT PRIVATE LIMITED", "MEHTAROAD"],
-        "label": "Mehtaroad India Transport"
+        "modules": ["🚚 Vendor Performance"]
     },
     "vandna": {
         "pass": "1234",
         "role": "Vendor",
+        "label": "Vandna Motors",
+        "active": True,
+        "all_vendors": False,
         "vendors": ["VANDNA MOTORS", "AAOFV8863G-VANDNA MOTORS"],
-        "label": "Vandna Motors"
+        "modules": ["🚚 Vendor Performance"]
     },
     "TEJAS": {
         "pass": "1234",
         "role": "Vendor",
+        "label": "Tejas Cargo India Pvt Ltd",
+        "active": True,
+        "all_vendors": False,
         "vendors": ["TEJAS CARGO INDIA PVT LTD", "TEJAS"],
-        "label": "Tejas Cargo India Pvt Ltd"
+        "modules": ["🚚 Vendor Performance"]
     }
 }
+
+def load_users_db():
+    path = FILE_MAP["USERS_DB"]
+    db = {}
+    if os.path.exists(path):
+        try:
+            with open(path, 'r') as f:
+                db = json.load(f)
+        except Exception:
+            db = {}
+    
+    changed = False
+    for u_k, u_v in DEFAULT_USERS_SEED.items():
+        if u_k not in db:
+            db[u_k] = u_v.copy()
+            changed = True
+        else:
+            # Ensure all required keys exist
+            for field_k, field_v in u_v.items():
+                if field_k not in db[u_k]:
+                    db[u_k][field_k] = field_v
+                    changed = True
+
+    # Always guarantee master 'admin' has full access
+    db["admin"]["role"] = "Admin"
+    db["admin"]["active"] = True
+    db["admin"]["all_vendors"] = True
+    db["admin"]["modules"] = ALL_PORTAL_MODULES
+
+    if changed or not os.path.exists(path):
+        save_users_db(db)
+    return db
+
+def save_users_db(db_dict):
+    with open(FILE_MAP["USERS_DB"], 'w') as f:
+        json.dump(db_dict, f, indent=4)
+
+USERS_DB = load_users_db()
 
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
@@ -172,6 +259,10 @@ if 'username' not in st.session_state:
     st.session_state['username'] = None
 if 'allowed_vendors' not in st.session_state:
     st.session_state['allowed_vendors'] = []
+if 'all_vendors' not in st.session_state:
+    st.session_state['all_vendors'] = True
+if 'allowed_modules' not in st.session_state:
+    st.session_state['allowed_modules'] = []
 
 if not st.session_state['logged_in']:
     st.markdown("<br><br><br>", unsafe_allow_html=True)
@@ -188,22 +279,41 @@ if not st.session_state['logged_in']:
             submit = st.form_submit_button("Authenticate", use_container_width=True)
             
             if submit:
+                USERS_DB = load_users_db()
                 matched_user = None
-                for u_key, u_info in USERS.items():
-                    if u_key.lower() == username_in.lower() and u_info["pass"] == password_in:
+                for u_key, u_info in USERS_DB.items():
+                    if u_key.lower() == username_in.lower() and str(u_info.get("pass", "")) == password_in:
                         matched_user = (u_key, u_info)
                         break
                 
                 if matched_user:
-                    st.session_state['logged_in'] = True
-                    st.session_state['username'] = matched_user[0]
-                    st.session_state['role'] = matched_user[1]['role']
-                    st.session_state['allowed_vendors'] = matched_user[1]['vendors']
-                    st.session_state['user_label'] = matched_user[1]['label']
-                    st.rerun()
+                    u_id, u_data = matched_user
+                    if not u_data.get("active", True):
+                        st.error("🚫 Your account has been disabled by the Administrator.")
+                    else:
+                        st.session_state['logged_in'] = True
+                        st.session_state['username'] = u_id
+                        st.session_state['role'] = u_data.get('role', 'User')
+                        st.session_state['all_vendors'] = u_data.get('all_vendors', True)
+                        st.session_state['allowed_vendors'] = u_data.get('vendors', [])
+                        st.session_state['allowed_modules'] = u_data.get('modules', STANDARD_MODULES)
+                        st.session_state['user_label'] = u_data.get('label', u_id)
+                        st.rerun()
                 else:
                     st.error("❌ Invalid Credentials. Access Denied.")
     st.stop()
+
+# Refresh live session permissions from DB on each run so Admin edits apply immediately
+curr_u = st.session_state.get('username')
+if curr_u and curr_u in USERS_DB:
+    if not USERS_DB[curr_u].get('active', True) and curr_u != 'admin':
+        st.session_state['logged_in'] = False
+        st.rerun()
+    st.session_state['role'] = USERS_DB[curr_u].get('role', 'User')
+    st.session_state['all_vendors'] = USERS_DB[curr_u].get('all_vendors', True)
+    st.session_state['allowed_vendors'] = USERS_DB[curr_u].get('vendors', [])
+    st.session_state['allowed_modules'] = USERS_DB[curr_u].get('modules', STANDARD_MODULES)
+    st.session_state['user_label'] = USERS_DB[curr_u].get('label', curr_u)
 
 # ==========================================
 # 3. HELPER FUNCTIONS & VENDOR NORMALIZATION
@@ -218,9 +328,7 @@ def normalize_vendor_name(val):
     s = str(val).strip().upper()
     if s in ["", "NAN", "NONE"]:
         return ""
-    # Strip any standard 10-char PAN prefix e.g. AAGFE8904K- or AAOFV8863G-
     s = re.sub(r'^[A-Z]{5}[0-9]{4}[A-Z]\s*-\s*', '', s).strip()
-    # Explicit canonical grouping for known vendors
     if "E WHEELS" in s:
         return "E WHEELS AND LOGISTICS"
     if "VANDNA MOTORS" in s:
@@ -230,6 +338,22 @@ def normalize_vendor_name(val):
     if "TEJAS CARGO" in s:
         return "TEJAS CARGO INDIA PVT LTD"
     return s
+
+def filter_df_by_user_vendors(df, vendor_col):
+    """Filters any DataFrame by the logged-in user's allowed vendors if restricted."""
+    if df is None or df.empty or vendor_col not in df.columns:
+        return df
+    if st.session_state.get('all_vendors', True):
+        return df
+    allowed_raw = st.session_state.get('allowed_vendors', [])
+    if not allowed_raw:
+        return df.iloc[0:0].copy()
+    allowed_norm = [normalize_vendor_name(v) for v in allowed_raw if v]
+    allowed_norm = list(dict.fromkeys([v for v in allowed_norm if v]))
+    mask = df[vendor_col].astype(str).apply(normalize_vendor_name).apply(
+        lambda vn: any(av in vn or vn in av for av in allowed_norm if vn)
+    )
+    return df[mask].copy()
 
 def save_file(uploaded_file, key):
     if uploaded_file is None:
@@ -657,14 +781,11 @@ def clean_dataframe_for_excel(df_in, sheet_type="generic"):
     if 'VendorName' in df.columns:
         df['VendorName'] = df['VendorName'].apply(normalize_vendor_name)
         
-    # Sort by Route Path then Legwise first
     df = sort_by_route_and_leg(df)
     
-    # Drop all unwanted backend columns
     cols_to_remove = [c for c in JUNK_EXCEL_COLS if c in df.columns]
     df.drop(columns=cols_to_remove, inplace=True, errors='ignore')
     
-    # Specific clean column ordering per sheet type
     if sheet_type == "ops_sum":
         preferred = [
             'Origin RO', 'Route Path', 'Legwise', 'Legs', 'Total_Trips',
@@ -729,7 +850,6 @@ def style_ui_dataframe(df_in):
         if pct is not None and pct == 0:
             return 'color: #78909C;'
 
-        # 1. Summary Percentage Columns
         if any(k in c_lower for k in ['ontime dep, ontime arr', 'ontime arrival']):
             if pct is not None and pct > 0:
                 return 'background-color: rgba(56, 142, 60, 0.25); color: #b9f6ca; font-weight: bold;'
@@ -743,7 +863,6 @@ def style_ui_dataframe(df_in):
             if pct is not None and pct > 0:
                 return 'background-color: rgba(123, 31, 162, 0.25); color: #ea80fc; font-weight: bold;'
 
-        # 2. Raw Remark Columns
         elif 'remark' in c_lower:
             if 'ontime dep, ontime arr' in s_lower or 'ontime arrival' in s_lower:
                 return 'background-color: rgba(56, 142, 60, 0.25); color: #b9f6ca; font-weight: bold;'
@@ -754,7 +873,6 @@ def style_ui_dataframe(df_in):
             elif 'late dep, ontime arr' in s_lower:
                 return 'background-color: rgba(123, 31, 162, 0.25); color: #ea80fc; font-weight: bold;'
 
-        # 3. Delay Hours Column
         elif c_lower == 'delay hours' and s_val not in ['', '-', '0:00']:
             if not s_val.startswith('-'):
                 try:
@@ -781,7 +899,6 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic")
     worksheet = workbook.add_worksheet(sheet_name)
     writer.sheets[sheet_name] = worksheet
     
-    # Formats
     header_fmt = workbook.add_format({
         'bold': True, 'bg_color': '#1E3A8A', 'font_color': 'white',
         'border': 1, 'align': 'center', 'valign': 'vcenter', 'text_wrap': True
@@ -1450,12 +1567,13 @@ def process_all_data():
 # 6. SIDEBAR: ADMIN PANEL & RATE CORRECTIONS
 # ==========================================
 st.sidebar.markdown(f"### Welcome, **{st.session_state.get('user_label', st.session_state['role'])}**")
-st.sidebar.caption(f"Logged in ID: `{st.session_state.get('username')}` | Role: `{st.session_state.get('role')}`")
+st.sidebar.caption(f"ID: `{st.session_state.get('username')}` | Role: `{st.session_state.get('role')}`")
 if st.sidebar.button("Logout", key="logout_btn", use_container_width=True):
     st.session_state['logged_in'] = False
     st.session_state['role'] = None
     st.session_state['username'] = None
     st.session_state['allowed_vendors'] = []
+    st.session_state['allowed_modules'] = []
     st.rerun()
 
 st.sidebar.markdown("---")
@@ -1550,13 +1668,17 @@ MENU_SHEETS = {
     "📝 Today's Call Action Plan": (
         'Legwise_Route_Summary', 'Vendor_Perf_Summary',
         'CPK_National_Zonal_Master', 'CPK_Feeder_Regional', 'CPK_Coloader'
-    )
+    ),
+    "🔐 User & Access Control": ('Vendor_Perf_Raw', 'CPK_Raw_Data')
 }
 
-if st.session_state['role'] == 'Vendor':
+# Dynamically filter Navigation menu based on user's allowed_modules
+user_allowed_mods = st.session_state.get('allowed_modules', [])
+menu = [m for m in MENU_SHEETS.keys() if m in user_allowed_mods]
+if st.session_state.get('role') == 'Admin' and "🔐 User & Access Control" not in menu:
+    menu.append("🔐 User & Access Control")
+if not menu:
     menu = ["🚚 Vendor Performance"]
-else:
-    menu = list(MENU_SHEETS.keys())
 
 choice = st.sidebar.radio("Navigation:", menu)
 
@@ -1567,7 +1689,7 @@ def file_version(path):
 def load_dashboard_data(page):
     path = FILE_MAP["FINAL_OUTPUT"]
     if not os.path.exists(path):
-        if page == "📝 Today's Call Action Plan":
+        if page in ["📝 Today's Call Action Plan", "🔐 User & Access Control"]:
             return {"dummy": pd.DataFrame()}
         return {}
     cache_key = (file_version(path), page)
@@ -1585,7 +1707,6 @@ def load_dashboard_data(page):
                     for name in MENU_SHEETS[page]
                     if name in workbook.sheet_names
                 }
-        # Normalize Vendor Names on the fly even on older cached Excel files so PAN duplicates merge immediately!
         if 'Vendor_Perf_Raw' in data and not data['Vendor_Perf_Raw'].empty:
             data['Vendor_Perf_Raw']['VendorName'] = data['Vendor_Perf_Raw']['VendorName'].apply(normalize_vendor_name)
             data['Vendor_Perf_Summary'] = build_vendor_summary_from_raw(data['Vendor_Perf_Raw'])
@@ -1594,7 +1715,7 @@ def load_dashboard_data(page):
         if 'Legwise_Processed_Data' in data and not data['Legwise_Processed_Data'].empty and 'VendorName' in data['Legwise_Processed_Data'].columns:
             data['Legwise_Processed_Data']['VendorName'] = data['Legwise_Processed_Data']['VendorName'].apply(normalize_vendor_name)
 
-        if page == "📝 Today's Call Action Plan" and not data:
+        if page in ["📝 Today's Call Action Plan", "🔐 User & Access Control"] and not data:
             data = {"dummy": pd.DataFrame()}
         st.session_state['_dashboard_cache'] = (cache_key, data)
         return data
@@ -1608,8 +1729,8 @@ def load_dashboard_data(page):
 if st.session_state.pop('_processing_success', False):
     st.success("Data refreshed successfully. Your Executive Report is ready to download!")
 
-# 📥 EXPORT REPORT - DIRECT FILE STREAM FROM DISK (Hidden for Vendor Logins)
-if st.session_state['role'] != 'Vendor' and os.path.exists(FILE_MAP["FINAL_OUTPUT"]) and os.path.exists(FILE_MAP["EXECUTIVE_REPORT"]):
+# 📥 EXPORT REPORT - DIRECT FILE STREAM FROM DISK (Only for users with All Vendors Access)
+if st.session_state.get('all_vendors', True) and os.path.exists(FILE_MAP["FINAL_OUTPUT"]) and os.path.exists(FILE_MAP["EXECUTIVE_REPORT"]):
     st.sidebar.markdown("---")
     st.sidebar.header("📥 Export Reports")
     try:
@@ -1631,7 +1752,7 @@ if st.session_state['role'] != 'Vendor' and os.path.exists(FILE_MAP["FINAL_OUTPU
     st.sidebar.caption(f"📊 Dashboard Refreshed: {dt} (IST)")
 
 data = load_dashboard_data(choice)
-if not data:
+if not data and choice != "🔐 User & Access Control":
     st.warning("No processed data for this page. Admin must upload the relevant files and process data.")
     st.stop()
 
@@ -1680,15 +1801,18 @@ if choice == "📊 Operations Summary":
     
     if 'Legwise_Route_Summary' in data and 'Legwise_Processed_Data' in data:
         df_raw_leg_full = data['Legwise_Processed_Data'].copy()
+        if not st.session_state.get('all_vendors', True):
+            df_raw_leg_full = filter_df_by_user_vendors(df_raw_leg_full, 'VendorName')
+            
         df_raw_leg, is_date_filtered, dur_str_ops = render_duration_selector(df_raw_leg_full, 'MCD_StartDate', 'ops_main')
         
-        if is_date_filtered:
+        if is_date_filtered or not st.session_state.get('all_vendors', True):
             df_leg_sum = build_ops_summary_from_raw(df_raw_leg)
         else:
             df_leg_sum = data['Legwise_Route_Summary'].copy()
             
         if df_leg_sum.empty:
-            st.warning("No Operations trips found in the selected date range.")
+            st.warning("No Operations trips found for your assigned access / selected date range.")
             st.stop()
             
         col1, col2, col3 = st.columns([1, 1, 2])
@@ -1786,7 +1910,7 @@ if choice == "📊 Operations Summary":
             st.info("👆 Check the 'Select 👁️' box in the table above to view detailed trip records.")
 
 # -------------------------------------------------------------
-# B. VENDOR PERFORMANCE (With Dedicated Vendor Login Restriction)
+# B. VENDOR PERFORMANCE (With Dynamic User/Vendor Restriction)
 # -------------------------------------------------------------
 elif choice == "🚚 Vendor Performance":
     st.markdown("<h2>Vendor Performance (Routewise/Legwise)</h2>", unsafe_allow_html=True)
@@ -1795,15 +1919,11 @@ elif choice == "🚚 Vendor Performance":
         df_vperf_raw_full = data['Vendor_Perf_Raw'].copy()
         df_vperf_raw_full['VendorName'] = df_vperf_raw_full['VendorName'].apply(normalize_vendor_name)
         
-        if st.session_state['role'] == 'Vendor':
-            allowed_v = [normalize_vendor_name(v) for v in st.session_state.get('allowed_vendors', [])]
+        if not st.session_state.get('all_vendors', True):
+            allowed_v = [normalize_vendor_name(v) for v in st.session_state.get('allowed_vendors', []) if v]
             allowed_v = list(dict.fromkeys([v for v in allowed_v if v]))
-            st.info(f"🔒 **Vendor Portal View:** Showing exclusive performance records for **{', '.join(allowed_v)}**")
-            df_vperf_raw_full = df_vperf_raw_full[
-                df_vperf_raw_full['VendorName'].astype(str).str.upper().str.strip().apply(
-                    lambda vn: any(av in vn or vn in av for av in allowed_v)
-                )
-            ].copy()
+            st.info(f"🔒 **Restricted Vendor View:** Showing exclusive performance records for **{', '.join(allowed_v) if allowed_v else 'No Assigned Vendors'}**")
+            df_vperf_raw_full = filter_df_by_user_vendors(df_vperf_raw_full, 'VendorName')
 
         df_vperf_raw, is_vdate_filtered, dur_str_ven = render_duration_selector(df_vperf_raw_full, 'Date', 'ven_main')
         df_vperf_sum = build_vendor_summary_from_raw(df_vperf_raw)
@@ -1933,7 +2053,13 @@ elif choice == "💳 Payment Dashboard":
     
     if 'Master_Database' in data:
         df_pay = data['Master_Database'].copy()
+        if not st.session_state.get('all_vendors', True):
+            df_pay = filter_df_by_user_vendors(df_pay, 'Vendor Name')
         
+        if df_pay.empty:
+            st.warning("No pending invoices found for your assigned vendor access.")
+            st.stop()
+
         if PLOTLY_AVAILABLE and not df_pay.empty:
             st.markdown("### 📊 Payment Buckets Overview")
             pvt_chart = pd.pivot_table(df_pay, values='Invoice Id', index='Department Bucket', aggfunc='count').reset_index()
@@ -2043,10 +2169,12 @@ elif choice == "📱 Communication Hub":
     df_ven_raw_base = data.get('Vendor_Perf_Raw', pd.DataFrame()).copy()
     if not df_ven_raw_base.empty and 'VendorName' in df_ven_raw_base.columns:
         df_ven_raw_base['VendorName'] = df_ven_raw_base['VendorName'].apply(normalize_vendor_name)
+    if not st.session_state.get('all_vendors', True):
+        df_ven_raw_base = filter_df_by_user_vendors(df_ven_raw_base, 'VendorName')
+        
     df_pay_base = data.get('Master_Database', pd.DataFrame()).copy()
     df_cpk_raw_base = data.get('CPK_Raw_Data', pd.DataFrame()).copy()
     
-    # Global Date Filter for Communication Hub based on MCD_StartDate
     df_ven_raw_hub, is_hub_filtered, hub_dur_str = render_duration_selector(df_ven_raw_base, 'Date', 'comm_hub')
     if is_hub_filtered and not df_ops_raw_base.empty:
         sd_hub = st.session_state.get('comm_hub_sd')
@@ -2089,13 +2217,11 @@ elif choice == "📱 Communication Hub":
         
         active_routes = NATIONAL_ROUTE_PAIRS[selected_pair_key]
         
-        # Base Ops & Vendor dataframes for this route pair
         nat_ops_sum = sort_by_route_and_leg(df_ops_sum_hub[df_ops_sum_hub['Route Path'].isin(active_routes)].copy()) if not df_ops_sum_hub.empty else pd.DataFrame()
         nat_ops_raw = sort_by_route_and_leg(df_ops_raw_hub[df_ops_raw_hub['Route Path'].isin(active_routes)].copy()) if not df_ops_raw_hub.empty else pd.DataFrame()
         
         nat_ven_raw_all = sort_by_route_and_leg(df_ven_raw_hub[df_ven_raw_hub['Route Path'].isin(active_routes)].copy()) if not df_ven_raw_hub.empty else pd.DataFrame()
         
-        # Vendors active on this route pair (already normalized!)
         route_vendors = sorted(nat_ven_raw_all['VendorName'].dropna().unique().tolist()) if not nat_ven_raw_all.empty else []
         
         selected_nat_vendor = col_nr2.selectbox(
@@ -2104,7 +2230,6 @@ elif choice == "📱 Communication Hub":
             key="nat_ven_sel"
         )
         
-        # Auto-fetch email from Vendor Master if a single vendor is selected
         v_master_nat = {}
         if os.path.exists(FILE_MAP.get("VENDOR_MASTER")):
             try:
@@ -2123,7 +2248,6 @@ elif choice == "📱 Communication Hub":
         
         st.markdown(f"**Included UP/DOWN Routes:** `{'` , `'.join(active_routes)}` | **Active Vendors on Route:** `{', '.join(route_vendors) if route_vendors else 'None'}`")
         
-        # Filter Vendor Performance if a specific vendor is chosen; Operations Performance ALWAYS stays complete for the route!
         if selected_nat_vendor != "ALL VENDORS (Combined)":
             nat_ven_raw = nat_ven_raw_all[nat_ven_raw_all['VendorName'] == selected_nat_vendor].copy()
             nat_ven_sum = build_vendor_summary_from_raw(nat_ven_raw)
@@ -2135,7 +2259,6 @@ elif choice == "📱 Communication Hub":
             mail_recipient_title = "Team / Vendor Partner" if len(route_vendors) != 1 else route_vendors[0]
             vendor_tag_file = ""
 
-        # Build 4-sheet Styled Excel
         nat_excel_buf = io.BytesIO()
         with pd.ExcelWriter(nat_excel_buf, engine='xlsxwriter') as writer:
             write_styled_sheet_to_excel(writer, nat_ven_sum, 'Current_Vendor_Performance', sheet_type="ven_sum")
@@ -2421,9 +2544,12 @@ elif choice == "💰 Network Utilization":
     st.markdown("<h2>Network Utilization & CPK Dashboard</h2>", unsafe_allow_html=True)
     if 'CPK_National_Zonal_Master' in data and 'CPK_Raw_Data' in data:
         df_cpk_raw_full = data['CPK_Raw_Data'].copy()
+        if not st.session_state.get('all_vendors', True):
+            df_cpk_raw_full = filter_df_by_user_vendors(df_cpk_raw_full, 'VendorName')
+            
         df_cpk_raw, is_cpk_date_filtered, dur_str_cpk = render_duration_selector(df_cpk_raw_full, 'Date', 'cpk_main')
         
-        if is_cpk_date_filtered:
+        if is_cpk_date_filtered or not st.session_state.get('all_vendors', True):
             dynamic_cpk = build_cpk_tables_from_raw(df_cpk_raw)
             df_nz_master = dynamic_cpk['CPK_National_Zonal_Master']
             df_nz_updown = dynamic_cpk['CPK_National_Zonal_UpDown']
@@ -2740,3 +2866,195 @@ elif choice == "📝 Today's Call Action Plan":
         
         c2.markdown(f'<a href="{gmail_url}" target="_blank"><button style="background-color: #EF4444; color: white; padding: 10px; border: none; border-radius: 8px; width: 100%; cursor: pointer; font-weight: 600;">2️⃣ Compose Email (Gmail) ✉️</button></a>', unsafe_allow_html=True)
         st.caption("Tip: Download ki hui Action Plan ki Excel sheet ko compose hote waqt attach kar dena.")
+
+# -------------------------------------------------------------
+# G. USER & ACCESS CONTROL MODULE (Admin IAM Management)
+# -------------------------------------------------------------
+elif choice == "🔐 User & Access Control":
+    if st.session_state.get('role') != 'Admin':
+        st.error("🚫 Access Denied. Only Administrators can manage User IDs & Permissions.")
+        st.stop()
+
+    st.markdown("<h2>🔐 User ID & Access Control Center</h2>", unsafe_allow_html=True)
+    st.caption("Create new User IDs, update passwords, assign specific modules, map selected vendors, or disable/remove access anytime.")
+
+    users_db_live = load_users_db()
+
+    # Gather all unique normalized vendor names from the dataset + existing user mappings
+    known_vendors_set = set()
+    if 'Vendor_Perf_Raw' in data and not data['Vendor_Perf_Raw'].empty and 'VendorName' in data['Vendor_Perf_Raw'].columns:
+        known_vendors_set.update(data['Vendor_Perf_Raw']['VendorName'].dropna().apply(normalize_vendor_name).unique().tolist())
+    if 'CPK_Raw_Data' in data and not data['CPK_Raw_Data'].empty and 'VendorName' in data['CPK_Raw_Data'].columns:
+        known_vendors_set.update(data['CPK_Raw_Data']['VendorName'].dropna().apply(normalize_vendor_name).unique().tolist())
+    for u_d in users_db_live.values():
+        for v_item in u_d.get("vendors", []):
+            known_vendors_set.add(normalize_vendor_name(v_item))
+    known_vendors_list = sorted([v for v in known_vendors_set if v])
+
+    # --- 1. LIVE USERS OVERVIEW TABLE ---
+    st.markdown("### 📋 Registered Users & Current Permissions")
+    user_rows = []
+    for u_id, u_info in users_db_live.items():
+        v_disp = "🌍 ALL VENDORS" if u_info.get("all_vendors", True) else (", ".join(u_info.get("vendors", [])) or "None")
+        m_disp = ", ".join(u_info.get("modules", []))
+        user_rows.append({
+            "User ID": u_id,
+            "Display Name": u_info.get("label", u_id),
+            "Password": "•••••• (Protected)" if u_id == "admin" and st.session_state.get("username") != "admin" else u_info.get("pass", ""),
+            "Role": u_info.get("role", "User"),
+            "Status": "🟢 Active" if u_info.get("active", True) else "🔴 Disabled",
+            "Vendor Access": v_disp,
+            "Allowed Modules": m_disp
+        })
+    df_users_overview = pd.DataFrame(user_rows)
+    st.dataframe(df_users_overview, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # --- 2. ADD NEW USER OR EDIT EXISTING USER ---
+    col_u1, col_u2 = st.columns([1.4, 1])
+
+    with col_u1:
+        st.markdown("### ➕ Create New User / ✏️ Edit Existing User")
+        existing_user_ids = [u for u in users_db_live.keys() if u != "admin"] if st.session_state.get("username") != "admin" else list(users_db_live.keys())
+        mode_sel = st.selectbox(
+            "Select Action / Target User:",
+            ["➕ CREATE NEW USER"] + [f"✏️ Edit User: {uid} ({users_db_live[uid].get('label', uid)})" for uid in existing_user_ids],
+            key="iam_mode_sel"
+        )
+
+        is_create_mode = mode_sel == "➕ CREATE NEW USER"
+        if not is_create_mode:
+            target_uid = mode_sel.split("✏️ Edit User: ")[1].split(" (")[0].strip()
+            cur_u_obj = users_db_live.get(target_uid, {})
+        else:
+            target_uid = ""
+            cur_u_obj = {
+                "pass": "1234",
+                "role": "Vendor",
+                "label": "",
+                "active": True,
+                "all_vendors": False,
+                "vendors": [],
+                "modules": ["🚚 Vendor Performance"]
+            }
+
+        with st.form("user_iam_form"):
+            fc1, fc2 = st.columns(2)
+            if is_create_mode:
+                form_uid = fc1.text_input("New User ID (Login Username)*", placeholder="e.g. FASTLANE or rahul_ops").strip()
+            else:
+                fc1.text_input("User ID (Login Username)", value=target_uid, disabled=True)
+                form_uid = target_uid
+
+            form_label = fc2.text_input("Display Name / Organization Label*", value=cur_u_obj.get("label", ""), placeholder="e.g. Fastlane Logistics / Rahul")
+
+            fc3, fc4, fc5 = st.columns([1.2, 1, 0.8])
+            form_pass = fc3.text_input("Login Password*", value=str(cur_u_obj.get("pass", "1234"))).strip()
+            role_options = ["Vendor", "User", "Admin"]
+            cur_role_idx = role_options.index(cur_u_obj.get("role", "Vendor")) if cur_u_obj.get("role", "Vendor") in role_options else 0
+            form_role = fc4.selectbox("System Role*", role_options, index=cur_role_idx, disabled=(target_uid == "admin"))
+            form_active = fc5.checkbox("Account Active 🟢", value=cur_u_obj.get("active", True), disabled=(target_uid == "admin"))
+
+            st.markdown("#### 🧭 Module Access Permissions")
+            default_mods = [m for m in cur_u_obj.get("modules", ["🚚 Vendor Performance"]) if m in ALL_PORTAL_MODULES]
+            form_modules = st.multiselect(
+                "Select Modules this User can see & open:",
+                options=ALL_PORTAL_MODULES,
+                default=ALL_PORTAL_MODULES if target_uid == "admin" else default_mods,
+                disabled=(target_uid == "admin")
+            )
+
+            st.markdown("#### 🚚 Vendor Data Access Permissions")
+            form_all_vendors = st.checkbox(
+                "🌍 Grant ALL VENDORS Access (Uncheck to restrict user to selected vendors only)",
+                value=cur_u_obj.get("all_vendors", False),
+                disabled=(target_uid == "admin")
+            )
+
+            cur_mapped_vendors = [normalize_vendor_name(v) for v in cur_u_obj.get("vendors", []) if v]
+            cur_mapped_vendors = list(dict.fromkeys([v for v in cur_mapped_vendors if v in known_vendors_list]))
+
+            form_selected_vendors = st.multiselect(
+                "Select Allowed Vendor(s) from Dataset:",
+                options=known_vendors_list,
+                default=cur_mapped_vendors
+            )
+            form_custom_vendors = st.text_input(
+                "Or Add Custom Vendor Name(s) (comma separated, optional):",
+                placeholder="e.g. FASTLANE LOGISTICS LLP, SHRI GANPATI"
+            )
+
+            save_iam_btn = st.form_submit_button("💾 Save / Update User Access", use_container_width=True, type="primary")
+
+            if save_iam_btn:
+                if not form_uid:
+                    st.error("❌ Please enter a valid User ID.")
+                elif not form_pass:
+                    st.error("❌ Password cannot be empty.")
+                elif not form_modules and target_uid != "admin":
+                    st.error("❌ Please select at least one Module for this user.")
+                else:
+                    combined_vendors = list(form_selected_vendors)
+                    if form_custom_vendors.strip():
+                        for cv in form_custom_vendors.split(","):
+                            norm_cv = normalize_vendor_name(cv)
+                            if norm_cv and norm_cv not in combined_vendors:
+                                combined_vendors.append(norm_cv)
+
+                    if not form_all_vendors and not combined_vendors and target_uid != "admin":
+                        st.warning("⚠️ You unchecked 'All Vendors Access' but did not select any vendor. Please select at least 1 vendor or enable All Vendors Access.")
+                    else:
+                        users_db_live[form_uid] = {
+                            "pass": form_pass,
+                            "role": "Admin" if form_uid == "admin" else form_role,
+                            "label": form_label.strip() or form_uid,
+                            "active": True if form_uid == "admin" else form_active,
+                            "all_vendors": True if form_uid == "admin" else form_all_vendors,
+                            "vendors": [] if (form_all_vendors or form_uid == "admin") else combined_vendors,
+                            "modules": ALL_PORTAL_MODULES if form_uid == "admin" else form_modules
+                        }
+                        save_users_db(users_db_live)
+                        st.success(f"✅ User `{form_uid}` permissions saved & activated immediately!")
+                        st.rerun()
+
+    with col_u2:
+        st.markdown("### 🗑️ Quick Disable / Delete User")
+        st.caption("Instantly block or permanently remove any user account (Master `admin` is protected).")
+        removable_users = [u for u in users_db_live.keys() if u != "admin"]
+        if not removable_users:
+            st.info("No removable user accounts found.")
+        else:
+            del_uid = st.selectbox(
+                "Select User ID to Manage:",
+                removable_users,
+                format_func=lambda u: f"{u} ({users_db_live[u].get('label', u)}) - {'Active 🟢' if users_db_live[u].get('active', True) else 'Disabled 🔴'}"
+            )
+            cur_status = users_db_live[del_uid].get("active", True)
+
+            b_col1, b_col2 = st.columns(2)
+            if cur_status:
+                if b_col1.button(f"⏸️ Disable `{del_uid}`", use_container_width=True):
+                    users_db_live[del_uid]["active"] = False
+                    save_users_db(users_db_live)
+                    st.warning(f"User `{del_uid}` has been disabled.")
+                    st.rerun()
+            else:
+                if b_col1.button(f"▶️ Activate `{del_uid}`", use_container_width=True):
+                    users_db_live[del_uid]["active"] = True
+                    save_users_db(users_db_live)
+                    st.success(f"User `{del_uid}` is now active!")
+                    st.rerun()
+
+            if b_col2.button(f"🗑️ Delete `{del_uid}`", use_container_width=True, type="secondary"):
+                users_db_live.pop(del_uid, None)
+                save_users_db(users_db_live)
+                st.success(f"User `{del_uid}` deleted permanently.")
+                st.rerun()
+
+        st.markdown("---")
+        st.markdown("#### 💡 Quick Guide:")
+        st.markdown(
+            "- **Vendor Access:** Jab tu kisi vendor ke liye ID banaye, toh `Grant ALL VENDORS Access` ko **Uncheck** rakhna aur niche dropdown se uska naam select kar lena.\n"
+            "- **Team Member Access:** Agar kisi RO ya Ops executive ko 2-3 modules aur kuch specific vendors dene hain, toh `Select Modules` mein wo modules chunn le aur `Select Allowed Vendor(s)` mein unke vendors chunn le!"
+        )
