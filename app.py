@@ -199,41 +199,74 @@ def save_action_plans(data):
     with open(FILE_MAP["ACTION_PLANS"], 'w') as f:
         json.dump(data, f)
 
+# -------------------------------------------------------------
+# MASTER EXCEL FORMATTER: CLEANS, SORTS & STYLES (FAILURES & ACHIEVEMENTS)
+# -------------------------------------------------------------
+def clean_and_style_excel(writer, sheet_name, df_raw):
+    df = df_raw.copy()
+    
+    # 1. Automatic Sorting by Route Path & Legwise
+    sort_cols = [c for c in ['Route Path', 'Legwise', 'Legs', 'VendorName', 'Date'] if c in df.columns]
+    if sort_cols:
+        df = df.sort_values(by=sort_cols)
+        
+    # 2. Re-arranging Columns (Useless Columns pushed to the back)
+    front_priority = ['Zone', 'Origin RO', 'Route Path', 'Legwise', 'Legs', 'VendorName', 'VehicleNo', 
+                      'Total_Trips', 'Ontime Arrival', 'Late Arrival', 'In-Transit',
+                      'Ontime Dep, Ontime Arr %', 'Late Dep, Late Arr %', 'Ontime Dep, Late Arr %', 'Late Dep, Ontime Arr %']
+    
+    junk_cols = ['MasterCDNo', 'RouteCode', 'CD_FromBranch', 'CD_ToBranch', 'MergeKey', 'E2E_Pair', 'Region', 'Min_CD_StartDatetime', 'Actual TAT Till Destination', 'Overall Remark']
+    
+    existing_front = [c for c in front_priority if c in df.columns]
+    existing_junk = [c for c in junk_cols if c in df.columns]
+    existing_mid = [c for c in df.columns if c not in existing_front and c not in existing_junk]
+    
+    final_cols = existing_front + existing_mid + existing_junk
+    df = df[final_cols]
+    
+    # 3. Dynamic Cell Styling (Failures / Achievements Highlight)
+    def highlight(val):
+        if isinstance(val, str):
+            v = val.lower()
+            # Failures (RED)
+            if 'late dep, late arr' in v or 'late arrival' in v or 'no dep' in v or 'missing sch' in v: 
+                return 'background-color: #F8D7DA; color: #721C24'
+            # Achievements (GREEN)
+            if 'ontime dep, ontime arr' in v or 'ontime arrival' in v: 
+                return 'background-color: #D4EDDA; color: #155724'
+            # Warnings / Partial (YELLOW)
+            if 'late dep, ontime arr' in v or 'ontime dep, late arr' in v or 'in-transit' in v: 
+                return 'background-color: #FFF3CD; color: #856404'
+            # Formatting zero percentages nicely
+            if '%' in val and '(0)' in val:
+                return 'color: #9CA3AF'
+        return ''
+        
+    styled_df = df.style.map(highlight)
+    styled_df.to_excel(writer, sheet_name=sheet_name, index=False)
+    
+    # 4. Sheet Column Width Formatting
+    workbook = writer.book
+    worksheet = writer.sheets[sheet_name]
+    header_format = workbook.add_format({'bold': True, 'bg_color': '#1E3A8A', 'font_color': 'white', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'text_wrap': True})
+    data_format = workbook.add_format({'border': 1})
+    
+    for col_num, value in enumerate(df.columns.values):
+        worksheet.write(0, col_num, value, header_format)
+        col_width = min(max(df[value].astype(str).map(len).max(), len(str(value))) + 2, 40)
+        worksheet.set_column(col_num, col_num, col_width, data_format)
+
 # ==========================================
-# 4. VIP EXCEL GENERATOR
+# 4. VIP EXCEL GENERATOR (Saves to Disk)
 # ==========================================
 def generate_vip_executive_report_to_disk(data_dict, output_path=None):
     with pd.ExcelWriter(output_path or FILE_MAP["EXECUTIVE_REPORT"], engine='xlsxwriter') as writer:
-        workbook = writer.book
-        header_format = workbook.add_format({'bold': True, 'bg_color': '#1E3A8A', 'font_color': 'white', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'text_wrap': True})
         
-        def apply_manager_formatting(sheet_name, df_to_write):
-            worksheet = writer.sheets[sheet_name]
-            for col_num, value in enumerate(df_to_write.columns.values):
-                worksheet.write(0, col_num, value, header_format)
-            for i, col in enumerate(df_to_write.columns):
-                if not df_to_write.empty:
-                    col_len = max(df_to_write[col].astype(str).map(len).max(), len(str(col))) + 2
-                else:
-                    col_len = len(str(col)) + 2
-                worksheet.set_column(i, i, min(col_len, 35))
-
+        # Format Ops and Vendor Sheets using our new powerful cleaner function
         if 'Legwise_Route_Summary' in data_dict:
             df_ops = data_dict['Legwise_Route_Summary'].copy()
             cols_to_drop = ['OO_Cnt', 'LO_Cnt', 'OL_Cnt', 'LL_Cnt', 'Ontime_Dep_IT_Cnt', 'Late_Dep_IT_Cnt']
             df_ops = df_ops.drop(columns=[c for c in cols_to_drop if c in df_ops.columns], errors='ignore')
-            
-            def extract_pct(x):
-                if isinstance(x, str) and '%' in x:
-                    try: return float(x.split('%')[0].strip())
-                    except: return 0.0
-                return 0.0
-                
-            if 'Late Dep, Late Arr %' in df_ops.columns:
-                df_ops['SortKey_Temp'] = df_ops['Late Dep, Late Arr %'].apply(extract_pct)
-                df_ops['Is_Single_Trip'] = df_ops['Total_Trips'] <= 1
-                df_ops = df_ops.sort_values(by=['Is_Single_Trip', 'SortKey_Temp'], ascending=[True, False]).drop(columns=['SortKey_Temp', 'Is_Single_Trip'])
-
             def format_val(x):
                 if isinstance(x, str) and '%' in x and '(' in x:
                     try:
@@ -243,43 +276,24 @@ def generate_vip_executive_report_to_disk(data_dict, output_path=None):
                         return f"{pct} | 🚚 {count}"
                     except: return x
                 return x
-                
             pct_cols = [c for c in df_ops.columns if '%' in c]
             for c in pct_cols: df_ops[c] = df_ops[c].apply(format_val)
-
-            def ops_excel_color(val, col):
-                if not isinstance(val, str) or '%' not in val: return ''
-                try: pct = float(val.split('%')[0].strip())
-                except: return ''
-                if pct == 0: return 'color: #6C757D' 
-                if 'Late Dep, Late Arr' in col: return 'background-color: #F8D7DA; color: #721C24' 
-                elif 'Ontime Dep, Ontime Arr' in col: return 'background-color: #D4EDDA; color: #155724' 
-                elif 'Ontime Dep, Late Arr' in col: return 'background-color: #FFF3CD; color: #856404' 
-                elif 'Late Dep, Ontime Arr' in col: return 'background-color: #E2D9F3; color: #4A148C' 
-                return ''
-
-            styled_ops = df_ops.style
-            for col in pct_cols:
-                if hasattr(styled_ops, 'map'): styled_ops = styled_ops.map(lambda x, c=col: ops_excel_color(x, c), subset=[col])
-                else: styled_ops = styled_ops.applymap(lambda x, c=col: ops_excel_color(x, c), subset=[col])
+            clean_and_style_excel(writer, 'Operations_Summary', df_ops)
             
-            styled_ops.to_excel(writer, sheet_name='Operations_Summary', index=False)
-            apply_manager_formatting('Operations_Summary', df_ops)
-            
-        if 'Legwise_Processed_Data' in data_dict:
-            df_ops_raw = data_dict['Legwise_Processed_Data'].copy()
-            df_ops_raw.to_excel(writer, sheet_name='Operations_Raw', index=False)
-            apply_manager_formatting('Operations_Raw', df_ops_raw)
+        if 'Legwise_Processed_Data' in data_dict: clean_and_style_excel(writer, 'Operations_Raw', data_dict['Legwise_Processed_Data'])
+        if 'Vendor_Perf_Summary' in data_dict: clean_and_style_excel(writer, 'Vendor_Perf_Summary', data_dict['Vendor_Perf_Summary'])
+        if 'Vendor_Perf_Raw' in data_dict: clean_and_style_excel(writer, 'Vendor_Perf_Raw', data_dict['Vendor_Perf_Raw'])
 
-        if 'Vendor_Perf_Summary' in data_dict:
-            df_vperf = data_dict['Vendor_Perf_Summary'].copy()
-            df_vperf.to_excel(writer, sheet_name='Vendor_Perf_Summary', index=False)
-            apply_manager_formatting('Vendor_Perf_Summary', df_vperf)
-            
-        if 'Vendor_Perf_Raw' in data_dict:
-            df_vperf_raw = data_dict['Vendor_Perf_Raw'].copy()
-            df_vperf_raw.to_excel(writer, sheet_name='Vendor_Perf_Raw', index=False)
-            apply_manager_formatting('Vendor_Perf_Raw', df_vperf_raw)
+        # Keep Payment & CPK specific styles
+        workbook = writer.book
+        header_format = workbook.add_format({'bold': True, 'bg_color': '#1E3A8A', 'font_color': 'white', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'text_wrap': True})
+        
+        def apply_basic_formatting(sheet_name, df_to_write):
+            worksheet = writer.sheets[sheet_name]
+            for col_num, value in enumerate(df_to_write.columns.values): worksheet.write(0, col_num, value, header_format)
+            for i, col in enumerate(df_to_write.columns):
+                col_len = max(df_to_write[col].astype(str).map(len).max(), len(str(col))) + 2 if not df_to_write.empty else len(str(col)) + 2
+                worksheet.set_column(i, i, min(col_len, 35))
 
         if 'Master_Database' in data_dict:
             df_pay = data_dict['Master_Database'].copy()
@@ -295,15 +309,15 @@ def generate_vip_executive_report_to_disk(data_dict, output_path=None):
                 elif col_name == '3. FINANCE PENDING': return 'background-color: #FFF8E1; color: #856404; font-weight: bold'
                 return ''
                 
-            styled_pay = pvt.style
+            styled_pay = pvt.style.map(lambda x, c=None: pay_excel_color(x, c)) if not hasattr(pvt.style, 'applymap') else pvt.style
             for col in existing_cols:
                 if hasattr(styled_pay, 'map'): styled_pay = styled_pay.map(lambda x, c=col: pay_excel_color(x, c), subset=[col])
                 else: styled_pay = styled_pay.applymap(lambda x, c=col: pay_excel_color(x, c), subset=[col])
             
             styled_pay.to_excel(writer, sheet_name='Payment_Summary', index=False)
-            apply_manager_formatting('Payment_Summary', pvt)
+            apply_basic_formatting('Payment_Summary', pvt)
             df_pay.to_excel(writer, sheet_name='Payment_Raw', index=False)
-            apply_manager_formatting('Payment_Raw', df_pay)
+            apply_basic_formatting('Payment_Raw', df_pay)
 
         def add_total_row_cpk(df):
             if df.empty: return df
@@ -333,12 +347,12 @@ def generate_vip_executive_report_to_disk(data_dict, output_path=None):
                     if col in df_cpk.columns: df_cpk[col] = df_cpk[col].apply(lambda x: f"₹{x:.2f}" if isinstance(x, (int, float)) else x)
                 if 'Overall Util %' in df_cpk.columns: df_cpk['Overall Util %'] = df_cpk['Overall Util %'].apply(lambda x: f"{x * 100:.2f}%" if isinstance(x, (int, float)) else x)
                 df_cpk.to_excel(writer, sheet_name=sheet, index=False)
-                apply_manager_formatting(sheet, df_cpk)
+                apply_basic_formatting(sheet, df_cpk)
 
         if 'CPK_Raw_Data' in data_dict:
             df_cpk_raw = data_dict['CPK_Raw_Data'].copy()
             df_cpk_raw.to_excel(writer, sheet_name='Network_Raw', index=False)
-            apply_manager_formatting('Network_Raw', df_cpk_raw)
+            apply_basic_formatting('Network_Raw', df_cpk_raw)
 
 # ==========================================
 # 5. MAIN DATA PROCESSING
@@ -347,7 +361,6 @@ def generate_vip_executive_report_to_disk(data_dict, output_path=None):
 def get_processed_data_cached(file_timestamps):
     data_for_export = {}
     
-    # --- EXTRACT ZONE MAPPING FROM BRANCH MASTER ---
     ro_zone_map = {}
     branch_ro_map = {}
     branch_zone_map = {}
@@ -367,11 +380,9 @@ def get_processed_data_cached(file_timestamps):
         branch_ro_map = df_brn_unique.set_index(brn_col_m)[ro_col_m].to_dict()
         branch_zone_map = df_brn_unique.set_index(brn_col_m)[zone_col_m].to_dict()
 
-    # --- MODULE 0: PAYMENT DATA ---
     if os.path.exists(FILE_MAP["PAYMENT"]):
         df_pay = pd.read_excel(FILE_MAP["PAYMENT"])
         df_pay.columns = df_pay.columns.astype(str).str.strip().str.upper().str.replace(" ", "").str.replace("_", "")
-        
         rename_dict = {}
         for col in df_pay.columns:
             if 'ROSELECTION' in col: rename_dict[col] = 'RO Name'
@@ -387,7 +398,6 @@ def get_processed_data_cached(file_timestamps):
             elif 'APPROVERREVERTREMARKS' in col: rename_dict[col] = 'Approver Revert Remarks'
             elif 'HOLD.KEY' in col or 'HOLDKEY' in col: rename_dict[col] = 'Hold Key'
             elif 'NAME' == col or 'UPLOADERNAME' in col or 'BILLUPLOADER' in col: rename_dict[col] = 'Bill Uploader'
-
         df_pay.rename(columns=rename_dict, inplace=True)
         required_cols = ['RO Name', 'Category', 'Vendor Name', 'Invoice Id', 'Invoice Date', 'Amount', 'Status', 'Pending With', 'Last Approved At', 'Finance Revert Remarks 1', 'Approver Revert Remarks', 'Hold Key', 'Bill Uploader']
         for req in required_cols:
@@ -397,7 +407,6 @@ def get_processed_data_cached(file_timestamps):
         df_pay['Category'] = df_pay['Category'].fillna('').astype(str).str.strip()
         df_pay['Status'] = df_pay['Status'].fillna('').astype(str).str.upper()
         df_pay['Pending With'] = df_pay['Pending With'].fillna('').astype(str).str.upper()
-        
         df_pay['RO Name Clean'] = df_pay['RO Name'].astype(str).str.strip().str.upper()
         df_pay['Zone'] = df_pay['RO Name Clean'].map(ro_zone_map).fillna('UNKNOWN ZONE')
         
@@ -405,9 +414,7 @@ def get_processed_data_cached(file_timestamps):
                       "Market Vehicle Hired -Linehaul", "Contract Network Vehicle Hired - Regional", 
                       "Contract Network Vehicle Hired - Zonal", "Contract Network Vehicle Hired - National"]
         df_pay = df_pay[df_pay['Category'].isin(valid_cats)]
-        
-        vip_vends = ["SHRI GANPATI", "MOHD ASLAM", "MEHTAROAD", "E WHEELS", "TEJAS", "T T TRANSPORT", 
-                     "APL EXPRESS", "GOTRUCKS", "RADHA RANI", "FASTLANE", "MMM LOGISTICS", "ATA ROADWAYS", "ZAST", "FLEETX"]
+        vip_vends = ["SHRI GANPATI", "MOHD ASLAM", "MEHTAROAD", "E WHEELS", "TEJAS", "T T TRANSPORT", "APL EXPRESS", "GOTRUCKS", "RADHA RANI", "FASTLANE", "MMM LOGISTICS", "ATA ROADWAYS", "ZAST", "FLEETX"]
         df_pay = df_pay[~df_pay['Vendor Name'].str.contains('|'.join(vip_vends), na=False, regex=True)].copy()
         df_pay = df_pay[~df_pay['Status'].str.contains('PAID|PROCESSED|CANCELLED|DECLINED', na=False)]
         
@@ -436,7 +443,6 @@ def get_processed_data_cached(file_timestamps):
         data_for_export['Master_Database'] = df_master
         del df_pay
 
-    # --- MODULE 1: LEGWISE OPERATIONS & VENDOR PERFORMANCE ---
     if os.path.exists(FILE_MAP["LEGWISE"]) and os.path.exists(FILE_MAP["ROUTE_MASTER"]) and os.path.exists(FILE_MAP["BRANCH_MASTER"]):
         df_leg_all = pd.read_excel(FILE_MAP["LEGWISE"], sheet_name="Sheet1")
         df_rte = pd.read_excel(FILE_MAP["ROUTE_MASTER"], sheet_name="RoutePathReportModel")
@@ -465,7 +471,6 @@ def get_processed_data_cached(file_timestamps):
         df_leg_all[['Origin', 'Destination']] = df_leg_all['Route Path'].apply(lambda x: pd.Series(extract_orig_dest(x)))
         df_leg_all['CD_FromBranch_Clean'] = df_leg_all['CD_FromBranch'].astype(str).str.strip().str.upper()
         
-        # 🟢 CRITICAL FIX: MAP RO USING ROUTE ORIGIN FIRST (Fixes MUMH Missing RO issue)
         df_leg_all['Origin RO'] = df_leg_all['Origin'].map(branch_ro_map).combine_first(df_leg_all['CD_FromBranch_Clean'].map(branch_ro_map)).fillna('Missing RO')
         df_leg_all['Zone'] = df_leg_all['Origin'].map(branch_zone_map).combine_first(df_leg_all['CD_FromBranch_Clean'].map(branch_zone_map)).fillna('UNKNOWN ZONE')
         
@@ -487,7 +492,6 @@ def get_processed_data_cached(file_timestamps):
         df_leg_all = df_leg_all.merge(df_rte, left_on=['RouteCode', 'CD_FromBranch'], right_on=['Route Code', 'Route Branch Code'], how='left')
         df_leg_all.rename(columns={'Route Day': 'Dep_Route_Day', 'Schedule Departure Time': 'Sch_Dep_Time_Raw'}, inplace=True)
         df_leg_all.drop(columns=['Schedule Arrival Time'], inplace=True, errors='ignore')
-        
         df_leg_all = df_leg_all.merge(df_rte[['Route Code', 'Route Branch Code', 'Route Day', 'Schedule Arrival Time']], left_on=['RouteCode', 'CD_ToBranch'], right_on=['Route Code', 'Route Branch Code'], how='left')
         df_leg_all.rename(columns={'Route Day': 'Arr_Route_Day', 'Schedule Arrival Time': 'Sch_Arr_Time_Raw'}, inplace=True)
 
@@ -499,7 +503,6 @@ def get_processed_data_cached(file_timestamps):
         df_vperf = df_leg_all.copy()
         df_vperf['Given_Secs'] = (df_vperf['Scheduled Arrival Time'] - df_vperf['Scheduled Departure Time']).dt.total_seconds()
         df_vperf['Actual_Secs'] = (df_vperf['Actual Arrival Time'] - df_vperf['Actual Departure Time']).dt.total_seconds()
-        
         df_vperf['Given Driving Hours_Raw'] = df_vperf['Given_Secs'] / 3600.0
         df_vperf['Actual Driving Hours_Raw'] = df_vperf['Actual_Secs'] / 3600.0
         df_vperf['Delay Hours_Raw'] = df_vperf['Actual Driving Hours_Raw'] - df_vperf['Given Driving Hours_Raw']
@@ -514,7 +517,6 @@ def get_processed_data_cached(file_timestamps):
         df_vperf['Given Driving Hours'] = df_vperf['Given Driving Hours_Raw'].apply(format_hrs_safe)
         df_vperf['Actual Driving Hours'] = df_vperf['Actual Driving Hours_Raw'].apply(format_hrs_safe)
         df_vperf['Delay Hours'] = df_vperf['Delay Hours_Raw'].apply(format_hrs_safe)
-        
         df_vperf['Actual Departure Time'] = df_vperf['Actual Departure Time'].dt.strftime('%d-%m-%Y %H:%M').fillna('-')
         df_vperf['Actual Arrival Time'] = df_vperf['Actual Arrival Time'].dt.strftime('%d-%m-%Y %H:%M').fillna('-')
         
@@ -534,7 +536,6 @@ def get_processed_data_cached(file_timestamps):
         perf_sum['Ontime Arrival'] = perf_sum.apply(lambda r: format_pct_cnt(r['Ontime_Cnt'], r['Total_Trips']), axis=1)
         perf_sum['Late Arrival'] = perf_sum.apply(lambda r: format_pct_cnt(r['Late_Cnt'], r['Total_Trips']), axis=1)
         perf_sum['In-Transit'] = perf_sum.apply(lambda r: format_pct_cnt(r['Transit_Cnt'], r['Total_Trips']), axis=1)
-        
         perf_sum['Sort_Pct'] = np.where(perf_sum['Total_Trips'] > 0, perf_sum['Ontime_Cnt'] / perf_sum['Total_Trips'], 0)
         perf_sum = perf_sum.sort_values('Sort_Pct', ascending=True).drop(columns=['Ontime_Cnt', 'Late_Cnt', 'Transit_Cnt', 'Sort_Pct'])
         
@@ -574,7 +575,6 @@ def get_processed_data_cached(file_timestamps):
             summary['Ontime Dep, Late Arr %'] = summary.apply(lambda r: format_pct_cnt(r['OL_Cnt'], r[trip_col]), axis=1)
             summary['Ontime Dep, In-Transit'] = summary.apply(lambda r: format_pct_cnt(r['Ontime_Dep_IT_Cnt'], r[trip_col]), axis=1)
             summary['Late Dep, In-Transit'] = summary.apply(lambda r: format_pct_cnt(r['Late_Dep_IT_Cnt'], r[trip_col]), axis=1)
-            
             return summary.sort_values(by=['LH Type', 'E2E_Pair', 'Origin', 'Route Path', 'Leg_Num'])
             
         leg_sum = generate_summary(df_leg, ['Zone', 'LH Type', 'E2E_Pair', 'Origin RO', 'Route Path', 'Origin', 'Destination', 'Leg_Num', 'Legwise', 'Legs'])
@@ -587,11 +587,9 @@ def get_processed_data_cached(file_timestamps):
         data_for_export['Legwise_Processed_Data'] = df_leg_final
         del df_leg, df_leg_all, df_rte, route_tat_master
 
-    # --- MODULE 2: CPK AND UTILIZATION ---
     if os.path.exists(FILE_MAP["CPK_UTIL"]) and os.path.exists(FILE_MAP["ROUTE_LOOKUP"]):
         try: df_raw = pd.read_excel(FILE_MAP["CPK_UTIL"], sheet_name='ContractVehicle_DetailReport')
         except: df_raw = pd.read_excel(FILE_MAP["CPK_UTIL"])
-            
         df_lookup = pd.read_excel(FILE_MAP["ROUTE_LOOKUP"])
         df_raw.columns = df_raw.columns.astype(str).str.strip()
         df_lookup.columns = df_lookup.columns.astype(str).str.strip()
@@ -601,25 +599,21 @@ def get_processed_data_cached(file_timestamps):
         df_raw['Vehicle No'] = df_raw.get(vno_col, pd.Series(['Unlisted']*len(df_raw))).fillna('Unlisted')
         date_col = get_col(df_raw, ['date', 'mcd_startdate']) or 'Date'
         df_raw['Date'] = df_raw.get(date_col, pd.Series(['']*len(df_raw))).fillna('')
-        
         raw_key_col = get_col(df_raw, ['refnumber', 'mastercdno', 'mcdno']) or 'RefNumber'
         lkp_key_col = get_col(df_lookup, ['mastercdno', 'mcdno']) or 'MasterCDNo'
         
         if raw_key_col in df_raw.columns and lkp_key_col in df_lookup.columns:
             df_raw['MergeKey'] = df_raw[raw_key_col].astype(str).str.strip().str.upper()
             df_lookup['MergeKey'] = df_lookup[lkp_key_col].astype(str).str.strip().str.upper()
-            
             lkp_route_col = get_col(df_lookup, ['route', 'routepath', 'routes'])
             lkp_type_col = get_col(df_lookup, ['lh_type', 'lhtype', 'type'])
             lkp_from_col = get_col(df_lookup, ['mcd_frombranch', 'frombranch'])
             lkp_to_col = get_col(df_lookup, ['mcd_tobranch', 'tobranch'])
-            
             cols_to_bring = ['MergeKey']
             if lkp_route_col: cols_to_bring.append(lkp_route_col)
             if lkp_type_col: cols_to_bring.append(lkp_type_col)
             if lkp_from_col: cols_to_bring.append(lkp_from_col)
             if lkp_to_col: cols_to_bring.append(lkp_to_col)
-                
             lkp_sub = df_lookup[cols_to_bring].drop_duplicates(subset=['MergeKey'])
             
             rename_dict = {}
@@ -628,16 +622,13 @@ def get_processed_data_cached(file_timestamps):
             if lkp_from_col: rename_dict[lkp_from_col] = 'LKP_FROM'
             if lkp_to_col: rename_dict[lkp_to_col] = 'LKP_TO'
             lkp_sub.rename(columns=rename_dict, inplace=True)
-            
             df_raw = df_raw.merge(lkp_sub, on='MergeKey', how='left')
             df_raw['Final_Route'] = df_raw.get('LKP_ROUTE', pd.Series([np.nan]*len(df_raw)))
             raw_route_col = get_col(df_raw, ['route', 'routepath', 'route(up/down)'])
             if raw_route_col: df_raw['Final_Route'] = df_raw['Final_Route'].combine_first(df_raw[raw_route_col])
-                
             df_raw['Final_Type'] = df_raw.get('LKP_TYPE', pd.Series([np.nan]*len(df_raw)))
             raw_type_col = get_col(df_raw, ['type', 'vehicletype', 'category'])
             if raw_type_col: df_raw['Final_Type'] = df_raw['Final_Type'].combine_first(df_raw[raw_type_col])
-                
             df_raw['Final_From'] = df_raw.get('LKP_FROM', pd.Series([np.nan]*len(df_raw)))
             df_raw['Final_To'] = df_raw.get('LKP_TO', pd.Series([np.nan]*len(df_raw)))
         else:
@@ -696,11 +687,7 @@ def get_processed_data_cached(file_timestamps):
         df_updn = df_raw[~df_raw['Final_Type'].str.upper().str.contains('OFD|PICKUP', na=False)].copy()
         target_keys = df_updn[df_updn['RO_Clean'].isin(target_ros)]['SortKey'].unique()
         df_updn = df_updn[df_updn['SortKey'].isin(target_keys)]
-        
-        df_updn['Final_Type'] = df_updn['Final_Type'].replace({
-            'MCD-National LH': 'National LH', 'MCD-Zonal LH': 'Zonal LH',
-            'MCD-Regional LH': 'Regional LH', 'MCD-Feeder': 'Feeder'
-        })
+        df_updn['Final_Type'] = df_updn['Final_Type'].replace({'MCD-National LH': 'National LH', 'MCD-Zonal LH': 'Zonal LH', 'MCD-Regional LH': 'Regional LH', 'MCD-Feeder': 'Feeder'})
         data_for_export['CPK_Raw_Data'] = df_updn
 
         if not df_updn.empty:
@@ -816,6 +803,7 @@ if st.sidebar.button("Logout", key="logout_btn", use_container_width=True):
 
 st.sidebar.markdown("---")
 
+# Note: Both admin and admin2 have "role": "Admin", so both get this!
 if st.session_state['role'] == 'Admin':
     st.sidebar.header("🛠 Data Management")
     with st.sidebar.expander("📂 Upload Raw Files", expanded=False):
@@ -861,12 +849,12 @@ if st.session_state['role'] == 'Admin':
             st.rerun()
         st.stop()
 
-# Role-Based Navigation
+# Role-Based Navigation Menu
 MENU_SHEETS = {
     "📊 Operations Summary": ('Legwise_Route_Summary', 'Legwise_Processed_Data'),
     "🚚 Vendor Performance": ('Vendor_Perf_Summary', 'Vendor_Perf_Raw'),
     "💳 Payment Dashboard": ('Master_Database',),
-    "📱 Vendor Communication Hub": ('Vendor_Perf_Summary', 'Vendor_Perf_Raw', 'Legwise_Route_Summary', 'Legwise_Processed_Data', 'CPK_National_Zonal_Master', 'CPK_Raw_Data', 'Master_Database'),
+    "📱 Communication Hub": ('Vendor_Perf_Summary', 'Vendor_Perf_Raw', 'Legwise_Route_Summary', 'Legwise_Processed_Data', 'CPK_National_Zonal_Master', 'CPK_Raw_Data', 'Master_Database'),
     "💰 Network Utilization": ('CPK_National_Zonal_Master', 'CPK_National_Zonal_UpDown', 'CPK_Feeder_Regional', 'CPK_Coloader', 'CPK_Raw_Data'),
     "📝 Today's Call Action Plan": ()
 }
@@ -1061,7 +1049,7 @@ elif choice == "🚚 Vendor Performance":
         df_vperf_sum = data['Vendor_Perf_Summary'].copy()
         df_vperf_raw = data['Vendor_Perf_Raw'].copy()
         
-        # APPLY VENDOR SPECIFIC FILTERS
+        # APPLY VENDOR SPECIFIC FILTERS (SECURE)
         if st.session_state['role'] == 'Vendor':
             vendor_list = st.session_state.get('vendors', [])
             if vendor_list:
@@ -1111,7 +1099,6 @@ elif choice == "🚚 Vendor Performance":
         st.markdown("### Vendor Arrival Performance Summary")
         df_display.insert(0, 'Select 👁️', False)
         
-        # Vendor Roles cannot view/edit Admin action plans
         if st.session_state['role'] != 'Vendor':
             ap_data = load_action_plans()
             mod_ap = ap_data.get("Vendor Performance", {})
@@ -1125,7 +1112,6 @@ elif choice == "🚚 Vendor Performance":
             styled_df = styled_df.map(lambda x, c=col: highlight_perf(x, c), subset=[col])
             
         disabled_cols = [c for c in disp_cols if c not in ['Action Plan ✍️', 'Select 👁️']]
-        
         edited_df = st.data_editor(styled_df, column_config={"Action Plan ✍️": st.column_config.TextColumn("Action Plan ✍️", width="large")}, disabled=disabled_cols, use_container_width=True, height=300)
         
         if st.session_state['role'] != 'Vendor':
@@ -1156,13 +1142,7 @@ elif choice == "🚚 Vendor Performance":
             
             output_raw = io.BytesIO()
             with pd.ExcelWriter(output_raw, engine='xlsxwriter') as writer:
-                filtered_raw.to_excel(writer, index=False, sheet_name='Raw_Data')
-                workbook = writer.book
-                worksheet = writer.sheets['Raw_Data']
-                format_hdr = workbook.add_format({'bold': True, 'bg_color': '#1E3A8A', 'font_color': 'white', 'border': 1})
-                for col_num, value in enumerate(filtered_raw.columns.values):
-                    worksheet.write(0, col_num, value, format_hdr)
-                    worksheet.set_column(col_num, col_num, max(len(str(value)), 15))
+                clean_and_style_excel(writer, 'Raw_Data', filtered_raw)
             st.download_button("⬇️ Download This Raw Data", data=output_raw.getvalue(), file_name=f"Raw_Data_{selected_vendor}_{selected_leg}.xlsx", mime="application/vnd.ms-excel", type="primary")
             
             def highlight_raw_remark(val):
@@ -1178,9 +1158,9 @@ elif choice == "🚚 Vendor Performance":
             st.dataframe(styled_raw, use_container_width=True)
 
 # -------------------------------------------------------------
-# C. VENDOR COMMUNICATION HUB 
+# C. COMMUNICATION HUB 
 # -------------------------------------------------------------
-elif choice == "📱 Vendor Communication Hub":
+elif choice == "📱 Communication Hub":
     st.markdown("<h2>Vendor Alerts & Messaging CRM</h2>", unsafe_allow_html=True)
     
     tab1, tab2, tab3 = st.tabs(["🚀 Routewise Ops & Vendor Summary", "🔍 Individual Vendor Hub", "🌍 Regionwise (RO) Summary"])
@@ -1219,21 +1199,10 @@ elif choice == "📱 Vendor Communication Hub":
             
             output_rt = io.BytesIO()
             with pd.ExcelWriter(output_rt, engine='xlsxwriter') as writer:
-                if not df_rt_ops_sum.empty: df_rt_ops_sum.to_excel(writer, sheet_name='Ops_Performance', index=False)
-                if not df_rt_ops_raw.empty: df_rt_ops_raw.to_excel(writer, sheet_name='Ops_Raw_Data', index=False)
-                if not df_rt_ven_sum.empty: df_rt_ven_sum.to_excel(writer, sheet_name='Vendor_Performance', index=False)
-                if not df_rt_ven_raw.empty: df_rt_ven_raw.to_excel(writer, sheet_name='Vendor_Raw_Data', index=False)
-                
-                # Format Sheets
-                workbook = writer.book
-                format_hdr = workbook.add_format({'bold': True, 'bg_color': '#1E3A8A', 'font_color': 'white', 'border': 1})
-                for sheet in writer.sheets:
-                    worksheet = writer.sheets[sheet]
-                    df_ref = locals().get(f"df_rt_{'ops' if 'Ops' in sheet else 'ven'}_{'sum' if 'Performance' in sheet else 'raw'}")
-                    if df_ref is not None and not df_ref.empty:
-                        for col_num, value in enumerate(df_ref.columns.values):
-                            worksheet.write(0, col_num, value, format_hdr)
-                            worksheet.set_column(col_num, col_num, min(max(len(str(value)), 15), 35))
+                if not df_rt_ops_sum.empty: clean_and_style_excel(writer, 'Ops_Performance', df_rt_ops_sum)
+                if not df_rt_ops_raw.empty: clean_and_style_excel(writer, 'Ops_Raw_Data', df_rt_ops_raw)
+                if not df_rt_ven_sum.empty: clean_and_style_excel(writer, 'Vendor_Performance', df_rt_ven_sum)
+                if not df_rt_ven_raw.empty: clean_and_style_excel(writer, 'Vendor_Raw_Data', df_rt_ven_raw)
 
             rt_filename = f"{selected_rt.replace(' ', '_')}_Report.xlsx"
             
@@ -1319,8 +1288,8 @@ elif choice == "📱 Vendor Communication Hub":
                 
                 output_ven = io.BytesIO()
                 with pd.ExcelWriter(output_ven, engine='xlsxwriter') as writer:
-                    ven_sum.to_excel(writer, sheet_name='Summary', index=False)
-                    ven_raw.to_excel(writer, sheet_name='Raw', index=False)
+                    clean_and_style_excel(writer, 'Summary', ven_sum)
+                    clean_and_style_excel(writer, 'Raw', ven_raw)
                 
                 c1, c2, c3 = st.columns(3)
                 c1.download_button("1️⃣ Download Excel 📊", data=output_ven.getvalue(), file_name=f"{selected_vendor}_Report.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
@@ -1352,17 +1321,17 @@ elif choice == "📱 Vendor Communication Hub":
             with pd.ExcelWriter(output_ro, engine='xlsxwriter') as writer:
                 if 'Legwise_Route_Summary' in data:
                     df1 = data['Legwise_Route_Summary'][data['Legwise_Route_Summary']['Origin RO'] == selected_region]
-                    if not df1.empty: df1.to_excel(writer, sheet_name='Ops_Summary', index=False)
+                    if not df1.empty: clean_and_style_excel(writer, 'Ops_Summary', df1)
                 if 'Legwise_Processed_Data' in data:
                     df2 = data['Legwise_Processed_Data'][data['Legwise_Processed_Data']['Origin RO'] == selected_region]
-                    if not df2.empty: df2.to_excel(writer, sheet_name='Ops_Raw', index=False)
+                    if not df2.empty: clean_and_style_excel(writer, 'Ops_Raw', df2)
                     
                 if 'Vendor_Perf_Summary' in data:
                     df3 = data['Vendor_Perf_Summary'][data['Vendor_Perf_Summary']['Origin RO'] == selected_region]
-                    if not df3.empty: df3.to_excel(writer, sheet_name='Vendor_Summary', index=False)
+                    if not df3.empty: clean_and_style_excel(writer, 'Vendor_Summary', df3)
                 if 'Vendor_Perf_Raw' in data:
                     df4 = data['Vendor_Perf_Raw'][data['Vendor_Perf_Raw']['Origin RO'] == selected_region]
-                    if not df4.empty: df4.to_excel(writer, sheet_name='Vendor_Raw', index=False)
+                    if not df4.empty: clean_and_style_excel(writer, 'Vendor_Raw', df4)
                     
                 if 'Master_Database' in data:
                     df5 = data['Master_Database'][data['Master_Database']['RO Name'].astype(str).str.upper() == selected_region.upper()]
