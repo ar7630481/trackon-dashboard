@@ -147,7 +147,7 @@ USERS = {
     "MRT": {
         "pass": "1234",
         "role": "Vendor",
-        "vendors": ["MEHTAROAD INDIA TRANSPORT PRIVATE LIMITED"],
+        "vendors": ["MEHTAROAD INDIA TRANSPORT PRIVATE LIMITED", "MEHTAROAD"],
         "label": "Mehtaroad India Transport"
     },
     "vandna": {
@@ -159,7 +159,7 @@ USERS = {
     "TEJAS": {
         "pass": "1234",
         "role": "Vendor",
-        "vendors": ["TEJAS CARGO INDIA PVT LTD"],
+        "vendors": ["TEJAS CARGO INDIA PVT LTD", "TEJAS"],
         "label": "Tejas Cargo India Pvt Ltd"
     }
 }
@@ -206,8 +206,31 @@ if not st.session_state['logged_in']:
     st.stop()
 
 # ==========================================
-# 3. HELPER FUNCTIONS
+# 3. HELPER FUNCTIONS & VENDOR NORMALIZATION
 # ==========================================
+def normalize_vendor_name(val):
+    """
+    Combines duplicate vendor names with PAN prefixes (like AAGFE8904K-E WHEELS AND LOGISTICS
+    and E WHEELS AND LOGISTICS) into a single clean canonical vendor name.
+    """
+    if pd.isna(val):
+        return ""
+    s = str(val).strip().upper()
+    if s in ["", "NAN", "NONE"]:
+        return ""
+    # Strip any standard 10-char PAN prefix e.g. AAGFE8904K- or AAOFV8863G-
+    s = re.sub(r'^[A-Z]{5}[0-9]{4}[A-Z]\s*-\s*', '', s).strip()
+    # Explicit canonical grouping for known vendors
+    if "E WHEELS" in s:
+        return "E WHEELS AND LOGISTICS"
+    if "VANDNA MOTORS" in s:
+        return "VANDNA MOTORS"
+    if "MEHTAROAD" in s:
+        return "MEHTAROAD INDIA TRANSPORT PRIVATE LIMITED"
+    if "TEJAS CARGO" in s:
+        return "TEJAS CARGO INDIA PVT LTD"
+    return s
+
 def save_file(uploaded_file, key):
     if uploaded_file is None:
         return False
@@ -289,6 +312,9 @@ def sort_by_route_and_leg(df):
         df_out['_leg_sort_num_'] = extract_leg_num_val(df_out['Legwise'])
         sort_cols.append('_leg_sort_num_')
         sort_cols.append('Legwise')
+        
+    if 'VendorName' in df_out.columns:
+        sort_cols.append('VendorName')
         
     if 'Date' in df_out.columns:
         sort_cols.append('Date')
@@ -372,7 +398,7 @@ def save_action_plans(data):
         json.dump(data, f)
 
 # ==========================================
-# 3B. DYNAMIC SUMMARY CALCULATORS (For Date Filter & Exports)
+# 3B. DYNAMIC SUMMARY CALCULATORS (With Vendor Grouping)
 # ==========================================
 def build_ops_summary_from_raw(df_group):
     if df_group is None or df_group.empty:
@@ -425,6 +451,8 @@ def build_vendor_summary_from_raw(df_vperf_raw):
     if df_vperf_raw is None or df_vperf_raw.empty:
         return pd.DataFrame()
     df_in = df_vperf_raw.copy()
+    if 'VendorName' in df_in.columns:
+        df_in['VendorName'] = df_in['VendorName'].apply(normalize_vendor_name)
     if 'Zone' not in df_in.columns:
         df_in['Zone'] = 'UNKNOWN ZONE'
     sum_cols = ['Zone', 'Origin RO', 'Route Path', 'Legwise', 'Legs', 'VendorName']
@@ -454,6 +482,8 @@ def build_cpk_tables_from_raw(df_updn_in):
     if df_updn_in is None or df_updn_in.empty:
         return out
     df_updn = df_updn_in.copy()
+    if 'VendorName' in df_updn.columns:
+        df_updn['VendorName'] = df_updn['VendorName'].apply(normalize_vendor_name)
     df_updn['Trip_Rate'] = np.where(df_updn['Trips'] > 0, df_updn['Cost'] / df_updn['Trips'], 0).round(2)
     df_updn['Trip_Rate_Str'] = "₹" + df_updn['Trip_Rate'].astype(str)
     df_updn['Total_Cap_Raw'] = df_updn['Cap'] * df_updn['Trips']
@@ -529,47 +559,64 @@ def build_cpk_tables_from_raw(df_updn_in):
     return out
 
 # ==========================================
-# 3C. EMAIL TEXT SUMMARY FORMATTER (Clean, Crisp, Highlighted)
+# 3C. EMAIL TEXT SUMMARY FORMATTER (Clean, Grouped & Aligned)
 # ==========================================
 def build_clean_email_message(recipient_title, duration_label, ops_sum_df=None, ven_sum_df=None, pay_df=None, cpk_df=None):
+    clean_dur = str(duration_label).replace("((", "(").replace("))", ")")
+    
     lines = []
     lines.append(f"Dear {recipient_title},")
     lines.append("")
-    lines.append(f"Please find the performance summary for {duration_label}:")
+    lines.append(f"Please find the performance summary for {clean_dur}:")
     lines.append("")
 
+    # 1. VENDOR PERFORMANCE BLOCK (Grouped by Route & Vendor)
     if ven_sum_df is not None and not ven_sum_df.empty:
         df_v = sort_by_route_and_leg(ven_sum_df)
         tot_t = int(df_v['Total_Trips'].sum()) if 'Total_Trips' in df_v.columns else len(df_v)
-        lines.append(f"=== VENDOR PERFORMANCE SUMMARY (Total Trips: {tot_t}) ===")
-        lines.append(f"{'ROUTE PATH':<28} | {'LEG':<5} | {'TRIPS':<5} | {'ONTIME (ACHV)':<15} | {'LATE (FAILURE)':<15}")
-        lines.append("-" * 78)
-        for _, r in df_v.iterrows():
-            rp = str(r.get('Route Path', ''))[:28].ljust(28)
-            lg = str(r.get('Legwise', ''))[:5].ljust(5)
-            tr = str(int(r.get('Total_Trips', 0))).center(5)
-            ot = f"🟢 {r.get('Ontime Arrival', '0%')}".ljust(15)
-            lt = f"🔴 {r.get('Late Arrival', '0%')}".ljust(15)
-            lines.append(f"{rp} | {lg} | {tr} | {ot} | {lt}")
-        lines.append("-" * 78)
-        lines.append("")
+        lines.append(f"📌 VENDOR PERFORMANCE SUMMARY (Total Leg Trips: {tot_t})")
+        lines.append("==========================================================")
+        
+        for route_name, grp in df_v.groupby('Route Path', sort=False):
+            lines.append(f"🚛 Route: {route_name}")
+            for _, r in grp.iterrows():
+                lg = str(r.get('Legwise', '')).strip()
+                leg_nodes = str(r.get('Legs', '')).strip()
+                v_name = str(r.get('VendorName', '')).strip()
+                tr = int(r.get('Total_Trips', 0))
+                ot = str(r.get('Ontime Arrival', '0%')).strip()
+                lt = str(r.get('Late Arrival', '0%')).strip()
+                it = str(r.get('In-Transit', '0%')).strip()
+                
+                it_str = f" | 🟡 In-Transit: {it}" if not it.startswith("0.0%") and not it.startswith("0%") else ""
+                lines.append(f"   • {lg} ({leg_nodes}) [{v_name}] | Trips: {tr}  ➔  🟢 Ontime: {ot}  |  🔴 Late: {lt}{it_str}")
+            lines.append("")
 
+    # 2. OPERATIONS PERFORMANCE BLOCK
     if ops_sum_df is not None and not ops_sum_df.empty:
         df_o = sort_by_route_and_leg(ops_sum_df)
         tot_o = int(df_o['Total_Trips'].sum()) if 'Total_Trips' in df_o.columns else len(df_o)
-        lines.append(f"=== OPERATIONS PERFORMANCE SUMMARY (Total Trips: {tot_o}) ===")
-        lines.append(f"{'ROUTE PATH':<28} | {'LEG':<5} | {'TRIPS':<5} | {'ONTIME DEP-ARR':<15} | {'LATE DEP-ARR':<15}")
-        lines.append("-" * 78)
-        for _, r in df_o.iterrows():
-            rp = str(r.get('Route Path', ''))[:28].ljust(28)
-            lg = str(r.get('Legwise', ''))[:5].ljust(5)
-            tr = str(int(r.get('Total_Trips', 0))).center(5)
-            oo = f"🟢 {r.get('Ontime Dep, Ontime Arr %', '0%')}".ljust(15)
-            ll = f"🔴 {r.get('Late Dep, Late Arr %', '0%')}".ljust(15)
-            lines.append(f"{rp} | {lg} | {tr} | {oo} | {ll}")
-        lines.append("-" * 78)
-        lines.append("")
+        lines.append(f"📌 OPERATIONS PERFORMANCE SUMMARY (Total Leg Trips: {tot_o})")
+        lines.append("==========================================================")
+        
+        for route_name, grp in df_o.groupby('Route Path', sort=False):
+            lines.append(f"🛣️ Route: {route_name}")
+            for _, r in grp.iterrows():
+                lg = str(r.get('Legwise', '')).strip()
+                leg_nodes = str(r.get('Legs', '')).strip()
+                tr = int(r.get('Total_Trips', 0))
+                oo = str(r.get('Ontime Dep, Ontime Arr %', '0%')).strip()
+                ll = str(r.get('Late Dep, Late Arr %', '0%')).strip()
+                ol = str(r.get('Ontime Dep, Late Arr %', '0%')).strip()
+                lo = str(r.get('Late Dep, Ontime Arr %', '0%')).strip()
+                
+                lines.append(
+                    f"   • {lg} ({leg_nodes}) | Trips: {tr}  ➔  "
+                    f"🟢 Ontime Dep-Arr: {oo} | 🔴 Late Dep-Arr: {ll} | 🟡 OntimeDep-LateArr: {ol} | 🟣 LateDep-OntimeArr: {lo}"
+                )
+            lines.append("")
 
+    # 3. CPK & UTILIZATION BLOCK
     if cpk_df is not None and not cpk_df.empty and 'Total Trips' in cpk_df.columns:
         tot_cpk_trips = int(cpk_df['Total Trips'].sum())
         tot_wt = cpk_df['Total Carried Wt'].sum() if 'Total Carried Wt' in cpk_df.columns else 0
@@ -577,16 +624,19 @@ def build_clean_email_message(recipient_title, duration_label, ops_sum_df=None, 
         tot_cost = cpk_df['Total Trip Cost'].sum() if 'Total Trip Cost' in cpk_df.columns else 0
         util_p = (tot_wt / tot_cap * 100) if tot_cap > 0 else 0
         cpk_v = (tot_cost / tot_wt) if tot_wt > 0 else 0
-        lines.append("=== NETWORK UTILIZATION & CPK SUMMARY ===")
-        lines.append(f"Total Trips: {tot_cpk_trips} | Overall Utilization: {util_p:.1f}% | Overall CPK: Rs.{cpk_v:.2f}")
+        lines.append("📌 NETWORK UTILIZATION & CPK SUMMARY")
+        lines.append("==========================================================")
+        lines.append(f"   • Total Trips: {tot_cpk_trips}  |  Overall Utilization: {util_p:.1f}%  |  Overall CPK: Rs.{cpk_v:.2f}")
         lines.append("")
 
+    # 4. PAYMENT PENDING BLOCK
     if pay_df is not None and not pay_df.empty:
-        lines.append(f"=== PENDING INVOICES SUMMARY (Total Bills: {len(pay_df)}) ===")
+        lines.append(f"📌 PENDING INVOICES SUMMARY (Total Bills: {len(pay_df)})")
+        lines.append("==========================================================")
         if 'Department Bucket' in pay_df.columns:
             b_counts = pay_df['Department Bucket'].value_counts()
             for b_name, b_cnt in b_counts.items():
-                lines.append(f" - {b_name}: {b_cnt} Bills")
+                lines.append(f"   • {b_name}: {b_cnt} Bills")
         lines.append("")
 
     lines.append("Detailed Excel data is attached with this mail. Please check and take required action.")
@@ -597,13 +647,16 @@ def build_clean_email_message(recipient_title, duration_label, ops_sum_df=None, 
     return "\n".join(lines)
 
 # ==========================================
-# 4. MASTER EXCEL GENERATOR WITH NATIVE XLSXWRITER HIGHLIGHTING
+# 4. UI & EXCEL HIGHLIGHTING ENGINE
 # ==========================================
 def clean_dataframe_for_excel(df_in, sheet_type="generic"):
     if df_in is None or df_in.empty:
         return pd.DataFrame()
     df = df_in.copy()
     
+    if 'VendorName' in df.columns:
+        df['VendorName'] = df['VendorName'].apply(normalize_vendor_name)
+        
     # Sort by Route Path then Legwise first
     df = sort_by_route_and_leg(df)
     
@@ -660,6 +713,68 @@ def clean_dataframe_for_excel(df_in, sheet_type="generic"):
     df = df[front_cols + remaining_cols]
     return df
 
+def style_ui_dataframe(df_in):
+    """Applies Green (Achievement), Red (Failure), Yellow (Warning), Purple highlights to Streamlit UI tables."""
+    if df_in is None or df_in.empty:
+        return df_in
+
+    def ui_cell_color(val, col_name):
+        if pd.isna(val):
+            return ''
+        s_val = str(val).strip()
+        s_lower = s_val.lower()
+        c_lower = str(col_name).lower()
+
+        pct = parse_pct_from_str(s_val)
+        if pct is not None and pct == 0:
+            return 'color: #78909C;'
+
+        # 1. Summary Percentage Columns
+        if any(k in c_lower for k in ['ontime dep, ontime arr', 'ontime arrival']):
+            if pct is not None and pct > 0:
+                return 'background-color: rgba(56, 142, 60, 0.25); color: #b9f6ca; font-weight: bold;'
+        elif any(k in c_lower for k in ['late dep, late arr', 'late arrival', 'late dep, in-transit']):
+            if pct is not None and pct > 0:
+                return 'background-color: rgba(211, 47, 47, 0.25); color: #ff8a80; font-weight: bold;'
+        elif 'ontime dep, late arr' in c_lower or 'in-transit' in c_lower:
+            if pct is not None and pct > 0:
+                return 'background-color: rgba(245, 127, 23, 0.25); color: #ffe57f; font-weight: bold;'
+        elif 'late dep, ontime arr' in c_lower:
+            if pct is not None and pct > 0:
+                return 'background-color: rgba(123, 31, 162, 0.25); color: #ea80fc; font-weight: bold;'
+
+        # 2. Raw Remark Columns
+        elif 'remark' in c_lower:
+            if 'ontime dep, ontime arr' in s_lower or 'ontime arrival' in s_lower:
+                return 'background-color: rgba(56, 142, 60, 0.25); color: #b9f6ca; font-weight: bold;'
+            elif any(k in s_lower for k in ['late dep, late arr', 'late arrival', 'no dep', 'missing']):
+                return 'background-color: rgba(211, 47, 47, 0.25); color: #ff8a80; font-weight: bold;'
+            elif 'ontime dep, late arr' in s_lower or 'in-transit' in s_lower:
+                return 'background-color: rgba(245, 127, 23, 0.25); color: #ffe57f; font-weight: bold;'
+            elif 'late dep, ontime arr' in s_lower:
+                return 'background-color: rgba(123, 31, 162, 0.25); color: #ea80fc; font-weight: bold;'
+
+        # 3. Delay Hours Column
+        elif c_lower == 'delay hours' and s_val not in ['', '-', '0:00']:
+            if not s_val.startswith('-'):
+                try:
+                    parts = s_val.split(':')
+                    if (int(parts[0]) + int(parts[1]) / 60.0) > 0.25:
+                        return 'background-color: rgba(211, 47, 47, 0.25); color: #ff8a80; font-weight: bold;'
+                except:
+                    pass
+            return 'background-color: rgba(56, 142, 60, 0.2); color: #b9f6ca;'
+
+        return ''
+
+    styled = df_in.style
+    for col in df_in.columns:
+        if hasattr(styled, 'map'):
+            styled = styled.map(lambda x, c=col: ui_cell_color(x, c), subset=[col])
+        else:
+            styled = styled.applymap(lambda x, c=col: ui_cell_color(x, c), subset=[col])
+    return styled
+
 def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic"):
     df = clean_dataframe_for_excel(df_in, sheet_type=sheet_type)
     workbook = writer.book
@@ -675,7 +790,6 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic")
     center_fmt = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter'})
     muted_fmt = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter', 'font_color': '#9CA3AF'})
     
-    # Achievement (Green), Failure (Red), Warning/Partial (Yellow), Purple (Late Dep Ontime Arr), Total (Navy)
     green_fmt = workbook.add_format({
         'border': 1, 'bg_color': '#D4EDDA', 'font_color': '#155724',
         'bold': True, 'align': 'center', 'valign': 'vcenter'
@@ -705,12 +819,10 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic")
         worksheet.write(0, 0, "No Data Available", header_fmt)
         return
 
-    # Write Headers
     worksheet.set_row(0, 26)
     for col_idx, col_name in enumerate(df.columns):
         worksheet.write(0, col_idx, str(col_name), header_fmt)
 
-    # Write Rows & Cells with Native Highlighting
     for row_idx, (_, row) in enumerate(df.iterrows(), start=1):
         is_total_row = any(str(row.get(k, '')).upper() in ['TOTAL', 'GRAND TOTAL'] for k in ['VendorRO', 'RO Name', 'Route Path', 'Origin RO'])
         for col_idx, col_name in enumerate(df.columns):
@@ -729,7 +841,6 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic")
             chosen_fmt = total_row_fmt if is_total_row else cell_fmt
             
             if not is_total_row:
-                # 1. Summary Percentage Columns (Ops & Vendor)
                 if any(k in c_lower for k in ['ontime dep, ontime arr', 'ontime arrival']):
                     pct = parse_pct_from_str(s_val)
                     if pct is not None:
@@ -750,8 +861,6 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic")
                     pct = parse_pct_from_str(s_val)
                     if pct is not None:
                         chosen_fmt = yellow_fmt if pct > 0 else muted_fmt
-                        
-                # 2. Raw Remark Columns (Ops Raw & Vendor Raw)
                 elif 'remark' in c_lower:
                     if 'ontime dep, ontime arr' in s_lower or 'ontime arrival' in s_lower:
                         chosen_fmt = green_fmt
@@ -761,36 +870,22 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic")
                         chosen_fmt = yellow_fmt
                     elif 'late dep, ontime arr' in s_lower:
                         chosen_fmt = purple_fmt
-                        
-                # 3. Delay Hours Highlighting
                 elif c_lower == 'delay hours' and s_val not in ['', '-', '0:00']:
                     if not s_val.startswith('-'):
                         try:
                             parts = s_val.split(':')
                             hrs_delay = int(parts[0]) + int(parts[1]) / 60.0
-                            if hrs_delay > 0.25:
-                                chosen_fmt = red_fmt
-                            else:
-                                chosen_fmt = green_fmt
+                            chosen_fmt = red_fmt if hrs_delay > 0.25 else green_fmt
                         except:
                             pass
                     else:
                         chosen_fmt = green_fmt
-                        
-                # 4. CPK Utilization % Highlighting
                 elif 'overall util %' in c_lower:
                     pct = parse_pct_from_str(s_val)
                     if pct is not None:
-                        if pct < 50:
-                            chosen_fmt = red_fmt
-                        elif pct < 80:
-                            chosen_fmt = yellow_fmt
-                        else:
-                            chosen_fmt = green_fmt
+                        chosen_fmt = red_fmt if pct < 50 else (yellow_fmt if pct < 80 else green_fmt)
                 elif 'overall cpk' in c_lower:
                     chosen_fmt = blue_bold_fmt
-                    
-                # 5. Payment Summary Columns Highlighting
                 elif '1. user / draft pending' in c_lower:
                     try:
                         if float(val_str) > 0: chosen_fmt = red_fmt
@@ -804,7 +899,6 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic")
 
             worksheet.write(row_idx, col_idx, val_str, chosen_fmt)
 
-    # Auto-fit columns cleanly
     for i, col in enumerate(df.columns):
         max_val_len = df[col].astype(str).map(len).max() if not df.empty else 10
         col_len = max(max_val_len, len(str(col))) + 3
@@ -875,13 +969,12 @@ def generate_vip_executive_report_to_disk(data_dict, output_path=None):
             write_styled_sheet_to_excel(writer, data_dict['CPK_Raw_Data'], 'Network_Raw', sheet_type="cpk_raw")
 
 # ==========================================
-# 5. MAIN DATA PROCESSING (With Caching & Missing RO Fix)
+# 5. MAIN DATA PROCESSING (With Caching, Missing RO Fix & Vendor Grouping)
 # ==========================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_processed_data_cached(file_timestamps):
     data_for_export = {}
     
-    # --- EXTRACT ROBUST BRANCH & RO MAPPING FROM BRANCH MASTER ---
     ro_zone_map = {}
     branch_to_ro_map = {
         "MUMH": "MUMRO", "BWNDLH": "MUMRO", "BWNDH": "MUMRO", "BKLH": "MUMRO",
@@ -917,7 +1010,7 @@ def get_processed_data_cached(file_timestamps):
         except Exception as e:
             logging.warning(f"Branch master read warning: {e}")
 
-    # --- MODULE 0: PAYMENT DATA (100% Original Logic Preserved) ---
+    # --- MODULE 0: PAYMENT DATA ---
     if os.path.exists(FILE_MAP["PAYMENT"]):
         df_pay = pd.read_excel(FILE_MAP["PAYMENT"])
         df_pay.columns = df_pay.columns.astype(str).str.strip().str.upper().str.replace(" ", "").str.replace("_", "")
@@ -945,7 +1038,7 @@ def get_processed_data_cached(file_timestamps):
             if req not in df_pay.columns:
                 df_pay[req] = ""
                 
-        df_pay['Vendor Name'] = df_pay['Vendor Name'].fillna('').astype(str).str.upper().str.strip()
+        df_pay['Vendor Name'] = df_pay['Vendor Name'].fillna('').apply(normalize_vendor_name)
         df_pay['Category'] = df_pay['Category'].fillna('').astype(str).str.strip()
         df_pay['Status'] = df_pay['Status'].fillna('').astype(str).str.upper()
         df_pay['Pending With'] = df_pay['Pending With'].fillna('').astype(str).str.upper()
@@ -1016,10 +1109,11 @@ def get_processed_data_cached(file_timestamps):
         route_tat_master['Scheduled TAT Till Destination'] = route_tat_master['Master_Sch_E2E_Hrs'].apply(format_hrs_safe)
 
         df_leg_all.columns = df_leg_all.columns.str.strip()
+        if 'VendorName' in df_leg_all.columns:
+            df_leg_all['VendorName'] = df_leg_all['VendorName'].apply(normalize_vendor_name)
         df_leg_all['MCD_StartDate_DT'] = pd.to_datetime(df_leg_all['MCD_StartDate'], dayfirst=True, errors='coerce')
         df_leg_all['Leg_Num'] = df_leg_all['Legwise'].astype(str).str.extract(r'(\d+)')[0].astype(float).fillna(1)
         
-        # Base Cleaning
         df_leg_all = df_leg_all.sort_values(by=['RouteCode', 'MCD_StartDate_DT', 'Min_CD_StartDatetime'])
         dedup = df_leg_all.groupby(['RouteCode', 'MCD_StartDate_DT'])['MasterCDNo'].first().reset_index()
         df_leg_all = df_leg_all.merge(dedup, on=['RouteCode', 'MCD_StartDate_DT', 'MasterCDNo'])
@@ -1031,7 +1125,6 @@ def get_processed_data_cached(file_timestamps):
         df_leg_all['CD_ToBranch_Clean'] = df_leg_all['CD_ToBranch'].astype(str).str.strip().str.upper()
         df_leg_all['Origin_Clean'] = df_leg_all['Origin'].astype(str).str.strip().str.upper()
 
-        # FIXED RO & ZONE MAPPING: Checks Route Origin first, then Leg FromBranch, then Leg ToBranch (Zero Missing RO!)
         def resolve_origin_ro(row):
             for code in [row['Origin_Clean'], row['CD_FromBranch_Clean'], row['CD_ToBranch_Clean']]:
                 if code in branch_to_ro_map and branch_to_ro_map[code]:
@@ -1082,9 +1175,7 @@ def get_processed_data_cached(file_timestamps):
         df_leg_all['Actual Departure Time'] = pd.to_datetime(df_leg_all['Actual Departure Time'], dayfirst=True, errors='coerce')
         df_leg_all['Actual Arrival Time'] = pd.to_datetime(df_leg_all['Actual Arrival Time'], dayfirst=True, errors='coerce')
         
-        # -------------------------------------------------------------
-        # VENDOR PERFORMANCE (Unfiltered Data - Full Driving Hrs Logic)
-        # -------------------------------------------------------------
+        # VENDOR PERFORMANCE
         df_vperf = df_leg_all.copy()
         df_vperf['Given_Secs'] = (df_vperf['Scheduled Arrival Time'] - df_vperf['Scheduled Departure Time']).dt.total_seconds()
         df_vperf['Actual_Secs'] = (df_vperf['Actual Arrival Time'] - df_vperf['Actual Departure Time']).dt.total_seconds()
@@ -1127,9 +1218,7 @@ def get_processed_data_cached(file_timestamps):
         data_for_export['Vendor_Perf_Raw'] = df_vperf_raw
         del df_vperf, df_vperf_raw, perf_sum
         
-        # -------------------------------------------------------------
-        # OPERATIONS EXCEPTION (Filtered for SCHEDULED & National/Zonal LH)
-        # -------------------------------------------------------------
+        # OPERATIONS EXCEPTION
         df_leg = df_leg_all[(df_leg_all['MCD_Created_By'] == 'SCHEDULED') & (df_leg_all['LH Type'].isin(['National LH', 'Zonal LH']))].copy()
         
         def calc_status(act, sch, mode):
@@ -1162,7 +1251,7 @@ def get_processed_data_cached(file_timestamps):
         
         del df_leg, df_leg_all, df_rte, route_tat_master
 
-    # --- MODULE 2: CPK AND UTILIZATION (100% Original Logic Preserved) ---
+    # --- MODULE 2: CPK AND UTILIZATION ---
     if os.path.exists(FILE_MAP["CPK_UTIL"]) and os.path.exists(FILE_MAP["ROUTE_LOOKUP"]):
         try:
             df_raw = pd.read_excel(FILE_MAP["CPK_UTIL"], sheet_name='ContractVehicle_DetailReport')
@@ -1174,6 +1263,8 @@ def get_processed_data_cached(file_timestamps):
         df_lookup.columns = df_lookup.columns.astype(str).str.strip()
         if 'VehicleUsageType' in df_raw.columns:
             df_raw = df_raw[df_raw['VehicleUsageType'] != 'VehicleUsageType']
+        if 'VendorName' in df_raw.columns:
+            df_raw['VendorName'] = df_raw['VendorName'].apply(normalize_vendor_name)
 
         vno_col = get_col(df_raw, ['vehicleno', 'vehicle']) or 'VehicleNo'
         df_raw['Vehicle No'] = df_raw.get(vno_col, pd.Series(['Unlisted']*len(df_raw))).fillna('Unlisted')
@@ -1267,7 +1358,6 @@ def get_processed_data_cached(file_timestamps):
         
         target_ros = ['PATRO', 'CCURO', 'BBSRO', 'GAURO', 'MUMRO', 'DELRO', 'LKORO']
         
-        # --- APPLY RATE CORRECTIONS IF ANY ---
         df_raw['Date_DT'] = pd.to_datetime(df_raw['Date'], errors='coerce', dayfirst=True)
         if os.path.exists(FILE_MAP["RATE_CORRECTIONS"]):
             try:
@@ -1370,7 +1460,6 @@ if st.sidebar.button("Logout", key="logout_btn", use_container_width=True):
 
 st.sidebar.markdown("---")
 
-# Both 'admin' and 'admin2' have role == 'Admin' -> Both can upload & process files!
 if st.session_state['role'] == 'Admin':
     st.sidebar.header("🛠 Data Management")
     with st.sidebar.expander("📂 Upload Raw Files", expanded=False):
@@ -1496,6 +1585,15 @@ def load_dashboard_data(page):
                     for name in MENU_SHEETS[page]
                     if name in workbook.sheet_names
                 }
+        # Normalize Vendor Names on the fly even on older cached Excel files so PAN duplicates merge immediately!
+        if 'Vendor_Perf_Raw' in data and not data['Vendor_Perf_Raw'].empty:
+            data['Vendor_Perf_Raw']['VendorName'] = data['Vendor_Perf_Raw']['VendorName'].apply(normalize_vendor_name)
+            data['Vendor_Perf_Summary'] = build_vendor_summary_from_raw(data['Vendor_Perf_Raw'])
+        elif 'Vendor_Perf_Summary' in data and not data['Vendor_Perf_Summary'].empty:
+            data['Vendor_Perf_Summary']['VendorName'] = data['Vendor_Perf_Summary']['VendorName'].apply(normalize_vendor_name)
+        if 'Legwise_Processed_Data' in data and not data['Legwise_Processed_Data'].empty and 'VendorName' in data['Legwise_Processed_Data'].columns:
+            data['Legwise_Processed_Data']['VendorName'] = data['Legwise_Processed_Data']['VendorName'].apply(normalize_vendor_name)
+
         if page == "📝 Today's Call Action Plan" and not data:
             data = {"dummy": pd.DataFrame()}
         st.session_state['_dashboard_cache'] = (cache_key, data)
@@ -1537,7 +1635,6 @@ if not data:
     st.warning("No processed data for this page. Admin must upload the relevant files and process data.")
     st.stop()
 
-# Plotly Import for Charts
 try:
     import plotly.express as px
     PLOTLY_AVAILABLE = True
@@ -1638,22 +1735,6 @@ if choice == "📊 Operations Summary":
         for c in pct_cols:
             df_display[c] = df_display[c].apply(format_ops_badge)
 
-        def highlight_cells(val):
-            if not isinstance(val, str) or '%' not in val: return ''
-            try: pct = float(val.split('%')[0].strip())
-            except: return ''
-            if pct == 0: return 'color: #78909C;' 
-            return ''
-            
-        def color_cols(val, col):
-            res = highlight_cells(val)
-            if res: return res
-            if 'Late Dep, Late Arr' in col: return 'background-color: rgba(211, 47, 47, 0.2); color: #ff8a80; font-weight: bold;'
-            elif 'Ontime Dep, Ontime Arr' in col: return 'background-color: rgba(56, 142, 60, 0.2); color: #b9f6ca; font-weight: bold;'
-            elif 'Ontime Dep, Late Arr' in col: return 'background-color: rgba(245, 127, 23, 0.2); color: #ffe57f; font-weight: bold;'
-            elif 'Late Dep, Ontime Arr' in col: return 'background-color: rgba(123, 31, 162, 0.2); color: #ea80fc; font-weight: bold;'
-            return ''
-
         st.markdown("### Top Priority Routes Summary")
         
         df_display.insert(0, 'Select 👁️', False)
@@ -1662,9 +1743,7 @@ if choice == "📊 Operations Summary":
         df_display['Action Plan ✍️'] = df_display['RowKey'].map(mod_ap).fillna("")
         
         disp_cols = ['Select 👁️'] + [c for c in df_display.columns if c not in ['RowKey', 'Select 👁️']]
-        styled_df = df_display[disp_cols].style
-        for col in pct_cols:
-            styled_df = styled_df.map(lambda x, c=col: color_cols(x, c), subset=[col])
+        styled_df = style_ui_dataframe(df_display[disp_cols])
             
         disabled_cols = [c for c in disp_cols if c not in ['Action Plan ✍️', 'Select 👁️']]
         
@@ -1702,17 +1781,7 @@ if choice == "📊 Operations Summary":
             
             filtered_raw = df_raw_leg[(df_raw_leg['Route Path'] == selected_route) & (df_raw_leg['Legwise'] == selected_leg)].copy()
             filtered_raw = clean_dataframe_for_excel(filtered_raw, sheet_type="ops_raw")
-            
-            def highlight_remarks(val):
-                if isinstance(val, str):
-                    if 'Late Dep, Late Arr' in val: return 'color: #ff8a80; font-weight: bold;'
-                    elif 'Ontime Dep, Ontime Arr' in val: return 'color: #b9f6ca; font-weight: bold;'
-                return ''
-                
-            styled_raw = filtered_raw.style
-            if 'Remark' in filtered_raw.columns:
-                styled_raw = styled_raw.map(highlight_remarks, subset=['Remark'])
-            st.dataframe(styled_raw, use_container_width=True)
+            st.dataframe(style_ui_dataframe(filtered_raw), use_container_width=True)
         else:
             st.info("👆 Check the 'Select 👁️' box in the table above to view detailed trip records.")
 
@@ -1724,10 +1793,11 @@ elif choice == "🚚 Vendor Performance":
     
     if 'Vendor_Perf_Summary' in data and 'Vendor_Perf_Raw' in data:
         df_vperf_raw_full = data['Vendor_Perf_Raw'].copy()
+        df_vperf_raw_full['VendorName'] = df_vperf_raw_full['VendorName'].apply(normalize_vendor_name)
         
-        # If logged in as a specific Vendor (EWL, MRT, vandna, TEJAS), filter to ONLY their vehicles/trips
         if st.session_state['role'] == 'Vendor':
-            allowed_v = [v.upper().strip() for v in st.session_state.get('allowed_vendors', [])]
+            allowed_v = [normalize_vendor_name(v) for v in st.session_state.get('allowed_vendors', [])]
+            allowed_v = list(dict.fromkeys([v for v in allowed_v if v]))
             st.info(f"🔒 **Vendor Portal View:** Showing exclusive performance records for **{', '.join(allowed_v)}**")
             df_vperf_raw_full = df_vperf_raw_full[
                 df_vperf_raw_full['VendorName'].astype(str).str.upper().str.strip().apply(
@@ -1736,11 +1806,7 @@ elif choice == "🚚 Vendor Performance":
             ].copy()
 
         df_vperf_raw, is_vdate_filtered, dur_str_ven = render_duration_selector(df_vperf_raw_full, 'Date', 'ven_main')
-        
-        if is_vdate_filtered or st.session_state['role'] == 'Vendor':
-            df_vperf_sum = build_vendor_summary_from_raw(df_vperf_raw)
-        else:
-            df_vperf_sum = data['Vendor_Perf_Summary'].copy()
+        df_vperf_sum = build_vendor_summary_from_raw(df_vperf_raw)
             
         if df_vperf_sum.empty:
             st.warning("No Vendor trips found for the selected criteria/duration.")
@@ -1776,18 +1842,7 @@ elif choice == "🚚 Vendor Performance":
         if search_q:
             mask = df_display.astype(str).apply(lambda x: x.str.contains(search_q, case=False, regex=False, na=False)).any(axis=1)
             df_display = df_display[mask]
-            
-        def highlight_perf(val, col):
-            if not isinstance(val, str) or '%' not in val: return ''
-            try: pct = float(val.split('%')[0].strip())
-            except: return ''
-            if pct == 0: return 'color: #78909C;' 
-            if col == 'Late Arrival': return 'background-color: rgba(211, 47, 47, 0.2); color: #ff8a80; font-weight: bold;'
-            elif col == 'Ontime Arrival': return 'background-color: rgba(56, 142, 60, 0.2); color: #b9f6ca; font-weight: bold;'
-            elif col == 'In-Transit': return 'background-color: rgba(245, 127, 23, 0.2); color: #ffe57f; font-weight: bold;'
-            return ''
 
-        # Allow Vendors/Users/Admins to download current filtered view as Styled Excel
         dl_buf_v = io.BytesIO()
         with pd.ExcelWriter(dl_buf_v, engine='xlsxwriter') as writer:
             write_styled_sheet_to_excel(writer, df_vperf_sum, 'Vendor_Performance', sheet_type="ven_sum")
@@ -1814,10 +1869,7 @@ elif choice == "🚚 Vendor Performance":
             disp_cols = ['Select 👁️'] + [c for c in df_display.columns if c not in ['RowKey', 'Select 👁️', 'Action Plan ✍️']]
             disabled_cols = [c for c in disp_cols if c != 'Select 👁️']
             
-        styled_df = df_display[disp_cols].style
-        for col in ['Ontime Arrival', 'Late Arrival', 'In-Transit']:
-            if col in disp_cols:
-                styled_df = styled_df.map(lambda x, c=col: highlight_perf(x, c), subset=[col])
+        styled_df = style_ui_dataframe(df_display[disp_cols])
         
         edited_df = st.data_editor(
             styled_df,
@@ -1869,18 +1921,7 @@ elif choice == "🚚 Vendor Performance":
                 file_name=f"Raw_Data_{selected_vendor}_{selected_leg}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-            
-            def highlight_raw_remark(val):
-                if isinstance(val, str):
-                    if 'Late Arrival' in val: return 'color: #ff8a80; font-weight: bold;'
-                    elif 'Ontime Arrival' in val: return 'color: #b9f6ca; font-weight: bold;'
-                    elif 'In-Transit' in val: return 'color: #ffe57f;'
-                return ''
-                
-            styled_raw = filtered_raw_clean.style
-            if 'Remark with 15 min waiver' in filtered_raw_clean.columns:
-                styled_raw = styled_raw.map(highlight_raw_remark, subset=['Remark with 15 min waiver'])
-            st.dataframe(styled_raw, use_container_width=True)
+            st.dataframe(style_ui_dataframe(filtered_raw_clean), use_container_width=True)
         else:
             st.info("👆 Check the 'Select 👁️' box in the table above to view detailed trip records.")
 
@@ -2000,13 +2041,14 @@ elif choice == "📱 Communication Hub":
     
     df_ops_raw_base = data.get('Legwise_Processed_Data', pd.DataFrame()).copy()
     df_ven_raw_base = data.get('Vendor_Perf_Raw', pd.DataFrame()).copy()
+    if not df_ven_raw_base.empty and 'VendorName' in df_ven_raw_base.columns:
+        df_ven_raw_base['VendorName'] = df_ven_raw_base['VendorName'].apply(normalize_vendor_name)
     df_pay_base = data.get('Master_Database', pd.DataFrame()).copy()
     df_cpk_raw_base = data.get('CPK_Raw_Data', pd.DataFrame()).copy()
     
     # Global Date Filter for Communication Hub based on MCD_StartDate
     df_ven_raw_hub, is_hub_filtered, hub_dur_str = render_duration_selector(df_ven_raw_base, 'Date', 'comm_hub')
     if is_hub_filtered and not df_ops_raw_base.empty:
-        # Filter Ops Raw and CPK Raw by same selected dates
         sd_hub = st.session_state.get('comm_hub_sd')
         ed_hub = st.session_state.get('comm_hub_ed')
         ops_dt = pd.to_datetime(df_ops_raw_base['MCD_StartDate'], dayfirst=True, errors='coerce')
@@ -2021,7 +2063,7 @@ elif choice == "📱 Communication Hub":
     else:
         df_ops_raw_hub = df_ops_raw_base
         df_ops_sum_hub = data.get('Legwise_Route_Summary', pd.DataFrame()).copy()
-        df_ven_sum_hub = data.get('Vendor_Perf_Summary', pd.DataFrame()).copy()
+        df_ven_sum_hub = build_vendor_summary_from_raw(df_ven_raw_hub)
         df_cpk_raw_hub = df_cpk_raw_base
 
     hub_tab1, hub_tab2, hub_tab3 = st.tabs([
@@ -2035,29 +2077,64 @@ elif choice == "📱 Communication Hub":
     # =========================================================
     with hub_tab1:
         st.markdown("### 🛣️ National Route Round-Trip Ops & Vendor Summary")
-        st.caption("Select any National Round-Trip pair below to generate a 4-sheet formatted Excel report and compose email in 1 click.")
+        st.caption("Select any National Round-Trip pair below. Duplicate PAN vendor names (like E WHEELS) are automatically combined into 1 row. If a route has 2 different vendors, you can either send combined or select an individual vendor!")
         
-        col_nr1, col_nr2 = st.columns([1.2, 1.8])
+        col_nr1, col_nr2, col_nr3 = st.columns([1.2, 1.1, 1.3])
         pair_keys = list(NATIONAL_ROUTE_PAIRS.keys())
         selected_pair_key = col_nr1.selectbox(
-            "Select National Round-Trip Route Pair:",
+            "1. Select National Round-Trip Route Pair:",
             pair_keys,
             format_func=lambda k: f"{k}  🔄  ({' / '.join(NATIONAL_ROUTE_PAIRS[k])})"
         )
-        nat_emails = col_nr2.text_input(
-            "Recipient Email IDs (comma separated, optional):",
-            placeholder="e.g. anurag@trackon.in, ops.head@trackon.in (Leave blank to enter in Gmail)",
-            key="nat_mail_input"
-        )
         
         active_routes = NATIONAL_ROUTE_PAIRS[selected_pair_key]
-        st.markdown(f"**Included UP/DOWN Routes:** `{'` , `'.join(active_routes)}`")
         
-        nat_ven_sum = sort_by_route_and_leg(df_ven_sum_hub[df_ven_sum_hub['Route Path'].isin(active_routes)].copy()) if not df_ven_sum_hub.empty else pd.DataFrame()
-        nat_ven_raw = sort_by_route_and_leg(df_ven_raw_hub[df_ven_raw_hub['Route Path'].isin(active_routes)].copy()) if not df_ven_raw_hub.empty else pd.DataFrame()
+        # Base Ops & Vendor dataframes for this route pair
         nat_ops_sum = sort_by_route_and_leg(df_ops_sum_hub[df_ops_sum_hub['Route Path'].isin(active_routes)].copy()) if not df_ops_sum_hub.empty else pd.DataFrame()
         nat_ops_raw = sort_by_route_and_leg(df_ops_raw_hub[df_ops_raw_hub['Route Path'].isin(active_routes)].copy()) if not df_ops_raw_hub.empty else pd.DataFrame()
         
+        nat_ven_raw_all = sort_by_route_and_leg(df_ven_raw_hub[df_ven_raw_hub['Route Path'].isin(active_routes)].copy()) if not df_ven_raw_hub.empty else pd.DataFrame()
+        
+        # Vendors active on this route pair (already normalized!)
+        route_vendors = sorted(nat_ven_raw_all['VendorName'].dropna().unique().tolist()) if not nat_ven_raw_all.empty else []
+        
+        selected_nat_vendor = col_nr2.selectbox(
+            "2. Select Vendor (For Vendor Perf & Mail):",
+            ["ALL VENDORS (Combined)"] + route_vendors,
+            key="nat_ven_sel"
+        )
+        
+        # Auto-fetch email from Vendor Master if a single vendor is selected
+        v_master_nat = {}
+        if os.path.exists(FILE_MAP.get("VENDOR_MASTER")):
+            try:
+                with open(FILE_MAP.get("VENDOR_MASTER"), 'r') as f:
+                    v_master_nat = json.load(f)
+            except:
+                pass
+        default_nat_mail = v_master_nat.get(selected_nat_vendor, {}).get("email", "") if selected_nat_vendor != "ALL VENDORS (Combined)" else ""
+        
+        nat_emails = col_nr3.text_input(
+            "3. Recipient Email IDs (comma separated):",
+            value=default_nat_mail,
+            placeholder="e.g. anurag@trackon.in, vendor@gmail.com",
+            key="nat_mail_input"
+        )
+        
+        st.markdown(f"**Included UP/DOWN Routes:** `{'` , `'.join(active_routes)}` | **Active Vendors on Route:** `{', '.join(route_vendors) if route_vendors else 'None'}`")
+        
+        # Filter Vendor Performance if a specific vendor is chosen; Operations Performance ALWAYS stays complete for the route!
+        if selected_nat_vendor != "ALL VENDORS (Combined)":
+            nat_ven_raw = nat_ven_raw_all[nat_ven_raw_all['VendorName'] == selected_nat_vendor].copy()
+            nat_ven_sum = build_vendor_summary_from_raw(nat_ven_raw)
+            mail_recipient_title = selected_nat_vendor
+            vendor_tag_file = f"_{selected_nat_vendor.replace(' ', '_')}"
+        else:
+            nat_ven_raw = nat_ven_raw_all
+            nat_ven_sum = build_vendor_summary_from_raw(nat_ven_raw)
+            mail_recipient_title = "Team / Vendor Partner" if len(route_vendors) != 1 else route_vendors[0]
+            vendor_tag_file = ""
+
         # Build 4-sheet Styled Excel
         nat_excel_buf = io.BytesIO()
         with pd.ExcelWriter(nat_excel_buf, engine='xlsxwriter') as writer:
@@ -2066,9 +2143,10 @@ elif choice == "📱 Communication Hub":
             write_styled_sheet_to_excel(writer, nat_ops_sum, 'Current_Ops_Performance', sheet_type="ops_sum")
             write_styled_sheet_to_excel(writer, nat_ops_raw, 'Ops_Performance_Raw_Data', sheet_type="ops_raw")
             
-        nat_subject = f"{selected_pair_key} round trip ops and Vendor performance ({hub_dur_str})"
+        v_subj_tag = f" [{selected_nat_vendor}]" if selected_nat_vendor != "ALL VENDORS (Combined)" else ""
+        nat_subject = f"{selected_pair_key} round trip ops and Vendor performance{v_subj_tag} - {hub_dur_str}"
         nat_body = build_clean_email_message(
-            recipient_title="Team / Vendor Partner",
+            recipient_title=mail_recipient_title,
             duration_label=f"{selected_pair_key} Round Trip ({hub_dur_str})",
             ops_sum_df=nat_ops_sum,
             ven_sum_df=nat_ven_sum
@@ -2080,7 +2158,7 @@ elif choice == "📱 Communication Hub":
         btn_c1.download_button(
             f"1️⃣ Download {selected_pair_key} Round-Trip Excel (4 Sheets) 📊",
             data=nat_excel_buf.getvalue(),
-            file_name=f"{selected_pair_key}_RoundTrip_Ops_Vendor_Report.xlsx",
+            file_name=f"{selected_pair_key}{vendor_tag_file}_RoundTrip_Ops_Vendor_Report.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
             type="primary"
@@ -2091,9 +2169,12 @@ elif choice == "📱 Communication Hub":
         )
         
         st.markdown("#### Preview: Current Vendor Performance")
-        st.dataframe(clean_dataframe_for_excel(nat_ven_sum, sheet_type="ven_sum"), use_container_width=True, hide_index=True)
-        st.markdown("#### Preview: Current Ops Performance")
-        st.dataframe(clean_dataframe_for_excel(nat_ops_sum, sheet_type="ops_sum"), use_container_width=True, hide_index=True)
+        ven_prev_df = clean_dataframe_for_excel(nat_ven_sum, sheet_type="ven_sum")
+        st.dataframe(style_ui_dataframe(ven_prev_df), use_container_width=True, hide_index=True)
+        
+        st.markdown("#### Preview: Current Ops Performance (Full Route)")
+        ops_prev_df = clean_dataframe_for_excel(nat_ops_sum, sheet_type="ops_sum")
+        st.dataframe(style_ui_dataframe(ops_prev_df), use_container_width=True, hide_index=True)
 
     # =========================================================
     # HUB TAB 2: INDIVIDUAL VENDOR & BULK MESSAGING HUB
@@ -2161,7 +2242,8 @@ elif choice == "📱 Communication Hub":
                 ven_raw = sort_by_route_and_leg(df_vperf_raw[df_vperf_raw['VendorName'] == target_vendor].copy())
                 
                 st.markdown(f"#### Performance View: `{target_vendor}`")
-                st.dataframe(clean_dataframe_for_excel(ven_sum, sheet_type="ven_sum"), use_container_width=True, hide_index=True)
+                ind_ven_prev = clean_dataframe_for_excel(ven_sum, sheet_type="ven_sum")
+                st.dataframe(style_ui_dataframe(ind_ven_prev), use_container_width=True, hide_index=True)
 
                 v_master_data_live = {}
                 if os.path.exists(FILE_MAP.get("VENDOR_MASTER")):
@@ -2203,7 +2285,7 @@ elif choice == "📱 Communication Hub":
                 wp_url = f"https://api.whatsapp.com/send?phone={wp_num}&text={encoded_msg}"
                 c2.markdown(f'<a href="{wp_url}" target="_blank"><button style="background-color: #25D366; color: white; padding: 10px; border: none; border-radius: 8px; width: 100%; cursor: pointer; font-weight: 600;">2️⃣ Open WhatsApp 💬</button></a>', unsafe_allow_html=True)
                 
-                subject = urllib.parse.quote(f"Trackon Performance Report: {target_vendor} ({hub_dur_str})")
+                subject = urllib.parse.quote(f"Trackon Performance Report: {target_vendor} - {hub_dur_str}")
                 gmail_url = f"https://mail.google.com/mail/?view=cm&fs=1&to={urllib.parse.quote(custom_ven_email.strip())}&su={subject}&body={encoded_msg}&authuser=lh.fleetops@trackon.in"
                 c3.markdown(f'<a href="{gmail_url}" target="_blank"><button style="background-color: #EF4444; color: white; padding: 10px; border: none; border-radius: 8px; width: 100%; cursor: pointer; font-weight: 600;">3️⃣ Open in Gmail 🌐</button></a>', unsafe_allow_html=True)
 
@@ -2228,7 +2310,7 @@ elif choice == "📱 Communication Hub":
                             continue
                         v_total_trips = int(v_sum['Total_Trips'].sum())
                         v_msg = build_clean_email_message(recipient_title=v_name, duration_label=hub_dur_str, ven_sum_df=v_sum)
-                        v_subject = urllib.parse.quote(f"Trackon Performance Report: {v_name} ({hub_dur_str})")
+                        v_subject = urllib.parse.quote(f"Trackon Performance Report: {v_name} - {hub_dur_str}")
                         v_gmail_url = f"https://mail.google.com/mail/?view=cm&fs=1&to={urllib.parse.quote(v_email)}&su={v_subject}&body={urllib.parse.quote(v_msg)}&authuser=lh.fleetops@trackon.in"
                         
                         b1, b2 = st.columns([3, 1])
@@ -2260,7 +2342,6 @@ elif choice == "📱 Communication Hub":
         ro_mode = rc2.selectbox("Report Mode:", ["All Modules (Full Master + Failures)", "Only Failures / Exceptions"])
         ro_emails_in = rc3.text_input("RO Recipient Email IDs (optional):", placeholder="e.g. rm.delro@trackon.in (or leave blank)", key="ro_mail_in")
         
-        # Filter all modules for selected RO
         ro_ops_sum = sort_by_route_and_leg(df_ops_sum_hub[df_ops_sum_hub['Origin RO'].astype(str).str.upper() == sel_ro_hub].copy()) if not df_ops_sum_hub.empty else pd.DataFrame()
         ro_ops_raw = sort_by_route_and_leg(df_ops_raw_hub[df_ops_raw_hub['Origin RO'].astype(str).str.upper() == sel_ro_hub].copy()) if not df_ops_raw_hub.empty else pd.DataFrame()
         ro_ops_fail_raw = ro_ops_raw[ro_ops_raw['Remark'].astype(str).str.contains('Late|No Dep|Missing', case=False, na=False)].copy() if not ro_ops_raw.empty else pd.DataFrame()
@@ -2273,14 +2354,12 @@ elif choice == "📱 Communication Hub":
         ro_cpk_raw = df_cpk_raw_hub[df_cpk_raw_hub['RO_Clean'].astype(str).str.strip().str.upper() == sel_ro_hub].copy() if not df_cpk_raw_hub.empty else pd.DataFrame()
         ro_cpk_tables = build_cpk_tables_from_raw(ro_cpk_raw)
         
-        # KPI Metrics for selected RO
         k1, k2, k3, k4 = st.columns(4)
         k1.metric(f"{sel_ro_hub} Ops Trips", int(ro_ops_sum['Total_Trips'].sum()) if not ro_ops_sum.empty else 0)
         k2.metric(f"{sel_ro_hub} Ops Failures", len(ro_ops_fail_raw))
         k3.metric(f"{sel_ro_hub} Vendor Late Trips", len(ro_ven_fail_raw))
         k4.metric(f"{sel_ro_hub} Pending Bills", len(ro_pay_raw))
 
-        # Generate Multi-Sheet Styled Excel for RO
         ro_excel_buf = io.BytesIO()
         with pd.ExcelWriter(ro_excel_buf, engine='xlsxwriter') as writer:
             write_styled_sheet_to_excel(writer, ro_ops_sum, 'Ops_Summary', sheet_type="ops_sum")
@@ -2302,7 +2381,7 @@ elif choice == "📱 Communication Hub":
                 if not ro_pay_raw.empty:
                     write_styled_sheet_to_excel(writer, ro_pay_raw, 'Payment_Pending_Raw', sheet_type="pay_raw")
 
-        ro_subject = f"Trackon {sel_ro_hub} Regional Performance & Exception Report ({hub_dur_str})"
+        ro_subject = f"Trackon {sel_ro_hub} Regional Performance & Exception Report - {hub_dur_str}"
         ro_body = build_clean_email_message(
             recipient_title=f"{sel_ro_hub} Regional Team",
             duration_label=f"{sel_ro_hub} ({hub_dur_str})",
@@ -2326,6 +2405,14 @@ elif choice == "📱 Communication Hub":
             f'<a href="{ro_gmail_url}" target="_blank"><button style="background-color: #EF4444; color: white; padding: 10px; border: none; border-radius: 8px; width: 100%; cursor: pointer; font-weight: 600;">2️⃣ Send {sel_ro_hub} Mail in 1-Click (Gmail) ✉️</button></a>',
             unsafe_allow_html=True
         )
+
+        st.markdown(f"#### Preview: `{sel_ro_hub}` Vendor Performance Summary")
+        ro_ven_prev = clean_dataframe_for_excel(ro_ven_sum, sheet_type="ven_sum")
+        st.dataframe(style_ui_dataframe(ro_ven_prev), use_container_width=True, hide_index=True)
+
+        st.markdown(f"#### Preview: `{sel_ro_hub}` Operations Exception Summary")
+        ro_ops_prev = clean_dataframe_for_excel(ro_ops_sum, sheet_type="ops_sum")
+        st.dataframe(style_ui_dataframe(ro_ops_prev), use_container_width=True, hide_index=True)
 
 # -------------------------------------------------------------
 # E. CPK & UTILIZATION (100% Original Logic + Duration Filter)
@@ -2353,7 +2440,6 @@ elif choice == "💰 Network Utilization":
                 st.info("No data available for this category.")
                 return
             
-            # --- PLOTLY VIP CHART ---
             if PLOTLY_AVAILABLE:
                 st.markdown(f"### 📊 Overview: {view_type}")
                 col_chart1, col_chart2 = st.columns(2)
@@ -2566,7 +2652,6 @@ elif choice == "📝 Today's Call Action Plan":
                 ro_part = "UNKNOWN"
                 ref_part = ref
                 
-                # --- LEGACY LOOKUP TO FETCH ORIGIN RO FROM SOURCE DATA ---
                 try:
                     if mod == "Operations Summary" and 'Legwise_Route_Summary' in data:
                         pts = ref_part.split(" | ")
