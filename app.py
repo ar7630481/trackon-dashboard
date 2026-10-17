@@ -164,7 +164,7 @@ DEFAULT_USERS_SEED = {
         "active": True,
         "all_vendors": True,
         "vendors": [],
-        "modules": ALL_PORTAL_MODULES
+        "modules": STANDARD_MODULES
     },
     "user": {
         "pass": "5272",
@@ -1088,7 +1088,8 @@ def generate_vip_executive_report_to_disk(data_dict, output_path=None):
 # ==========================================
 # 5. MAIN DATA PROCESSING (With Caching, Missing RO Fix & Vendor Grouping)
 # ==========================================
-@st.cache_data(ttl=3600, show_spinner=False)
+# Removed ttl=3600 so data never disappears automatically while browser is open
+@st.cache_data(show_spinner=False)
 def get_processed_data_cached(file_timestamps):
     data_for_export = {}
     
@@ -1580,6 +1581,31 @@ st.sidebar.markdown("---")
 
 if st.session_state['role'] == 'Admin':
     st.sidebar.header("🛠 Data Management")
+    
+    # -------------------------------------------------------------
+    # BRAND NEW ADMIN BUTTON TO REMOVE ALL EXCEL FILES
+    # -------------------------------------------------------------
+    if st.sidebar.button("🗑️ Remove Data", use_container_width=True):
+        # Delete only uploaded/generated Excel files, preserve json configurations
+        preserve_keys = ["USERS_DB", "ACTION_PLANS", "VENDOR_MASTER", "RATE_CORRECTIONS"]
+        for k, v in FILE_MAP.items():
+            if k not in preserve_keys:
+                if os.path.exists(v):
+                    try:
+                        os.remove(v)
+                    except:
+                        pass
+        
+        # Clear specific uploader session states to show them empty again
+        for key in list(st.session_state.keys()):
+            if key.startswith("saved_upload_"):
+                del st.session_state[key]
+                
+        get_processed_data_cached.clear()
+        st.session_state.pop('_dashboard_cache', None)
+        st.sidebar.success("Old Data Removed! You can paste new data now.")
+        st.rerun()
+        
     with st.sidebar.expander("📂 Upload Raw Files", expanded=False):
         f1 = st.file_uploader("1. Payment Data", type=['xlsx'])
         if save_file(f1, "PAYMENT"): st.success("Saved!")
@@ -1675,7 +1701,9 @@ MENU_SHEETS = {
 # Dynamically filter Navigation menu based on user's allowed_modules
 user_allowed_mods = st.session_state.get('allowed_modules', [])
 menu = [m for m in MENU_SHEETS.keys() if m in user_allowed_mods]
-if st.session_state.get('role') == 'Admin' and "🔐 User & Access Control" not in menu:
+
+# LOCK "User & Access Control" explicitly to 'admin' username only
+if st.session_state.get('username') == 'admin' and "🔐 User & Access Control" not in menu:
     menu.append("🔐 User & Access Control")
 if not menu:
     menu = ["🚚 Vendor Performance"]
@@ -2871,8 +2899,8 @@ elif choice == "📝 Today's Call Action Plan":
 # G. USER & ACCESS CONTROL MODULE (Admin IAM Management)
 # -------------------------------------------------------------
 elif choice == "🔐 User & Access Control":
-    if st.session_state.get('role') != 'Admin':
-        st.error("🚫 Access Denied. Only Administrators can manage User IDs & Permissions.")
+    if st.session_state.get('username') != 'admin':
+        st.error("🚫 Access Denied. Only Master Administrator can manage User IDs & Permissions.")
         st.stop()
 
     st.markdown("<h2>🔐 User ID & Access Control Center</h2>", unsafe_allow_html=True)
