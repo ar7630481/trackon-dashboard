@@ -28,24 +28,56 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# VIP Custom CSS for Enterprise Look
-st.markdown("""
+THEME_OPTIONS = {
+    "🌌 Aurora Night": {
+        "navy950": "#07111f", "navy900": "#0b1728", "navy800": "#10233a",
+        "glow1": "rgba(37, 99, 235, .18)", "glow2": "rgba(20, 184, 166, .13)",
+        "accent": "#55d6d2", "blue": "#60a5fa", "card1": "#182d46", "card2": "#0c1c2f",
+        "sidebar1": "#0c1a2c", "sidebar2": "#081321", "line": "rgba(148, 163, 184, .20)",
+        "text": "#e8f0fb", "muted": "#9fb1c8", "button1": "#1e4069", "button2": "#123348"
+    },
+    "🌊 Ocean Glass": {
+        "navy950": "#061521", "navy900": "#082333", "navy800": "#0c3444",
+        "glow1": "rgba(14, 165, 233, .20)", "glow2": "rgba(45, 212, 191, .14)",
+        "accent": "#67e8f9", "blue": "#38bdf8", "card1": "#12384a", "card2": "#0b2536",
+        "sidebar1": "#0a2635", "sidebar2": "#061923", "line": "rgba(103, 232, 249, .20)",
+        "text": "#e8fbff", "muted": "#a4c9d5", "button1": "#155e75", "button2": "#164e63"
+    },
+    "🌿 Emerald Executive": {
+        "navy950": "#081711", "navy900": "#0d2118", "navy800": "#143226",
+        "glow1": "rgba(34, 197, 94, .16)", "glow2": "rgba(20, 184, 166, .12)",
+        "accent": "#86efac", "blue": "#6ee7b7", "card1": "#1a3a2a", "card2": "#10271d",
+        "sidebar1": "#10261a", "sidebar2": "#09170f", "line": "rgba(134, 239, 172, .19)",
+        "text": "#effcf3", "muted": "#b1cdb9", "button1": "#166534", "button2": "#14532d"
+    }
+}
+selected_theme_name = st.sidebar.selectbox("✨ Choose your theme", list(THEME_OPTIONS), key="app_visual_theme")
+selected_theme = THEME_OPTIONS[selected_theme_name]
+
+# Custom CSS adapts to the selected theme.
+theme_css = """
     <style>
     :root {
-        --navy-950: #07111f;
-        --navy-900: #0b1728;
-        --navy-800: #10233a;
-        --line: rgba(148, 163, 184, .18);
-        --cyan: #55d6d2;
-        --blue: #60a5fa;
-        --text: #e8f0fb;
-        --muted: #9fb1c8;
+        --navy-950: __NAVY950__;
+        --navy-900: __NAVY900__;
+        --navy-800: __NAVY800__;
+        --line: __LINE__;
+        --cyan: __ACCENT__;
+        --blue: __BLUE__;
+        --text: __TEXT__;
+        --muted: __MUTED__;
+        --card-1: __CARD1__;
+        --card-2: __CARD2__;
+        --sidebar-1: __SIDEBAR1__;
+        --sidebar-2: __SIDEBAR2__;
+        --button-1: __BUTTON1__;
+        --button-2: __BUTTON2__;
     }
     .stApp {
         background:
-            radial-gradient(ellipse at 8% 0%, rgba(37, 99, 235, .15), transparent 34%),
-            radial-gradient(ellipse at 92% 8%, rgba(20, 184, 166, .10), transparent 30%),
-            linear-gradient(145deg, var(--navy-950) 0%, #0b1422 52%, #0c1c2e 100%);
+            radial-gradient(ellipse at 8% 0%, __GLOW1__, transparent 34%),
+            radial-gradient(ellipse at 92% 8%, __GLOW2__, transparent 30%),
+            linear-gradient(145deg, var(--navy-950) 0%, var(--navy-900) 52%, var(--navy-800) 100%);
         color: var(--text);
     }
     [data-testid="stHeader"] { background: rgba(7, 17, 31, .78); }
@@ -56,7 +88,7 @@ st.markdown("""
         max-width: 1600px;
     }
     [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #0c1a2c 0%, #081321 100%);
+        background: linear-gradient(180deg, var(--sidebar-1) 0%, var(--sidebar-2) 100%);
         border-right: 1px solid var(--line);
     }
     [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p { color: #c1d0e2; }
@@ -69,8 +101,8 @@ st.markdown("""
     h2 { margin-top: .4rem !important; }
     p, label, [data-testid="stCaptionContainer"] { color: #c2d1e3; }
     [data-testid="metric-container"] {
-        background: linear-gradient(145deg, rgba(24, 45, 70, .92), rgba(12, 28, 47, .92));
-        border: 1px solid rgba(96, 165, 250, .22);
+        background: linear-gradient(145deg, color-mix(in srgb, var(--card-1) 92%, transparent), color-mix(in srgb, var(--card-2) 94%, transparent));
+        border: 1px solid color-mix(in srgb, var(--blue) 28%, transparent);
         border-radius: 16px;
         padding: 1.1rem 1.2rem;
         box-shadow: 0 14px 36px rgba(0, 0, 0, .20);
@@ -78,7 +110,7 @@ st.markdown("""
     }
     [data-testid="metric-container"]:hover {
         transform: translateY(-2px);
-        border-color: rgba(85, 214, 210, .48);
+        border-color: color-mix(in srgb, var(--cyan) 56%, transparent);
     }
     [data-testid="stMetricLabel"] { color: #aabbd0 !important; }
     [data-testid="stMetricValue"] { color: #f4f8ff !important; }
@@ -90,25 +122,36 @@ st.markdown("""
     }
     th { background-color: #153657 !important; color: #f7fbff !important; font-weight: 650 !important; }
     .stButton > button, .stDownloadButton > button {
-        border: 1px solid rgba(96, 165, 250, .34);
+        border: 1px solid color-mix(in srgb, var(--blue) 44%, transparent);
         border-radius: 10px;
         font-weight: 650;
         color: #edf6ff;
-        background: linear-gradient(120deg, rgba(30, 64, 105, .92), rgba(18, 51, 72, .94));
+        background: linear-gradient(120deg, var(--button-1), var(--button-2));
         transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
     }
     .stButton > button:hover, .stDownloadButton > button:hover {
         transform: translateY(-1px);
-        border-color: rgba(85, 214, 210, .72);
+        border-color: color-mix(in srgb, var(--cyan) 78%, transparent);
         box-shadow: 0 8px 22px rgba(0, 0, 0, .22);
         color: white;
     }
     [data-baseweb="tab"] { color: #aebfd2; }
     [aria-selected="true"][data-baseweb="tab"] { color: #78e0da !important; }
     [data-testid="stAlert"] { border-radius: 12px; }
+    [data-baseweb="select"] > div, [data-baseweb="input"] > div, [data-baseweb="textarea"] > div {
+        background: color-mix(in srgb, var(--navy-800) 84%, transparent);
+        border-color: var(--line);
+        border-radius: 10px;
+    }
+    [data-testid="stRadio"] label, [data-testid="stSegmentedControl"] button { border-radius: 9px; }
+    [data-testid="stRadio"] label:hover, [data-testid="stSegmentedControl"] button:hover { color: var(--cyan); }
+    [data-testid="stSidebar"] [data-testid="stSelectbox"] label { color: var(--cyan) !important; font-weight: 700; }
     hr { border-color: rgba(148, 163, 184, .16); }
     </style>
-""", unsafe_allow_html=True)
+"""
+for theme_key, theme_value in selected_theme.items():
+    theme_css = theme_css.replace(f"__{theme_key.upper()}__", theme_value)
+st.markdown(theme_css, unsafe_allow_html=True)
 
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploaded_raw_data")
@@ -832,46 +875,180 @@ def save_action_plans(data):
     with open(FILE_MAP["ACTION_PLANS"], 'w') as f:
         json.dump(data, f)
 
+def _lookup_key(value):
+    if pd.isna(value):
+        return ''
+    return re.sub(r'[^A-Z0-9]+', '', str(value).replace('\u00a0', ' ').strip().upper())
+
+def get_route_lookup_signature():
+    keys = ['PAYMENT', 'BRANCH_MASTER', 'LEGWISE', 'ROUTE_MASTER', 'MCD_VENDOR', 'CPK_UTIL', 'ROUTE_LOOKUP']
+    signature = []
+    for key in keys:
+        path = FILE_MAP.get(key)
+        if path and os.path.exists(path):
+            stat = os.stat(path)
+            signature.append((key, stat.st_mtime_ns, stat.st_size))
+        else:
+            signature.append((key, None, None))
+    return tuple(signature)
+
 @st.cache_data(show_spinner=False)
-def get_scheduled_route_master():
-    """Load the supplied National/Zonal schedule table and keep only meeting fields."""
+def get_route_branch_lookup_data(file_signature):
+    """Read branch-to-RO labels and discover OnDemand Origin/Destination mappings."""
+    branch_by_code = {}
+    branch_by_name = {}
+    ondemand_by_route = {}
+    ondemand_by_pair = {}
+    branch_source = ''
+    ondemand_source = ''
+
+    def find_column(frame, candidates):
+        normalized = {_lookup_key(col): col for col in frame.columns}
+        for candidate in candidates:
+            match = normalized.get(_lookup_key(candidate))
+            if match is not None:
+                return match
+        return None
+
+    branch_path = FILE_MAP.get('BRANCH_MASTER')
+    if branch_path and os.path.exists(branch_path):
+        try:
+            workbook = pd.ExcelFile(branch_path)
+            for sheet_name in workbook.sheet_names:
+                branches = workbook.parse(sheet_name)
+                branches.columns = branches.columns.astype(str).str.strip()
+                code_col = find_column(branches, ['RPTBranchcode', 'BranchCode', 'Branch Code', 'Route Branch Code'])
+                if not code_col:
+                    continue
+                name_col = find_column(branches, [
+                    'RPTBranchName', 'RPTBranchDescription', 'RPTBranchDesc',
+                    'BranchName', 'Branch Name', 'Branch Description', 'Branch Desc', 'Branch Long Name'
+                ])
+                ro_col = find_column(branches, ['RPTRO', 'RO Name', 'RO', 'Regional Office', 'RO Description'])
+                for _, row in branches.iterrows():
+                    code = _lookup_key(row.get(code_col, ''))
+                    if not code:
+                        continue
+                    branch_name = str(row.get(name_col, '')).strip() if name_col else ''
+                    ro_name = str(row.get(ro_col, '')).strip() if ro_col else ''
+                    if branch_name.lower() in ('nan', 'none'):
+                        branch_name = ''
+                    if ro_name.lower() in ('nan', 'none'):
+                        ro_name = ''
+                    record = {'code': str(row.get(code_col, '')).strip(), 'name': branch_name, 'ro': ro_name}
+                    branch_by_code[code] = record
+                    if branch_name:
+                        branch_by_name[_lookup_key(branch_name)] = record
+                branch_source = f"RO & Branch List · {sheet_name}"
+                break
+        except Exception as exc:
+            logging.warning(f"Branch-list lookup warning: {exc}")
+
+    candidate_keys = ['PAYMENT', 'LEGWISE', 'MCD_VENDOR', 'ROUTE_MASTER', 'BRANCH_MASTER', 'CPK_UTIL', 'ROUTE_LOOKUP']
+    for key in candidate_keys:
+        path = FILE_MAP.get(key)
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            workbook = pd.ExcelFile(path)
+            ondemand_sheets = [
+                name for name in workbook.sheet_names
+                if 'ONDEMAND' in _lookup_key(name)
+            ]
+            for sheet_name in ondemand_sheets:
+                frame = workbook.parse(sheet_name)
+                frame.columns = frame.columns.astype(str).str.strip()
+                origin_col = find_column(frame, [
+                    'Origin', 'Origin Branch', 'Origin Branch Code', 'OriginBranchCode',
+                    'From Branch', 'From Branch Code', 'FromBranch'
+                ])
+                destination_col = find_column(frame, [
+                    'Destination', 'Destination Branch', 'Destination Branch Code', 'DestinationBranchCode',
+                    'Dest', 'Dest Branch', 'Dest Branch Code', 'To Branch', 'To Branch Code', 'ToBranch'
+                ])
+                route_col = find_column(frame, ['Route Path', 'RoutePath', 'Route', 'Route Name'])
+                if not origin_col or not destination_col:
+                    continue
+                for _, row in frame.iterrows():
+                    origin = str(row.get(origin_col, '')).strip()
+                    destination = str(row.get(destination_col, '')).strip()
+                    origin_key, destination_key = _lookup_key(origin), _lookup_key(destination)
+                    if not origin_key or not destination_key or origin_key in ('NAN', 'NONE') or destination_key in ('NAN', 'NONE'):
+                        continue
+                    ondemand_by_pair.setdefault((origin_key, destination_key), (origin, destination))
+                    if route_col:
+                        route_key = _lookup_key(row.get(route_col, ''))
+                        if route_key:
+                            ondemand_by_route.setdefault(route_key, (origin, destination))
+                ondemand_source = f"{key} · {sheet_name}"
+                break
+            if ondemand_source:
+                break
+        except Exception as exc:
+            logging.warning(f"OnDemand lookup warning in {key}: {exc}")
+
+    return branch_by_code, branch_by_name, ondemand_by_route, ondemand_by_pair, branch_source, ondemand_source
+
+@st.cache_data(show_spinner=False)
+def get_scheduled_route_master(file_signature=()):
+    """Load the supplied National/Zonal schedules and enrich endpoints from the uploaded lookups."""
     output_cols = [
+        'RO', 'Origin', 'Origin Branch', 'Destination', 'Destination Branch',
         'Route Path', 'Legwise', 'Legs', 'From Branch', 'To Branch',
-        'Scheduled Departure from Any Branch',
-        'Scheduled Arrival in Any Branch', 'Scheduled Halting',
-        'Scheduled TAT Till Destination'
+        'Scheduled Departure from Any Branch', 'Scheduled Arrival in Any Branch',
+        'Scheduled Halting', 'Scheduled TAT Till Destination'
     ]
     try:
-        df = pd.read_csv(
-            io.StringIO(SCHEDULED_ROUTE_MASTER_TSV),
-            sep='\t', dtype=str, keep_default_na=False
-        )
+        df = pd.read_csv(io.StringIO(SCHEDULED_ROUTE_MASTER_TSV), sep='\t', dtype=str, keep_default_na=False)
         df.columns = df.columns.astype(str).str.strip()
         for col in df.columns:
             df[col] = df[col].astype(str).str.replace('\u00a0', ' ', regex=False).str.strip()
         required = [
             'Route Path', 'Legwise', 'Legs', 'Scheduled Departure Time',
-            'Given Driving Hours', 'Scheduled Halting',
-            'Scheduled TAT Till Destination'
+            'Given Driving Hours', 'Scheduled Halting', 'Scheduled TAT Till Destination'
         ]
         for col in required:
             if col not in df.columns:
                 df[col] = ''
+
+        branch_by_code, branch_by_name, ondemand_by_route, ondemand_by_pair, branch_source, ondemand_source = get_route_branch_lookup_data(file_signature)
+
+        def branch_record(value):
+            key = _lookup_key(value)
+            return branch_by_code.get(key) or branch_by_name.get(key) or {}
+
+        route_nodes = df['Route Path'].apply(lambda route: [part.strip() for part in str(route).split('-') if part.strip()])
+        origin_codes, destination_codes = [], []
+        for route, nodes in zip(df['Route Path'], route_nodes):
+            origin = nodes[0] if nodes else ''
+            destination = nodes[-1] if nodes else ''
+            lookup = ondemand_by_route.get(_lookup_key(route)) or ondemand_by_pair.get((_lookup_key(origin), _lookup_key(destination)))
+            origin_codes.append(lookup[0] if lookup else origin)
+            destination_codes.append(lookup[1] if lookup else destination)
+        df['Origin'] = origin_codes
+        df['Destination'] = destination_codes
+        origin_records = [branch_record(value) for value in origin_codes]
+        destination_records = [branch_record(value) for value in destination_codes]
+        df['RO'] = [record.get('ro', '') or 'RO NOT MAPPED' for record in origin_records]
+        df['Origin Branch'] = [record.get('name', '') or record.get('code', '') or str(value) for record, value in zip(origin_records, origin_codes)]
+        df['Destination Branch'] = [record.get('name', '') or record.get('code', '') or str(value) for record, value in zip(destination_records, destination_codes)]
         branch_parts = df['Legs'].str.split(r'\s+to\s+', n=1, expand=True)
         df['From Branch'] = branch_parts[0].fillna('').str.strip().str.upper()
         df['To Branch'] = branch_parts[1].fillna('').str.strip().str.upper() if branch_parts.shape[1] > 1 else ''
         df['Scheduled Departure from Any Branch'] = df['Scheduled Departure Time'].replace('', '-')
-        # The requested branch-arrival column displays the supplied driving hours.
         df['Scheduled Arrival in Any Branch'] = df['Given Driving Hours'].replace('', '-')
         df['Scheduled Halting'] = df['Scheduled Halting'].replace('', '-')
         df['Scheduled TAT Till Destination'] = df['Scheduled TAT Till Destination'].replace('', '-')
-        return df.reindex(columns=output_cols).fillna('')
+        result = df.reindex(columns=output_cols).fillna('')
+        result.attrs['branch_source'] = branch_source
+        result.attrs['ondemand_source'] = ondemand_source
+        return result
     except Exception as exc:
         logging.exception("Could not load scheduled route master")
         return pd.DataFrame(columns=output_cols)
 
 def build_print_ready_schedule_html(df, branch_label):
-    """Build a self-contained A4 landscape sheet that can be printed or saved as PDF."""
+    """Build a self-contained A3 landscape sheet that can be printed or saved as PDF."""
     title = f"National & Zonal Scheduled Route Master — {branch_label}"
     table_html = df.to_html(index=False, escape=True, border=0, classes='schedule-table')
     safe_title = html_module.escape(title)
@@ -879,14 +1056,14 @@ def build_print_ready_schedule_html(df, branch_label):
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{safe_title}</title>
 <style>
-@page {{ size: A4 landscape; margin: 11mm; }}
+@page {{ size: A3 landscape; margin: 9mm; }}
 * {{ box-sizing: border-box; }}
 body {{ margin: 0; padding: 20px; color: #172638; font: 12px/1.35 Arial, sans-serif; }}
 .toolbar {{ display: flex; justify-content: space-between; align-items: center; gap: 16px; margin: 0 0 16px; }}
 .toolbar button {{ border: 0; border-radius: 7px; background: #155e75; color: white; padding: 10px 16px; font-size: 13px; font-weight: 700; cursor: pointer; }}
 h1 {{ margin: 0 0 4px; font-size: 22px; }}
 .subtitle {{ margin: 0; color: #52657a; }}
-.schedule-table {{ width: 100%; border-collapse: collapse; font-size: 10px; }}
+.schedule-table {{ width: 100%; border-collapse: collapse; font-size: 8px; }}
 .schedule-table th {{ background: #153b5b; color: #fff; text-align: left; padding: 7px 6px; }}
 .schedule-table td {{ border-bottom: 1px solid #d7e0e9; padding: 6px; vertical-align: top; }}
 .schedule-table tr:nth-child(even) td {{ background: #f2f7fb; }}
@@ -899,17 +1076,90 @@ tr {{ break-inside: avoid; page-break-inside: avoid; }}
 {table_html}
 </body></html>'''
 
+def build_formatted_excel_bytes(df, sheet_name, report_title, percent_columns=None, width_overrides=None):
+    """Write a compact, styled Excel table with filters, frozen headers, and print setup."""
+    buffer = io.BytesIO()
+    df_out = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    percent_columns = set(percent_columns or [])
+    width_overrides = width_overrides or {}
+    if df_out.empty:
+        if len(df_out.columns) == 0:
+            df_out = pd.DataFrame(columns=['Status'])
+        placeholder = {col: '' for col in df_out.columns}
+        placeholder[df_out.columns[0]] = 'No records for the selected filters.'
+        df_out = pd.DataFrame([placeholder])
+    safe_sheet = str(sheet_name)[:31] or 'Report'
+    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+        workbook = writer.book
+        worksheet = workbook.add_worksheet(safe_sheet)
+        writer.sheets[safe_sheet] = worksheet
+        ncols = max(len(df_out.columns), 1)
+        title_fmt = workbook.add_format({'bold': True, 'font_size': 16, 'font_color': '#FFFFFF', 'bg_color': '#102B46', 'valign': 'vcenter'})
+        subtitle_fmt = workbook.add_format({'font_color': '#42566B', 'italic': True, 'bg_color': '#EAF2F8', 'valign': 'vcenter'})
+        header_fmt = workbook.add_format({'bold': True, 'font_color': '#FFFFFF', 'bg_color': '#155E75', 'border': 1, 'border_color': '#0E7490', 'align': 'center', 'valign': 'vcenter', 'text_wrap': True})
+        base_even_fmt = workbook.add_format({'bg_color': '#F2F7FB', 'font_color': '#14283B', 'border_bottom': 1, 'border_color': '#D9E3EC', 'valign': 'vcenter', 'text_wrap': True})
+        base_odd_fmt = workbook.add_format({'bg_color': '#FFFFFF', 'font_color': '#14283B', 'border_bottom': 1, 'border_color': '#D9E3EC', 'valign': 'vcenter', 'text_wrap': True})
+        low_even_fmt = workbook.add_format({'bg_color': '#DDF3E8', 'font_color': '#14532D', 'bold': True, 'border_bottom': 1, 'border_color': '#B8DDC8', 'align': 'center', 'valign': 'vcenter'})
+        low_odd_fmt = workbook.add_format({'bg_color': '#EAF8F0', 'font_color': '#14532D', 'bold': True, 'border_bottom': 1, 'border_color': '#B8DDC8', 'align': 'center', 'valign': 'vcenter'})
+        high_even_fmt = workbook.add_format({'bg_color': '#FCE1E1', 'font_color': '#8A1C1C', 'bold': True, 'border_bottom': 1, 'border_color': '#E9BABA', 'align': 'center', 'valign': 'vcenter'})
+        high_odd_fmt = workbook.add_format({'bg_color': '#FFF0E0', 'font_color': '#8A3B0A', 'bold': True, 'border_bottom': 1, 'border_color': '#E9CBAA', 'align': 'center', 'valign': 'vcenter'})
+        numeric_even_fmt = workbook.add_format({'bg_color': '#F2F7FB', 'font_color': '#14283B', 'border_bottom': 1, 'border_color': '#D9E3EC', 'num_format': '#,##0.00'})
+        numeric_odd_fmt = workbook.add_format({'bg_color': '#FFFFFF', 'font_color': '#14283B', 'border_bottom': 1, 'border_color': '#D9E3EC', 'num_format': '#,##0.00'})
+        worksheet.merge_range(0, 0, 0, ncols - 1, report_title, title_fmt)
+        worksheet.merge_range(1, 0, 1, ncols - 1, f"Generated {get_ist_now():%d %b %Y, %I:%M %p} IST · Trackon Command Center", subtitle_fmt)
+        worksheet.set_row(0, 30)
+        worksheet.set_row(1, 21)
+        for col_idx, col_name in enumerate(df_out.columns):
+            worksheet.write(2, col_idx, str(col_name), header_fmt)
+        worksheet.set_row(2, 34)
+        for row_idx, (_, row) in enumerate(df_out.iterrows(), start=3):
+            is_even = (row_idx - 3) % 2 == 0
+            for col_idx, col_name in enumerate(df_out.columns):
+                value = row[col_name]
+                if isinstance(value, np.generic):
+                    value = value.item()
+                if value is None or (not isinstance(value, (list, dict)) and pd.isna(value)):
+                    value = ''
+                fmt = base_even_fmt if is_even else base_odd_fmt
+                if col_name in percent_columns:
+                    pct = parse_pct_from_str(value)
+                    if pct is not None:
+                        fmt = (high_even_fmt if is_even else high_odd_fmt) if pct >= 50 else (low_even_fmt if is_even else low_odd_fmt)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    fmt = numeric_even_fmt if is_even else numeric_odd_fmt
+                    worksheet.write_number(row_idx, col_idx, value, fmt)
+                else:
+                    worksheet.write(row_idx, col_idx, str(value), fmt)
+            worksheet.set_row(row_idx, 24)
+        for col_idx, col_name in enumerate(df_out.columns):
+            values = df_out[col_name].fillna('').astype(str).tolist()
+            measured = max([len(str(col_name))] + [min(len(value), 60) for value in values]) + 2
+            worksheet.set_column(col_idx, col_idx, width_overrides.get(col_name, min(max(measured, 12), 38)))
+        last_data_row = len(df_out) + 2
+        worksheet.autofilter(2, 0, last_data_row, len(df_out.columns) - 1)
+        worksheet.freeze_panes(3, 0)
+        worksheet.set_landscape()
+        worksheet.set_paper(8)  # A3 landscape for the wide branchwise schedule.
+        worksheet.fit_to_pages(1, 0)
+        worksheet.repeat_rows(2)
+        worksheet.set_margins(0.25, 0.25, 0.4, 0.4)
+        worksheet.set_header('&LTrackon Command Center&R&P')
+        worksheet.set_footer('&LConfidential meeting report&RPage &P of &N')
+    return buffer.getvalue()
+
 def _clean_ro_series(series):
     return series.fillna('RO NOT MAPPED').astype(str).str.strip().str.upper().replace({'': 'RO NOT MAPPED', 'NAN': 'RO NOT MAPPED', 'NONE': 'RO NOT MAPPED'})
 
 def build_overall_issues_summary(ops_raw, pay_raw):
-    """Create RO-wise issue counts and short meeting-ready narratives."""
+    """Create RO/zone rates in the same percentage-and-count style as Operations Summary."""
     ops = ops_raw.copy() if isinstance(ops_raw, pd.DataFrame) else pd.DataFrame()
     pay = pay_raw.copy() if isinstance(pay_raw, pd.DataFrame) else pd.DataFrame()
     ops_ro_col = get_col(ops, ['Origin RO', 'RO Name', 'RO'])
     pay_ro_col = get_col(pay, ['RO Name', 'Origin RO', 'RO'])
-    ops_ro = _clean_ro_series(ops[ops_ro_col]) if ops_ro_col else pd.Series(dtype=str)
-    pay_ro = _clean_ro_series(pay[pay_ro_col]) if pay_ro_col else pd.Series(dtype=str)
+    ops_zone_col = get_col(ops, ['Zone'])
+    pay_zone_col = get_col(pay, ['Zone'])
+    ops_rows = {}
+    pay_rows = {}
 
     if ops_ro_col:
         dep_col = get_col(ops, ['Dep_Status'])
@@ -917,45 +1167,60 @@ def build_overall_issues_summary(ops_raw, pay_raw):
         remark_col = get_col(ops, ['Remark'])
         dep_status = ops[dep_col].fillna('').astype(str) if dep_col else (ops[remark_col].fillna('').astype(str) if remark_col else pd.Series('', index=ops.index))
         arr_status = ops[arr_col].fillna('').astype(str) if arr_col else (ops[remark_col].fillna('').astype(str) if remark_col else pd.Series('', index=ops.index))
-        late_dep = dep_status.str.contains('Late Dep', case=False, na=False)
-        late_arr = arr_status.str.contains('Late Arr', case=False, na=False)
-        late_dep_counts = ops_ro[late_dep].value_counts().to_dict()
-        late_arr_counts = ops_ro[late_arr].value_counts().to_dict()
-    else:
-        late_dep_counts, late_arr_counts = {}, {}
+        ops_ro = _clean_ro_series(ops[ops_ro_col])
+        ops_zone = ops[ops_zone_col].fillna('UNKNOWN ZONE').astype(str).str.strip().str.upper() if ops_zone_col else pd.Series('UNKNOWN ZONE', index=ops.index)
+        ops_zone = ops_zone.replace({'': 'UNKNOWN ZONE', 'NAN': 'UNKNOWN ZONE', 'NONE': 'UNKNOWN ZONE'})
+        grouped = pd.DataFrame({
+            '_RO': ops_ro, '_ZONE': ops_zone,
+            '_LATE_DEP': dep_status.str.contains('Late Dep', case=False, na=False).astype(int),
+            '_LATE_ARR': arr_status.str.contains('Late Arr', case=False, na=False).astype(int)
+        }).groupby(['_RO', '_ZONE'], dropna=False).agg(
+            Total_Trips=('_RO', 'size'), Late_Dep_Cnt=('_LATE_DEP', 'sum'), Late_Arr_Cnt=('_LATE_ARR', 'sum')
+        )
+        for (ro, zone), row in grouped.iterrows():
+            ops_rows[(ro, zone)] = row.to_dict()
 
     if pay_ro_col:
         bucket_col = get_col(pay, ['Department Bucket'])
         bucket = pay[bucket_col].fillna('').astype(str).str.upper() if bucket_col else pd.Series('', index=pay.index)
-        draft_mask = bucket.str.contains('DRAFT|USER', regex=True, na=False)
-        finance_mask = bucket.str.contains('FINANCE', regex=False, na=False)
-        other_pending_mask = bucket.ne('') & ~draft_mask & ~finance_mask
-        draft_counts = pay_ro[draft_mask].value_counts().to_dict()
-        finance_counts = pay_ro[finance_mask].value_counts().to_dict()
-        pending_counts = pay_ro[other_pending_mask].value_counts().to_dict()
-    else:
-        draft_counts, finance_counts, pending_counts = {}, {}, {}
-
-    all_ros = sorted(set(ops_ro.tolist()) | set(pay_ro.tolist()))
-    rows = []
-    for ro in all_ros:
-        ld = int(late_dep_counts.get(ro, 0))
-        la = int(late_arr_counts.get(ro, 0))
-        draft = int(draft_counts.get(ro, 0))
-        finance = int(finance_counts.get(ro, 0))
-        pending = int(pending_counts.get(ro, 0))
-        narrative = (
-            f"{ro}: {ld} late departures, {la} late arrivals, {draft} draft bills, "
-            f"{finance} finance pending, and {pending} other pending bills."
+        draft_mask = bucket.str.contains('DRAFT|USER', regex=True, na=False).astype(int)
+        finance_mask = bucket.str.contains('FINANCE', regex=False, na=False).astype(int)
+        other_pending_mask = (bucket.ne('') & ~bucket.str.contains('DRAFT|USER|FINANCE', regex=True, na=False)).astype(int)
+        pay_ro = _clean_ro_series(pay[pay_ro_col])
+        pay_zone = pay[pay_zone_col].fillna('UNKNOWN ZONE').astype(str).str.strip().str.upper() if pay_zone_col else pd.Series('UNKNOWN ZONE', index=pay.index)
+        pay_zone = pay_zone.replace({'': 'UNKNOWN ZONE', 'NAN': 'UNKNOWN ZONE', 'NONE': 'UNKNOWN ZONE'})
+        grouped = pd.DataFrame({
+            '_RO': pay_ro, '_ZONE': pay_zone, '_DRAFT': draft_mask,
+            '_FINANCE': finance_mask, '_OTHER_PENDING': other_pending_mask
+        }).groupby(['_RO', '_ZONE'], dropna=False).agg(
+            Total_Bills=('_RO', 'size'), Draft_Cnt=('_DRAFT', 'sum'),
+            Finance_Cnt=('_FINANCE', 'sum'), Other_Pending_Cnt=('_OTHER_PENDING', 'sum')
         )
+        for (ro, zone), row in grouped.iterrows():
+            pay_rows[(ro, zone)] = row.to_dict()
+
+    rows = []
+    for ro, zone in sorted(set(ops_rows) | set(pay_rows)):
+        ops_stats = ops_rows.get((ro, zone), {})
+        pay_stats = pay_rows.get((ro, zone), {})
+        trips = int(ops_stats.get('Total_Trips', 0))
+        bills = int(pay_stats.get('Total_Bills', 0))
+        ld = int(ops_stats.get('Late_Dep_Cnt', 0))
+        la = int(ops_stats.get('Late_Arr_Cnt', 0))
+        draft = int(pay_stats.get('Draft_Cnt', 0))
+        finance = int(pay_stats.get('Finance_Cnt', 0))
+        pending = int(pay_stats.get('Other_Pending_Cnt', 0))
         rows.append({
-            'RO Name': ro, 'Late Departures': ld, 'Late Arrivals': la,
-            'Draft Bills': draft, 'Finance Pending': finance,
-            'Other Pending': pending, 'Meeting Summary': narrative
+            'RO Name': ro, 'Zone': zone, 'Total Trips': trips,
+            'Late Departures': format_pct_cnt(ld, trips),
+            'Late Arrivals': format_pct_cnt(la, trips), 'Total Bills': bills,
+            'Draft Bills': format_pct_cnt(draft, bills),
+            'Finance Pending': format_pct_cnt(finance, bills),
+            'Other Pending': format_pct_cnt(pending, bills)
         })
     return pd.DataFrame(rows, columns=[
-        'RO Name', 'Late Departures', 'Late Arrivals', 'Draft Bills',
-        'Finance Pending', 'Other Pending', 'Meeting Summary'
+        'RO Name', 'Zone', 'Total Trips', 'Late Departures', 'Late Arrivals',
+        'Total Bills', 'Draft Bills', 'Finance Pending', 'Other Pending'
     ])
 
 # ==========================================
@@ -2113,6 +2378,22 @@ if st.session_state['role'] == 'Admin':
 # ==========================================
 # 7. DASHBOARD NAVIGATION & DATA LOADER
 # ==========================================
+def read_overall_issue_query_params():
+    try:
+        params = st.query_params
+        def read_value(key):
+            value = params.get(key, '')
+            return str(value[0] if isinstance(value, (list, tuple)) and value else value or '')
+    except Exception:
+        try:
+            params = st.experimental_get_query_params()
+            def read_value(key):
+                value = params.get(key, [''])
+                return str(value[0] if isinstance(value, (list, tuple)) and value else value or '')
+        except Exception:
+            return {}
+    return {key: read_value(key) for key in ['issues_raw', 'issues_ro', 'issues_zone', 'issues_type', 'issues_start', 'issues_end']}
+
 MENU_SHEETS = {
     "📊 Operations Summary": ('Legwise_Route_Summary', 'Legwise_Processed_Data'),
     "🚚 Vendor Performance": ('Vendor_Perf_Summary', 'Vendor_Perf_Raw'),
@@ -2148,6 +2429,11 @@ if not menu:
     menu = ["🚚 Vendor Performance"]
 
 choice = st.sidebar.radio("Navigation:", menu)
+overall_issue_query = read_overall_issue_query_params()
+overall_issue_raw_view = overall_issue_query.get('issues_raw') == '1' and "⚠️ Overall Issues" in menu
+if overall_issue_raw_view:
+    choice = "⚠️ Overall Issues"
+    st.markdown("<style>[data-testid='stSidebar']{display:none!important} [data-testid='stHeader']{height:0;min-height:0}</style>", unsafe_allow_html=True)
 
 def file_version(path):
     stat = os.stat(path)
@@ -2155,7 +2441,7 @@ def file_version(path):
 
 def load_dashboard_data(page):
     if page == "🧭 Scheduled Route Master":
-        return {'Scheduled_Route_Master': get_scheduled_route_master()}
+        return {'Scheduled_Route_Master': get_scheduled_route_master(get_route_lookup_signature())}
     path = FILE_MAP["FINAL_OUTPUT"]
     if not os.path.exists(path):
         if page in ["📝 Today's Call Action Plan", "🔐 User & Access Control", "⚠️ Overall Issues"]:
@@ -2269,16 +2555,28 @@ def render_scheduled_route_master(data):
         st.warning("The supplied scheduled route table could not be loaded.")
         return
 
-    branch_values = sorted(set(df_master['From Branch'].dropna().astype(str)) | set(df_master['To Branch'].dropna().astype(str)))
+    lookup_info = df_master.attrs
+    if lookup_info.get('ondemand_source'):
+        st.caption(f"Origin/Destination source: {lookup_info.get('ondemand_source')} · RO and branch labels: {lookup_info.get('branch_source') or 'Branch list loaded'}")
+    else:
+        st.warning("OnDemand worksheet was not found in the uploaded Excel files. Endpoint codes are being taken from Route Path until the OnDemand workbook is available.")
+
+    branch_columns = ['From Branch', 'To Branch', 'Origin', 'Origin Branch', 'Destination', 'Destination Branch']
+    branch_values = sorted({
+        str(value).strip() for col in branch_columns if col in df_master.columns
+        for value in df_master[col].dropna().tolist() if str(value).strip() and str(value).strip() not in ('-', 'nan', 'None')
+    })
     filter_col, search_col = st.columns([1, 2])
     selected_branch = filter_col.selectbox("Branch", ["ALL BRANCHES"] + branch_values, key="schedule_branch_filter")
     search_route = search_col.text_input("Find a route", placeholder="Type a route path or branch code", key="schedule_route_search")
 
     visible = df_master.copy()
     if selected_branch != "ALL BRANCHES":
-        visible = visible[
-            visible['From Branch'].eq(selected_branch) | visible['To Branch'].eq(selected_branch)
-        ].copy()
+        branch_mask = pd.Series(False, index=visible.index)
+        for col in branch_columns:
+            if col in visible.columns:
+                branch_mask |= visible[col].astype(str).str.casefold().eq(selected_branch.casefold())
+        visible = visible[branch_mask].copy()
     if search_route.strip():
         q = search_route.strip()
         visible = visible[visible.astype(str).apply(
@@ -2286,6 +2584,7 @@ def render_scheduled_route_master(data):
         ).any(axis=1)].copy()
 
     display_cols = [
+        'RO', 'Origin', 'Origin Branch', 'Destination', 'Destination Branch',
         'Route Path', 'Legwise', 'Legs', 'Scheduled Departure from Any Branch',
         'Scheduled Arrival in Any Branch', 'Scheduled Halting',
         'Scheduled TAT Till Destination'
@@ -2297,29 +2596,37 @@ def render_scheduled_route_master(data):
     branch_label = selected_branch if selected_branch != "ALL BRANCHES" else "All Branches"
     printable_html = build_print_ready_schedule_html(visible, branch_label)
     safe_branch = re.sub(r'[^A-Za-z0-9_-]+', '_', branch_label).strip('_') or 'all_branches'
-    download_col, csv_col = st.columns(2)
+    excel_bytes = build_formatted_excel_bytes(
+        visible, 'Route Schedule', f"Scheduled Route Master · {branch_label}",
+        width_overrides={
+            'RO': 16, 'Origin': 16, 'Origin Branch': 22, 'Destination': 18,
+            'Destination Branch': 22, 'Route Path': 36, 'Legs': 24,
+            'Scheduled Departure from Any Branch': 26,
+            'Scheduled Arrival in Any Branch': 24, 'Scheduled Halting': 22,
+            'Scheduled TAT Till Destination': 24
+        }
+    )
+    download_col, print_col = st.columns(2)
     download_col.download_button(
-        "🖨️ Download Print Sheet (Open → Print / Save as PDF)",
+        "📊 Download Formatted Excel",
+        data=excel_bytes,
+        file_name=f"Scheduled_Route_Master_{safe_branch}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        type="primary"
+    )
+    print_col.download_button(
+        "🖨️ Download Print Sheet (Save as PDF)",
         data=printable_html.encode('utf-8'),
         file_name=f"Scheduled_Route_Master_{safe_branch}.html",
         mime="text/html",
         use_container_width=True,
-        type="primary"
-    )
-    csv_col.download_button(
-        "⬇️ Download Meeting Table (CSV)",
-        data=visible.to_csv(index=False).encode('utf-8-sig'),
-        file_name=f"Scheduled_Route_Master_{safe_branch}.csv",
-        mime="text/csv",
-        use_container_width=True
     )
     with st.expander("Print preview", expanded=False):
         st.components.v1.html(printable_html, height=780, scrolling=True)
-    st.caption("The print sheet is formatted for A4 landscape. Open the downloaded HTML file, then choose Print → Save as PDF.")
+    st.caption("The print sheet is formatted for A3 landscape. Open the downloaded HTML file, then choose Print → Save as PDF.")
 
-def render_overall_issues(data):
-    st.markdown("## ⚠️ Overall Issues")
-    st.caption("RO-wise operational and payment exceptions, with meeting-ready summaries and focused raw records")
+def get_overall_issue_frames(data):
     ops_raw = data.get('Legwise_Processed_Data', pd.DataFrame()).copy()
     pay_raw = data.get('Master_Database', pd.DataFrame()).copy()
     if not st.session_state.get('all_vendors', True):
@@ -2327,78 +2634,96 @@ def render_overall_issues(data):
         pay_vendor_col = get_col(pay_raw, ['Vendor Name', 'VendorName'])
         ops_raw = filter_df_by_user_vendors(ops_raw, ops_vendor_col) if ops_vendor_col else ops_raw.iloc[0:0].copy()
         pay_raw = filter_df_by_user_vendors(pay_raw, pay_vendor_col) if pay_vendor_col else pay_raw.iloc[0:0].copy()
+    return ops_raw, pay_raw
 
-    if ops_raw.empty and pay_raw.empty:
-        st.info("No operations or payment records are available yet. Upload the relevant files and process the data first.")
-        return
+def get_overall_issue_date_bounds(ops_raw, pay_raw):
+    available = []
+    for frame, candidates in [(ops_raw, ['MCD_StartDate', 'Date']), (pay_raw, ['Base Date', 'Invoice Date'])]:
+        date_col = get_col(frame, candidates)
+        if date_col and not frame.empty:
+            parsed = pd.to_datetime(frame[date_col], dayfirst=True, errors='coerce').dropna()
+            if not parsed.empty:
+                available.extend([parsed.min().date(), parsed.max().date()])
+    if available:
+        return min(available), max(available)
+    today = get_ist_now().date()
+    return today - datetime.timedelta(days=13), today
 
-    summary = build_overall_issues_summary(ops_raw, pay_raw)
-    if summary.empty:
-        st.info("No RO-wise issue rows are available in the processed data.")
-        return
+def filter_overall_issue_frames(ops_raw, pay_raw, start_date, end_date, selected_zone='ALL ZONES'):
+    def apply_filters(frame, date_candidates):
+        result = frame.copy()
+        if result.empty:
+            return result
+        date_col = get_col(result, date_candidates)
+        if date_col:
+            parsed = pd.to_datetime(result[date_col], dayfirst=True, errors='coerce')
+            mask = parsed.dt.date.between(start_date, end_date)
+            result = result[mask].copy()
+        if selected_zone != 'ALL ZONES':
+            zone_col = get_col(result, ['Zone'])
+            if zone_col:
+                result = result[result[zone_col].fillna('UNKNOWN ZONE').astype(str).str.strip().str.upper().eq(selected_zone.upper())].copy()
+            else:
+                result = result.iloc[0:0].copy()
+        return result
+    return apply_filters(ops_raw, ['MCD_StartDate', 'Date']), apply_filters(pay_raw, ['Base Date', 'Invoice Date'])
 
-    totals = {
-        col: int(summary[col].sum())
-        for col in ['Late Departures', 'Late Arrivals', 'Draft Bills', 'Finance Pending', 'Other Pending']
+def get_overall_issue_query_url():
+    try:
+        return str(st.context.url)
+    except Exception:
+        return ''
+
+def render_overall_issue_new_tab_link(ro, zone, issue_type, start_date, end_date):
+    link_id = 'overall-issues-open-raw'
+    params = {
+        'issues_raw': '1', 'issues_ro': str(ro), 'issues_zone': str(zone),
+        'issues_type': str(issue_type), 'issues_start': start_date.isoformat(),
+        'issues_end': end_date.isoformat()
     }
-    metric_cols = st.columns(5)
-    for metric_col, label in zip(metric_cols, totals):
-        metric_col.metric(label, f"{totals[label]:,}")
+    params_json = json.dumps(params, ensure_ascii=True).replace('</', '<\\/')
+    base_json = json.dumps(get_overall_issue_query_url(), ensure_ascii=True).replace('</', '<\\/')
+    link_html = f'''<a id="{link_id}" href="#" target="_blank" rel="noopener noreferrer">Open selected raw data in a new tab ↗</a>
+<script>
+(() => {{
+  const link = document.getElementById({json.dumps(link_id)});
+  const candidates = [{base_json}, document.referrer];
+  let target = null;
+  for (const candidate of candidates) {{
+    try {{ if (candidate) {{ target = new URL(candidate); break; }} }} catch (e) {{}}
+  }}
+  if (!target) {{ link.textContent = 'Open this app in a browser tab to view raw records ↗'; link.removeAttribute('href'); return; }}
+  const values = {params_json};
+  for (const [key, value] of Object.entries(values)) target.searchParams.set(key, value);
+  link.href = target.toString();
+}})();
+</script>
+<style>
+body {{ margin: 0; padding: 5px 0; font: 600 14px Arial, sans-serif; }}
+a {{ display:inline-block; padding:11px 18px; border-radius:10px; color:#f5fbff; text-decoration:none; background:linear-gradient(115deg,#155e75,#1d4ed8); border:1px solid #4b9da8; }}
+a:hover {{ filter:brightness(1.12); }}
+</style>'''
+    st.components.v1.html(link_html, height=52, scrolling=False)
 
-    st.markdown("### Meeting summary by RO")
-    st.caption("Select ‘Open Raw’ on an RO row to see only the records behind its issue counts.")
-    summary_view = summary.copy()
-    summary_view.insert(0, 'Open Raw', False)
-    edited_summary = st.data_editor(
-        summary_view,
-        column_config={
-            'Open Raw': st.column_config.CheckboxColumn('Open Raw', help='Show this RO’s raw issue records'),
-            'Meeting Summary': st.column_config.TextColumn('Meeting Summary', width='large')
-        },
-        disabled=[c for c in summary_view.columns if c != 'Open Raw'],
-        hide_index=True,
-        use_container_width=True,
-        key='overall_issues_editor'
-    )
-    selected_rows = edited_summary[edited_summary['Open Raw'] == True].index.tolist()
-    if not selected_rows:
-        return
-
-    selected_idx = selected_rows[0]
-    selected_ro = str(summary.loc[selected_idx, 'RO Name'])
-    st.markdown(f"### Raw records · {selected_ro}")
-    st.info(summary.loc[selected_idx, 'Meeting Summary'])
-    issue_type = st.radio(
-        "Choose an issue to open its raw data",
-        ['Late departures', 'Late arrivals', 'Draft bills', 'Finance pending', 'Other pending bills'],
-        horizontal=True,
-        key='overall_issues_type'
-    )
-
+def get_overall_issue_raw_records(ops_raw, pay_raw, ro, issue_type):
     if issue_type in ['Late departures', 'Late arrivals']:
         ro_col = get_col(ops_raw, ['Origin RO', 'RO Name', 'RO'])
-        status_candidates = ['Dep_Status'] if issue_type == 'Late departures' else ['Arr_Status']
-        status_col = get_col(ops_raw, status_candidates)
+        status_col = get_col(ops_raw, ['Dep_Status'] if issue_type == 'Late departures' else ['Arr_Status'])
         remark_col = get_col(ops_raw, ['Remark'])
-        if ro_col:
-            raw = ops_raw[_clean_ro_series(ops_raw[ro_col]).eq(selected_ro)].copy()
-        else:
-            raw = pd.DataFrame()
+        raw = ops_raw[_clean_ro_series(ops_raw[ro_col]).eq(ro)].copy() if ro_col else pd.DataFrame()
         status_source = raw[status_col].fillna('').astype(str) if status_col and status_col in raw.columns else (raw[remark_col].fillna('').astype(str) if remark_col and remark_col in raw.columns else pd.Series('', index=raw.index))
         phrase = 'Late Dep' if issue_type == 'Late departures' else 'Late Arr'
         raw = raw[status_source.str.contains(phrase, case=False, na=False)].copy()
         preferred = [
             'MCD_StartDate', 'Origin RO', 'Zone', 'Route Path', 'Legwise', 'Legs',
-            'Scheduled Departure Time', 'Actual Departure Time', 'Dep_Status',
-            'Scheduled Arrival Time', 'Actual Arrival Time', 'Arr_Status'
+            'CD_FromBranch', 'CD_ToBranch', 'Scheduled Departure Time',
+            'Actual Departure Time', 'Dep_Status', 'Scheduled Arrival Time',
+            'Actual Arrival Time', 'Arr_Status', 'MasterCDNo'
         ]
     else:
         ro_col = get_col(pay_raw, ['RO Name', 'Origin RO', 'RO'])
         bucket_col = get_col(pay_raw, ['Department Bucket'])
-        if ro_col:
-            raw = pay_raw[_clean_ro_series(pay_raw[ro_col]).eq(selected_ro)].copy()
-        else:
-            raw = pd.DataFrame()
+        raw = pay_raw[_clean_ro_series(pay_raw[ro_col]).eq(ro)].copy() if ro_col else pd.DataFrame()
         bucket = raw[bucket_col].fillna('').astype(str).str.upper() if bucket_col and bucket_col in raw.columns else pd.Series('', index=raw.index)
         draft_mask = bucket.str.contains('DRAFT|USER', regex=True, na=False)
         finance_mask = bucket.str.contains('FINANCE', regex=False, na=False)
@@ -2412,21 +2737,178 @@ def render_overall_issues(data):
             'Invoice Id', 'RO Name', 'Vendor Name', 'Amount', 'Department Bucket',
             'Status', 'Pending With', 'Days Pending', 'Aging Bucket', 'Revert Remarks'
         ]
+    columns = [col for col in preferred if col in raw.columns]
+    return raw[columns].fillna('')
 
-    raw_cols = [c for c in preferred if c in raw.columns]
-    raw = raw[raw_cols].fillna('')
+def render_overall_issue_raw_page(data, query):
+    st.markdown("## Issue detail records")
+    ops_raw, pay_raw = get_overall_issue_frames(data)
+    default_start, default_end = get_overall_issue_date_bounds(ops_raw, pay_raw)
+    try:
+        start_date = datetime.date.fromisoformat(query.get('issues_start', ''))
+        end_date = datetime.date.fromisoformat(query.get('issues_end', ''))
+    except Exception:
+        start_date, end_date = default_start, default_end
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+    zone = query.get('issues_zone', 'ALL ZONES') or 'ALL ZONES'
+    issue_type = query.get('issues_type', 'Late departures') or 'Late departures'
+    valid_types = ['Late departures', 'Late arrivals', 'Draft bills', 'Finance pending', 'Other pending bills']
+    if issue_type not in valid_types:
+        issue_type = 'Late departures'
+    ro = _clean_ro_series(pd.Series([query.get('issues_ro', '')])).iloc[0]
+    ops_view, pay_view = filter_overall_issue_frames(ops_raw, pay_raw, start_date, end_date, zone)
+    raw = get_overall_issue_raw_records(ops_view, pay_view, ro, issue_type)
     if raw.empty:
-        st.info(f"No {issue_type.lower()} records were found for {selected_ro}.")
+        st.info(f"No {issue_type.lower()} records for {ro} in {zone}, {start_date:%d %b}–{end_date:%d %b %Y}.")
         return
-    st.dataframe(raw, use_container_width=True, hide_index=True, height=380)
-    filename_ro = re.sub(r'[^A-Za-z0-9_-]+', '_', selected_ro).strip('_') or 'RO'
-    st.download_button(
-        "⬇️ Download these focused raw records (CSV)",
-        data=raw.to_csv(index=False).encode('utf-8-sig'),
-        file_name=f"{filename_ro}_{re.sub(r'[^A-Za-z0-9]+', '_', issue_type)}.csv",
-        mime='text/csv',
-        key='overall_issues_raw_download'
+    st.caption(f"{ro} · {zone} · {start_date:%d %b %Y} to {end_date:%d %b %Y}")
+    st.dataframe(raw, use_container_width=True, hide_index=True, height=560)
+    safe_ro = re.sub(r'[^A-Za-z0-9_-]+', '_', ro).strip('_') or 'RO'
+    safe_issue = re.sub(r'[^A-Za-z0-9_-]+', '_', issue_type).strip('_')
+    raw_bytes = build_formatted_excel_bytes(
+        raw, 'Raw Records', f"{safe_issue} · {ro} · {zone}",
+        width_overrides={'Route Path': 34, 'Legs': 24, 'Vendor Name': 28, 'Revert Remarks': 38}
     )
+    st.download_button(
+        "📥 Download focused raw records (formatted Excel)",
+        data=raw_bytes,
+        file_name=f"{safe_ro}_{safe_issue}_{start_date:%Y%m%d}_{end_date:%Y%m%d}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary"
+    )
+
+def render_overall_issues(data):
+    st.markdown("## ⚠️ Overall Issues")
+    st.caption("RO/zone performance by period · rates with counts · click through to focused raw data")
+    ops_all, pay_all = get_overall_issue_frames(data)
+    if ops_all.empty and pay_all.empty:
+        st.info("No operations or payment records are available yet. Upload the relevant files and process the data first.")
+        return
+
+    today = get_ist_now().date()
+    all_start, all_end = get_overall_issue_date_bounds(ops_all, pay_all)
+    date_state_key = 'overall_issues_date_range'
+    if date_state_key not in st.session_state:
+        st.session_state[date_state_key] = (all_start, all_end)
+    st.markdown("### Select a reporting window")
+    quick_previous, quick_current, quick_all = st.columns([1, 1, 1.4])
+    if quick_previous.button("◀ Previous 7 Days", use_container_width=True, help="Seven days before the current seven-day window"):
+        st.session_state[date_state_key] = (today - datetime.timedelta(days=13), today - datetime.timedelta(days=7))
+        st.rerun()
+    if quick_current.button("Current 7 Days ▶", use_container_width=True, help="Today and the previous six calendar days"):
+        st.session_state[date_state_key] = (today - datetime.timedelta(days=6), today)
+        st.rerun()
+    if quick_all.button("All Available Days", use_container_width=True):
+        st.session_state[date_state_key] = (all_start, all_end)
+        st.rerun()
+
+    all_zones = set()
+    for frame in [ops_all, pay_all]:
+        zone_col = get_col(frame, ['Zone'])
+        if zone_col:
+            all_zones.update(frame[zone_col].dropna().astype(str).str.strip().str.upper().tolist())
+    zone_options = ['ALL ZONES'] + sorted(z for z in all_zones if z and z not in ('NAN', 'NONE'))
+    filter_zone_col, filter_date_col = st.columns([1, 2])
+    selected_zone = filter_zone_col.selectbox('Zone', zone_options, key='overall_issues_zone')
+    selected_dates = filter_date_col.date_input(
+        'Duration', value=st.session_state[date_state_key], key=date_state_key,
+        help='Operations use MCD start date; payment bills use their Base Date.'
+    )
+    if isinstance(selected_dates, (list, tuple)) and len(selected_dates) == 2:
+        start_date, end_date = selected_dates
+    else:
+        start_date = end_date = selected_dates
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+    if st.session_state.get(date_state_key) != (start_date, end_date):
+        st.session_state[date_state_key] = (start_date, end_date)
+    st.caption(f"Showing {start_date:%d %b %Y} to {end_date:%d %b %Y}. Operations use MCD start date; payments use Base Date.")
+
+    ops_view, pay_view = filter_overall_issue_frames(ops_all, pay_all, start_date, end_date, selected_zone)
+    summary = build_overall_issues_summary(ops_view, pay_view)
+    if summary.empty:
+        st.info("No records match this zone and duration.")
+        return
+
+    def status_count(frame, status_candidates, remark_phrase):
+        status_col = get_col(frame, status_candidates)
+        remark_col = get_col(frame, ['Remark'])
+        source = frame[status_col].fillna('').astype(str) if status_col else (frame[remark_col].fillna('').astype(str) if remark_col else pd.Series('', index=frame.index))
+        return int(source.str.contains(remark_phrase, case=False, na=False).sum())
+
+    trips = len(ops_view)
+    bills = len(pay_view)
+    late_dep_count = status_count(ops_view, ['Dep_Status'], 'Late Dep')
+    late_arr_count = status_count(ops_view, ['Arr_Status'], 'Late Arr')
+    bucket_col = get_col(pay_view, ['Department Bucket'])
+    bucket = pay_view[bucket_col].fillna('').astype(str).str.upper() if bucket_col else pd.Series('', index=pay_view.index)
+    draft_count = int(bucket.str.contains('DRAFT|USER', regex=True, na=False).sum())
+    finance_count = int(bucket.str.contains('FINANCE', regex=False, na=False).sum())
+    pending_count = int((bucket.ne('') & ~bucket.str.contains('DRAFT|USER|FINANCE', regex=True, na=False)).sum())
+
+    metric_specs = [
+        ('Late Departures', late_dep_count, trips), ('Late Arrivals', late_arr_count, trips),
+        ('Draft Bills', draft_count, bills), ('Finance Pending', finance_count, bills),
+        ('Other Pending', pending_count, bills)
+    ]
+    metric_cols = st.columns(5)
+    for metric_col, (label, count, total) in zip(metric_cols, metric_specs):
+        pct = (count / total * 100) if total else 0
+        metric_col.metric(f"{label} · {pct:.1f}%", f"{count:,}", help=f"{count:,} of {total:,} {'trips' if total == trips else 'bills'}")
+
+    st.markdown("### RO-wise exception rates")
+    st.caption("Each issue cell shows percentage followed by count. Green is below 50%; red is 50% or higher.")
+    pct_cols = ['Late Departures', 'Late Arrivals', 'Draft Bills', 'Finance Pending', 'Other Pending']
+    def shade_issue_rate(value):
+        pct = parse_pct_from_str(value)
+        if pct is None:
+            return ''
+        if pct >= 50:
+            return 'background-color: rgba(248, 113, 113, .25); color: #fecaca; font-weight: 700;'
+        return 'background-color: rgba(52, 211, 153, .20); color: #bbf7d0; font-weight: 700;'
+    summary_view = summary.copy()
+    summary_view.insert(0, 'Open Raw', False)
+    styled_summary = summary_view.style.applymap(shade_issue_rate, subset=pct_cols)
+    editor_key = f"overall_issues_editor_{selected_zone}_{start_date.isoformat()}_{end_date.isoformat()}"
+    edited_summary = st.data_editor(
+        styled_summary,
+        column_config={
+            'Open Raw': st.column_config.CheckboxColumn('Select RO', help='Select an RO to open raw records in another tab'),
+            'RO Name': st.column_config.TextColumn('RO', width='small'),
+            'Zone': st.column_config.TextColumn('Zone', width='small')
+        },
+        disabled=[col for col in summary_view.columns if col != 'Open Raw'],
+        hide_index=True,
+        use_container_width=True,
+        key=editor_key
+    )
+    summary_bytes = build_formatted_excel_bytes(
+        summary, 'Issue Summary', f"Overall Issues · {selected_zone} · {start_date:%d %b %Y} to {end_date:%d %b %Y}",
+        percent_columns=pct_cols,
+        width_overrides={'RO Name': 17, 'Zone': 16, 'Total Trips': 14, 'Total Bills': 14}
+    )
+    st.download_button(
+        "📊 Download Formatted RO Summary (Excel)",
+        data=summary_bytes,
+        file_name=f"Overall_Issues_{start_date:%Y%m%d}_{end_date:%Y%m%d}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+    selected_rows = edited_summary[edited_summary['Open Raw'] == True].index.tolist()
+    if not selected_rows:
+        return
+    selected_idx = selected_rows[0]
+    selected_ro = str(summary.loc[selected_idx, 'RO Name'])
+    selected_row_zone = str(summary.loc[selected_idx, 'Zone'])
+    st.markdown(f"### Deep dive · {selected_ro} · {selected_row_zone}")
+    issue_type = st.radio(
+        'Choose the raw issue group',
+        ['Late departures', 'Late arrivals', 'Draft bills', 'Finance pending', 'Other pending bills'],
+        horizontal=True,
+        key='overall_issues_type'
+    )
+    render_overall_issue_new_tab_link(selected_ro, selected_row_zone, issue_type, start_date, end_date)
 
 
 # -------------------------------------------------------------
@@ -2435,7 +2917,10 @@ def render_overall_issues(data):
 if choice == "🧭 Scheduled Route Master":
     render_scheduled_route_master(data)
 elif choice == "⚠️ Overall Issues":
-    render_overall_issues(data)
+    if overall_issue_raw_view:
+        render_overall_issue_raw_page(data, overall_issue_query)
+    else:
+        render_overall_issues(data)
 elif choice == "📊 Operations Summary":
     st.markdown("<h2>Operations Exception Summary</h2>", unsafe_allow_html=True)
     
