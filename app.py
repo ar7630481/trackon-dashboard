@@ -880,16 +880,37 @@ def _lookup_key(value):
         return ''
     return re.sub(r'[^A-Z0-9]+', '', str(value).replace('\u00a0', ' ').strip().upper())
 
-def get_route_lookup_signature():
-    keys = ['PAYMENT', 'BRANCH_MASTER', 'LEGWISE', 'ROUTE_MASTER', 'MCD_VENDOR', 'CPK_UTIL', 'ROUTE_LOOKUP']
-    signature = []
-    for key in keys:
+def get_route_excel_sources():
+    """Return uploaded Excel workbooks in lookup-first order, including extra uploaded files."""
+    sources = []
+    seen_paths = set()
+    preferred_keys = ['BRANCH_MASTER', 'LEGWISE', 'MCD_VENDOR', 'ROUTE_MASTER', 'PAYMENT', 'CPK_UTIL', 'ROUTE_LOOKUP']
+    for key in preferred_keys:
         path = FILE_MAP.get(key)
-        if path and os.path.exists(path):
+        if path and os.path.exists(path) and path.lower().endswith(('.xlsx', '.xlsm', '.xls')):
+            normalized_path = os.path.normcase(os.path.abspath(path))
+            if normalized_path not in seen_paths:
+                sources.append((key, path))
+                seen_paths.add(normalized_path)
+    try:
+        for filename in sorted(os.listdir(DATA_DIR)):
+            path = os.path.join(DATA_DIR, filename)
+            if not os.path.isfile(path) or not path.lower().endswith(('.xlsx', '.xlsm', '.xls')):
+                continue
+            normalized_path = os.path.normcase(os.path.abspath(path))
+            if normalized_path not in seen_paths:
+                sources.append((os.path.splitext(filename)[0], path))
+                seen_paths.add(normalized_path)
+    except Exception as exc:
+        logging.warning(f"Uploaded workbook discovery warning: {exc}")
+    return sources
+
+def get_route_lookup_signature():
+    signature = []
+    for key, path in get_route_excel_sources():
+        if os.path.exists(path):
             stat = os.stat(path)
             signature.append((key, stat.st_mtime_ns, stat.st_size))
-        else:
-            signature.append((key, None, None))
     return tuple(signature)
 
 @st.cache_data(show_spinner=False)
@@ -910,21 +931,20 @@ def get_route_branch_lookup_data(file_signature):
                 return match
         return None
 
-    branch_path = FILE_MAP.get('BRANCH_MASTER')
-    if branch_path and os.path.exists(branch_path):
+    for source_key, branch_path in get_route_excel_sources():
         try:
             workbook = pd.ExcelFile(branch_path)
             for sheet_name in workbook.sheet_names:
                 branches = workbook.parse(sheet_name)
                 branches.columns = branches.columns.astype(str).str.strip()
                 code_col = find_column(branches, ['RPTBranchcode', 'BranchCode', 'Branch Code', 'Route Branch Code'])
-                if not code_col:
+                ro_col = find_column(branches, ['RPTRO', 'RPTROCode', 'RO Name', 'RO Code', 'RO', 'Regional Office', 'Regional Office Name', 'RO Description'])
+                if not code_col or not ro_col:
                     continue
                 name_col = find_column(branches, [
                     'RPTBranchName', 'RPTBranchDescription', 'RPTBranchDesc',
-                    'BranchName', 'Branch Name', 'Branch Description', 'Branch Desc', 'Branch Long Name'
+                    'BranchName', 'Branch Name', 'Branch Description', 'Branch Desc', 'Branch Long Name', 'Branch Short Name'
                 ])
-                ro_col = find_column(branches, ['RPTRO', 'RO Name', 'RO', 'Regional Office', 'RO Description'])
                 for _, row in branches.iterrows():
                     code = _lookup_key(row.get(code_col, ''))
                     if not code:
@@ -939,16 +959,15 @@ def get_route_branch_lookup_data(file_signature):
                     branch_by_code[code] = record
                     if branch_name:
                         branch_by_name[_lookup_key(branch_name)] = record
-                branch_source = f"RO & Branch List · {sheet_name}"
+                source_label = 'RO & Branch List' if source_key == 'BRANCH_MASTER' else source_key
+                branch_source = f"{source_label} · {sheet_name}"
+                break
+            if branch_source:
                 break
         except Exception as exc:
             logging.warning(f"Branch-list lookup warning: {exc}")
 
-    candidate_keys = ['PAYMENT', 'LEGWISE', 'MCD_VENDOR', 'ROUTE_MASTER', 'BRANCH_MASTER', 'CPK_UTIL', 'ROUTE_LOOKUP']
-    for key in candidate_keys:
-        path = FILE_MAP.get(key)
-        if not path or not os.path.exists(path):
-            continue
+    for key, path in get_route_excel_sources():
         try:
             workbook = pd.ExcelFile(path)
             ondemand_sheets = [
@@ -967,6 +986,8 @@ def get_route_branch_lookup_data(file_signature):
                     'Dest', 'Dest Branch', 'Dest Branch Code', 'To Branch', 'To Branch Code', 'ToBranch'
                 ])
                 route_col = find_column(frame, ['Route Path', 'RoutePath', 'Route', 'Route Name'])
+                leg_col = find_column(frame, ['Legwise', 'Leg', 'Leg No', 'Leg Number', 'Leg Name'])
+                leg_path_col = find_column(frame, ['Legs', 'Leg Path', 'Leg Route', 'Leg Description'])
                 if not origin_col or not destination_col:
                     continue
                 for _, row in frame.iterrows():
@@ -980,6 +1001,11 @@ def get_route_branch_lookup_data(file_signature):
                         route_key = _lookup_key(row.get(route_col, ''))
                         if route_key:
                             ondemand_by_route.setdefault(route_key, (origin, destination))
+                            for leg_identifier_col in [leg_col, leg_path_col]:
+                                if leg_identifier_col:
+                                    leg_identifier = _lookup_key(row.get(leg_identifier_col, ''))
+                                    if leg_identifier:
+                                        ondemand_by_route.setdefault(route_key + leg_identifier, (origin, destination))
                 ondemand_source = f"{key} · {sheet_name}"
                 break
             if ondemand_source:
@@ -991,11 +1017,11 @@ def get_route_branch_lookup_data(file_signature):
 
 @st.cache_data(show_spinner=False)
 def get_scheduled_route_master(file_signature=()):
-    """Load the supplied National/Zonal schedules and enrich endpoints from the uploaded lookups."""
+    """Resolve each schedule row's own leg endpoints, then map both branches and ROs."""
     output_cols = [
-        'RO', 'Origin', 'Origin Branch', 'Destination', 'Destination Branch',
+        'RO', 'Origin', 'Origin Branch', 'Destination', 'Destination Branch', 'Destination RO',
         'Route Path', 'Legwise', 'Legs', 'From Branch', 'To Branch',
-        'Scheduled Departure from Any Branch', 'Scheduled Arrival in Any Branch',
+        'Scheduled Departure Time', 'Scheduled Arrival Time', 'Scheduled Driving Hours',
         'Scheduled Halting', 'Scheduled TAT Till Destination'
     ]
     try:
@@ -1017,26 +1043,51 @@ def get_scheduled_route_master(file_signature=()):
             key = _lookup_key(value)
             return branch_by_code.get(key) or branch_by_name.get(key) or {}
 
-        route_nodes = df['Route Path'].apply(lambda route: [part.strip() for part in str(route).split('-') if part.strip()])
         origin_codes, destination_codes = [], []
-        for route, nodes in zip(df['Route Path'], route_nodes):
-            origin = nodes[0] if nodes else ''
-            destination = nodes[-1] if nodes else ''
-            lookup = ondemand_by_route.get(_lookup_key(route)) or ondemand_by_pair.get((_lookup_key(origin), _lookup_key(destination)))
-            origin_codes.append(lookup[0] if lookup else origin)
-            destination_codes.append(lookup[1] if lookup else destination)
+        for _, row in df.iterrows():
+            route = str(row.get('Route Path', '')).strip()
+            route_nodes = [part.strip() for part in route.split('-') if part.strip()]
+            leg_text = str(row.get('Legs', '')).strip()
+            leg_parts = re.split(r'\s+to\s+', leg_text, maxsplit=1, flags=re.IGNORECASE)
+            origin = leg_parts[0].strip() if len(leg_parts) == 2 else ''
+            destination = leg_parts[1].strip() if len(leg_parts) == 2 else ''
+
+            # The Legs column is authoritative: each row represents one leg, not the full route.
+            if not origin or not destination:
+                leg_match = re.search(r'(\d+)', str(row.get('Legwise', '')))
+                leg_index = max(int(leg_match.group(1)) - 1, 0) if leg_match else 0
+                if leg_index + 1 < len(route_nodes):
+                    origin, destination = route_nodes[leg_index], route_nodes[leg_index + 1]
+                elif len(route_nodes) >= 2:
+                    origin, destination = route_nodes[0], route_nodes[-1]
+
+            route_key = _lookup_key(route)
+            leg_key = _lookup_key(row.get('Legwise', ''))
+            leg_path_key = _lookup_key(leg_text)
+            leg_lookup = (
+                ondemand_by_route.get(route_key + leg_key)
+                or ondemand_by_route.get(route_key + leg_path_key)
+                or ondemand_by_pair.get((_lookup_key(origin), _lookup_key(destination)))
+            )
+            if not leg_lookup and len(route_nodes) <= 2:
+                leg_lookup = ondemand_by_route.get(route_key)
+            if leg_lookup:
+                origin, destination = leg_lookup
+            origin_codes.append(origin)
+            destination_codes.append(destination)
         df['Origin'] = origin_codes
         df['Destination'] = destination_codes
         origin_records = [branch_record(value) for value in origin_codes]
         destination_records = [branch_record(value) for value in destination_codes]
         df['RO'] = [record.get('ro', '') or 'RO NOT MAPPED' for record in origin_records]
+        df['Destination RO'] = [record.get('ro', '') or 'RO NOT MAPPED' for record in destination_records]
         df['Origin Branch'] = [record.get('name', '') or record.get('code', '') or str(value) for record, value in zip(origin_records, origin_codes)]
         df['Destination Branch'] = [record.get('name', '') or record.get('code', '') or str(value) for record, value in zip(destination_records, destination_codes)]
-        branch_parts = df['Legs'].str.split(r'\s+to\s+', n=1, expand=True)
-        df['From Branch'] = branch_parts[0].fillna('').str.strip().str.upper()
-        df['To Branch'] = branch_parts[1].fillna('').str.strip().str.upper() if branch_parts.shape[1] > 1 else ''
-        df['Scheduled Departure from Any Branch'] = df['Scheduled Departure Time'].replace('', '-')
-        df['Scheduled Arrival in Any Branch'] = df['Given Driving Hours'].replace('', '-')
+        df['From Branch'] = pd.Series(origin_codes, index=df.index).fillna('').str.strip().str.upper()
+        df['To Branch'] = pd.Series(destination_codes, index=df.index).fillna('').str.strip().str.upper()
+        df['Scheduled Departure Time'] = df['Scheduled Departure Time'].replace('', '-')
+        df['Scheduled Arrival Time'] = df['Scheduled Arrival Time'].replace('', '-')
+        df['Scheduled Driving Hours'] = df['Given Driving Hours'].replace('', '-')
         df['Scheduled Halting'] = df['Scheduled Halting'].replace('', '-')
         df['Scheduled TAT Till Destination'] = df['Scheduled TAT Till Destination'].replace('', '-')
         result = df.reindex(columns=output_cols).fillna('')
@@ -1076,7 +1127,7 @@ tr {{ break-inside: avoid; page-break-inside: avoid; }}
 {table_html}
 </body></html>'''
 
-def build_formatted_excel_bytes(df, sheet_name, report_title, percent_columns=None, width_overrides=None):
+def build_formatted_excel_bytes(df, sheet_name, report_title, percent_columns=None, width_overrides=None, paper_size=8, landscape=True):
     """Write a compact, styled Excel table with filters, frozen headers, and print setup."""
     buffer = io.BytesIO()
     df_out = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
@@ -1138,8 +1189,8 @@ def build_formatted_excel_bytes(df, sheet_name, report_title, percent_columns=No
         last_data_row = len(df_out) + 2
         worksheet.autofilter(2, 0, last_data_row, len(df_out.columns) - 1)
         worksheet.freeze_panes(3, 0)
-        worksheet.set_landscape()
-        worksheet.set_paper(8)  # A3 landscape for the wide branchwise schedule.
+        worksheet.set_landscape() if landscape else worksheet.set_portrait()
+        worksheet.set_paper(paper_size)
         worksheet.fit_to_pages(1, 0)
         worksheet.repeat_rows(2)
         worksheet.set_margins(0.25, 0.25, 0.4, 0.4)
@@ -2549,7 +2600,7 @@ def render_duration_selector(df_raw, date_col_name, key_prefix):
 
 def render_scheduled_route_master(data):
     st.markdown("## 🧭 Scheduled Route Master")
-    st.caption("National and zonal linehaul schedules · Branchwise view · Print-ready for meetings")
+    st.caption("Each row is mapped to its own leg origin, destination, branch names, and ROs · Download a print-ready Excel poster")
     df_master = data.get('Scheduled_Route_Master', pd.DataFrame()).copy()
     if df_master.empty:
         st.warning("The supplied scheduled route table could not be loaded.")
@@ -2557,9 +2608,13 @@ def render_scheduled_route_master(data):
 
     lookup_info = df_master.attrs
     if lookup_info.get('ondemand_source'):
-        st.caption(f"Origin/Destination source: {lookup_info.get('ondemand_source')} · RO and branch labels: {lookup_info.get('branch_source') or 'Branch list loaded'}")
+        st.caption(f"OnDemand lookup: {lookup_info.get('ondemand_source')} · RO and branch labels: {lookup_info.get('branch_source') or 'Branch list loaded'}")
     else:
-        st.warning("OnDemand worksheet was not found in the uploaded Excel files. Endpoint codes are being taken from Route Path until the OnDemand workbook is available.")
+        st.info("OnDemand tab was not found. Each row still uses the origin and destination from its own Legs entry, with branch/RO labels looked up from the RO & Branch List.")
+    unmapped_count = int(df_master.get('RO', pd.Series(dtype=str)).astype(str).str.upper().eq('RO NOT MAPPED').sum())
+    unmapped_count += int(df_master.get('Destination RO', pd.Series(dtype=str)).astype(str).str.upper().eq('RO NOT MAPPED').sum())
+    if unmapped_count:
+        st.warning(f"{unmapped_count} leg endpoints have no matching RO in the uploaded branch list. Check the branch codes or the RO & Branch List workbook.")
 
     branch_columns = ['From Branch', 'To Branch', 'Origin', 'Origin Branch', 'Destination', 'Destination Branch']
     branch_values = sorted({
@@ -2583,48 +2638,76 @@ def render_scheduled_route_master(data):
             lambda col: col.str.contains(q, case=False, regex=False, na=False)
         ).any(axis=1)].copy()
 
-    display_cols = [
-        'RO', 'Origin', 'Origin Branch', 'Destination', 'Destination Branch',
-        'Route Path', 'Legwise', 'Legs', 'Scheduled Departure from Any Branch',
-        'Scheduled Arrival in Any Branch', 'Scheduled Halting',
-        'Scheduled TAT Till Destination'
-    ]
-    visible = visible.reindex(columns=display_cols).fillna('')
-    st.info("In the ‘Scheduled Arrival in Any Branch’ column, the value is Given Driving Hours, as requested.")
-    st.dataframe(visible, use_container_width=True, hide_index=True, height=440)
-
     branch_label = selected_branch if selected_branch != "ALL BRANCHES" else "All Branches"
-    printable_html = build_print_ready_schedule_html(visible, branch_label)
     safe_branch = re.sub(r'[^A-Za-z0-9_-]+', '_', branch_label).strip('_') or 'all_branches'
-    excel_bytes = build_formatted_excel_bytes(
-        visible, 'Route Schedule', f"Scheduled Route Master · {branch_label}",
-        width_overrides={
-            'RO': 16, 'Origin': 16, 'Origin Branch': 22, 'Destination': 18,
-            'Destination Branch': 22, 'Route Path': 36, 'Legs': 24,
-            'Scheduled Departure from Any Branch': 26,
-            'Scheduled Arrival in Any Branch': 24, 'Scheduled Halting': 22,
-            'Scheduled TAT Till Destination': 24
+
+    poster_specs = [
+        {
+            'key': 'departure', 'tab': '🚚 Departure Poster', 'label': 'Scheduled Departure Poster',
+            'columns': ['RO', 'Origin Branch', 'Scheduled Departure Time'],
+            'scope_columns': ['Origin', 'Origin Branch', 'From Branch'],
+            'caption': 'Origin branch, its RO, and scheduled departure time only.',
+            'widths': {'Origin RO': 20, 'Origin Branch': 34, 'Scheduled Departure Time': 28},
+            'paper_size': 9, 'landscape': False
+        },
+        {
+            'key': 'arrival', 'tab': '🏁 Arrival Poster', 'label': 'Scheduled Arrival Poster',
+            'columns': ['Origin Branch', 'RO', 'Destination Branch', 'Destination RO', 'Scheduled Arrival Time'],
+            'scope_columns': ['Destination', 'Destination Branch', 'To Branch'],
+            'caption': 'Origin and destination branches with both ROs, plus scheduled arrival time. No departure or halting fields.',
+            'widths': {'Origin Branch': 28, 'Origin RO': 19, 'Destination Branch': 30, 'Destination RO': 21, 'Scheduled Arrival Time': 27},
+            'paper_size': 8, 'landscape': True
+        },
+        {
+            'key': 'halting', 'tab': '⏱️ Halting Poster', 'label': 'Scheduled Halting Poster',
+            'columns': ['Origin Branch', 'RO', 'Destination Branch', 'Destination RO', 'Scheduled Arrival Time', 'Scheduled Halting'],
+            'scope_columns': ['Origin', 'Origin Branch', 'From Branch', 'Scheduled Halting'],
+            'caption': 'Branch/RO details, scheduled arrival time, and scheduled halting only. Departure time is excluded.',
+            'widths': {'Origin Branch': 26, 'Origin RO': 18, 'Destination Branch': 27, 'Destination RO': 20, 'Scheduled Arrival Time': 25, 'Scheduled Halting': 25},
+            'paper_size': 8, 'landscape': True
         }
-    )
-    download_col, print_col = st.columns(2)
-    download_col.download_button(
-        "📊 Download Formatted Excel",
-        data=excel_bytes,
-        file_name=f"Scheduled_Route_Master_{safe_branch}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-        type="primary"
-    )
-    print_col.download_button(
-        "🖨️ Download Print Sheet (Save as PDF)",
-        data=printable_html.encode('utf-8'),
-        file_name=f"Scheduled_Route_Master_{safe_branch}.html",
-        mime="text/html",
-        use_container_width=True,
-    )
-    with st.expander("Print preview", expanded=False):
-        st.components.v1.html(printable_html, height=780, scrolling=True)
-    st.caption("The print sheet is formatted for A3 landscape. Open the downloaded HTML file, then choose Print → Save as PDF.")
+    ]
+    poster_tabs = st.tabs([spec['tab'] for spec in poster_specs])
+    selected_key = _lookup_key(selected_branch)
+    for poster_tab, spec in zip(poster_tabs, poster_specs):
+        with poster_tab:
+            poster_source = visible.copy()
+            if selected_branch != 'ALL BRANCHES':
+                branch_mask = pd.Series(False, index=poster_source.index)
+                for col in spec['scope_columns']:
+                    if col in poster_source.columns:
+                        branch_mask |= poster_source[col].fillna('').astype(str).apply(_lookup_key).eq(selected_key)
+                poster_source = poster_source[branch_mask].copy()
+
+            poster = poster_source.reindex(columns=spec['columns']).fillna('')
+            poster = poster.rename(columns={'RO': 'Origin RO'})
+            st.caption(spec['caption'])
+            if poster.empty:
+                st.info(f"No {spec['label'].lower()} rows for {branch_label} with these filters.")
+                continue
+            st.dataframe(poster, use_container_width=True, hide_index=True, height=360)
+            poster_bytes = build_formatted_excel_bytes(
+                poster, spec['label'], f"{spec['label']} · {branch_label}",
+                width_overrides=spec['widths'], paper_size=spec['paper_size'], landscape=spec['landscape']
+            )
+            file_stem = f"Scheduled_{spec['key'].title()}_Poster_{safe_branch}"
+            st.download_button(
+                f"📥 Download {spec['label']} (Excel)",
+                data=poster_bytes,
+                file_name=f"{file_stem}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                type="primary",
+                key=f"schedule_poster_{spec['key']}_{safe_branch}"
+            )
+
+    master_columns = [
+        'RO', 'Origin', 'Origin Branch', 'Destination', 'Destination Branch', 'Destination RO',
+        'Route Path', 'Legwise', 'Legs', 'Scheduled Departure Time', 'Scheduled Arrival Time',
+        'Scheduled Driving Hours', 'Scheduled Halting', 'Scheduled TAT Till Destination'
+    ]
+    with st.expander("Full leg-wise route master preview", expanded=False):
+        st.dataframe(visible.reindex(columns=master_columns).fillna(''), use_container_width=True, hide_index=True, height=440)
 
 def get_overall_issue_frames(data):
     ops_raw = data.get('Legwise_Processed_Data', pd.DataFrame()).copy()
