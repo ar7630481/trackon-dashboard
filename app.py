@@ -1201,10 +1201,11 @@ def build_formatted_excel_bytes(df, sheet_name, report_title, percent_columns=No
 def _clean_ro_series(series):
     return series.fillna('RO NOT MAPPED').astype(str).str.strip().str.upper().replace({'': 'RO NOT MAPPED', 'NAN': 'RO NOT MAPPED', 'NONE': 'RO NOT MAPPED'})
 
-def build_overall_issues_summary(ops_raw, pay_raw):
-    """Create RO/zone rates in the same percentage-and-count style as Operations Summary."""
+def build_overall_issues_summary(ops_raw, pay_raw, cpk_raw=None):
+    """Create RO/zone issue and utilization rates in percentage-and-count form."""
     ops = ops_raw.copy() if isinstance(ops_raw, pd.DataFrame) else pd.DataFrame()
     pay = pay_raw.copy() if isinstance(pay_raw, pd.DataFrame) else pd.DataFrame()
+    cpk = cpk_raw.copy() if isinstance(cpk_raw, pd.DataFrame) else pd.DataFrame()
     ops_ro_col = get_col(ops, ['Origin RO', 'RO Name', 'RO'])
     pay_ro_col = get_col(pay, ['RO Name', 'Origin RO', 'RO'])
     ops_zone_col = get_col(ops, ['Zone'])
@@ -1232,26 +1233,66 @@ def build_overall_issues_summary(ops_raw, pay_raw):
             ops_rows[(ro, zone)] = row.to_dict()
 
     if pay_ro_col:
-        bucket_col = get_col(pay, ['Department Bucket'])
-        bucket = pay[bucket_col].fillna('').astype(str).str.upper() if bucket_col else pd.Series('', index=pay.index)
-        draft_mask = bucket.str.contains('DRAFT|USER', regex=True, na=False).astype(int)
-        finance_mask = bucket.str.contains('FINANCE', regex=False, na=False).astype(int)
-        other_pending_mask = (bucket.ne('') & ~bucket.str.contains('DRAFT|USER|FINANCE', regex=True, na=False)).astype(int)
+        status_col = get_col(pay, ['Status', 'Invoice Status'])
+        status = pay[status_col].fillna('').astype(str).str.strip().str.upper().str.replace(' ', '_', regex=False) if status_col else pd.Series('', index=pay.index)
+        draft_mask = status.eq('DRAFT').astype(int)
+        pending_mask = status.eq('PENDING').astype(int)
+        payment_pending_mask = status.isin(['PAYMENT_PENDING', 'PAID']).astype(int)
+        finance_pending_hold_mask = status.isin(['FINANCE_PENDING', 'FINANCE_HOLD']).astype(int)
+        known_mask = (draft_mask.astype(bool) | pending_mask.astype(bool) | payment_pending_mask.astype(bool) | finance_pending_hold_mask.astype(bool))
+        other_mask = (status.ne('') & ~known_mask).astype(int)
         pay_ro = _clean_ro_series(pay[pay_ro_col])
         pay_zone = pay[pay_zone_col].fillna('UNKNOWN ZONE').astype(str).str.strip().str.upper() if pay_zone_col else pd.Series('UNKNOWN ZONE', index=pay.index)
         pay_zone = pay_zone.replace({'': 'UNKNOWN ZONE', 'NAN': 'UNKNOWN ZONE', 'NONE': 'UNKNOWN ZONE'})
         grouped = pd.DataFrame({
             '_RO': pay_ro, '_ZONE': pay_zone, '_DRAFT': draft_mask,
-            '_FINANCE': finance_mask, '_OTHER_PENDING': other_pending_mask
+            '_PENDING': pending_mask, '_PAYMENT_PENDING_PAID': payment_pending_mask,
+            '_FINANCE_PENDING_HOLD': finance_pending_hold_mask, '_OTHER': other_mask
         }).groupby(['_RO', '_ZONE'], dropna=False).agg(
-            Total_Bills=('_RO', 'size'), Draft_Cnt=('_DRAFT', 'sum'),
-            Finance_Cnt=('_FINANCE', 'sum'), Other_Pending_Cnt=('_OTHER_PENDING', 'sum')
+            Total_Bills=('_RO', 'size'), Draft_Cnt=('_DRAFT', 'sum'), Pending_Cnt=('_PENDING', 'sum'),
+            Payment_Pending_Paid_Cnt=('_PAYMENT_PENDING_PAID', 'sum'),
+            Finance_Pending_Hold_Cnt=('_FINANCE_PENDING_HOLD', 'sum'), Other_Cnt=('_OTHER', 'sum')
         )
         for (ro, zone), row in grouped.iterrows():
             pay_rows[(ro, zone)] = row.to_dict()
 
+    utilization_rows = {}
+    if not cpk.empty:
+        try:
+            route_master = build_cpk_tables_from_raw(cpk).get('CPK_National_Zonal_UpDown', pd.DataFrame())
+            if not route_master.empty:
+                route_ro = get_col(route_master, ['VendorRO', 'RO_Clean', 'RO'])
+                route_zone = get_col(route_master, ['Zone'])
+                route_type = get_col(route_master, ['Type', 'Final_Type'])
+                util_col = get_col(route_master, ['Overall Util %', 'Utilization'])
+                route_name = get_col(route_master, ['Route (UP/DOWN)', 'Final_Route', 'Route'])
+                if route_ro and route_type and util_col:
+                    route_data = pd.DataFrame({
+                        '_RO': _clean_ro_series(route_master[route_ro]),
+                        '_ZONE': route_master[route_zone].fillna('UNKNOWN ZONE').astype(str).str.strip().str.upper() if route_zone else 'UNKNOWN ZONE',
+                        '_TYPE': route_master[route_type].fillna('').astype(str).str.strip().str.upper(),
+                        '_UTIL': pd.to_numeric(route_master[util_col], errors='coerce')
+                    })
+                    if route_name:
+                        route_data['_ROUTE'] = route_master[route_name].fillna('').astype(str).str.strip().str.upper()
+                        route_data = route_data.drop_duplicates(['_RO', '_ZONE', '_TYPE', '_ROUTE'])
+                    route_data['_ZONE'] = route_data['_ZONE'].replace({'': 'UNKNOWN ZONE', 'NAN': 'UNKNOWN ZONE', 'NONE': 'UNKNOWN ZONE'})
+                    route_data = route_data[route_data['_TYPE'].isin(['NATIONAL LH', 'ZONAL LH']) & route_data['_UTIL'].notna()]
+                    for (ro, zone), group in route_data.groupby(['_RO', '_ZONE'], dropna=False):
+                        stats = {}
+                        for type_label, key in [('NATIONAL LH', 'National'), ('ZONAL LH', 'Zonal')]:
+                            type_routes = group[group['_TYPE'].eq(type_label)]
+                            total_routes = len(type_routes)
+                            under_count = int(type_routes['_UTIL'].lt(0.60).sum())
+                            efficient_count = int(type_routes['_UTIL'].ge(0.60).sum())
+                            stats[f'{key} Underutilized Routes'] = format_pct_cnt(under_count, total_routes)
+                            stats[f'{key} Efficiently Utilized Routes'] = format_pct_cnt(efficient_count, total_routes)
+                        utilization_rows[(ro, zone)] = stats
+        except Exception as exc:
+            logging.warning(f"Overall Issues utilization summary warning: {exc}")
+
     rows = []
-    for ro, zone in sorted(set(ops_rows) | set(pay_rows)):
+    for ro, zone in sorted(set(ops_rows) | set(pay_rows) | set(utilization_rows)):
         ops_stats = ops_rows.get((ro, zone), {})
         pay_stats = pay_rows.get((ro, zone), {})
         trips = int(ops_stats.get('Total_Trips', 0))
@@ -1259,19 +1300,31 @@ def build_overall_issues_summary(ops_raw, pay_raw):
         ld = int(ops_stats.get('Late_Dep_Cnt', 0))
         la = int(ops_stats.get('Late_Arr_Cnt', 0))
         draft = int(pay_stats.get('Draft_Cnt', 0))
-        finance = int(pay_stats.get('Finance_Cnt', 0))
-        pending = int(pay_stats.get('Other_Pending_Cnt', 0))
+        pending = int(pay_stats.get('Pending_Cnt', 0))
+        payment_pending_paid = int(pay_stats.get('Payment_Pending_Paid_Cnt', 0))
+        finance_pending_hold = int(pay_stats.get('Finance_Pending_Hold_Cnt', 0))
+        other = int(pay_stats.get('Other_Cnt', 0))
+        utilization = utilization_rows.get((ro, zone), {})
         rows.append({
             'RO Name': ro, 'Zone': zone, 'Total Trips': trips,
             'Late Departures': format_pct_cnt(ld, trips),
             'Late Arrivals': format_pct_cnt(la, trips), 'Total Bills': bills,
             'Draft Bills': format_pct_cnt(draft, bills),
-            'Finance Pending': format_pct_cnt(finance, bills),
-            'Other Pending': format_pct_cnt(pending, bills)
+            'Pending': format_pct_cnt(pending, bills),
+            'Payment Pending / Paid': format_pct_cnt(payment_pending_paid, bills),
+            'Finance Pending / Hold': format_pct_cnt(finance_pending_hold, bills),
+            'Other': format_pct_cnt(other, bills),
+            'National Underutilized Routes': utilization.get('National Underutilized Routes', '0.0% (0)'),
+            'National Efficiently Utilized Routes': utilization.get('National Efficiently Utilized Routes', '0.0% (0)'),
+            'Zonal Underutilized Routes': utilization.get('Zonal Underutilized Routes', '0.0% (0)'),
+            'Zonal Efficiently Utilized Routes': utilization.get('Zonal Efficiently Utilized Routes', '0.0% (0)')
         })
     return pd.DataFrame(rows, columns=[
         'RO Name', 'Zone', 'Total Trips', 'Late Departures', 'Late Arrivals',
-        'Total Bills', 'Draft Bills', 'Finance Pending', 'Other Pending'
+        'Total Bills', 'Draft Bills', 'Pending', 'Payment Pending / Paid',
+        'Finance Pending / Hold', 'Other', 'National Underutilized Routes',
+        'National Efficiently Utilized Routes', 'Zonal Underutilized Routes',
+        'Zonal Efficiently Utilized Routes'
     ])
 
 # ==========================================
@@ -2461,7 +2514,7 @@ MENU_SHEETS = {
         'CPK_Feeder_Regional', 'CPK_Coloader', 'CPK_Raw_Data'
     ),
     "🧭 Scheduled Route Master": (),
-    "⚠️ Overall Issues": ('Legwise_Processed_Data', 'Master_Database'),
+    "⚠️ Overall Issues": ('Legwise_Processed_Data', 'Master_Database', 'CPK_Raw_Data'),
     "📝 Today's Call Action Plan": (
         'Legwise_Route_Summary', 'Vendor_Perf_Summary',
         'CPK_National_Zonal_Master', 'CPK_Feeder_Regional', 'CPK_Coloader'
@@ -2490,15 +2543,108 @@ def file_version(path):
     stat = os.stat(path)
     return (stat.st_mtime_ns, stat.st_size)
 
+def get_overall_issue_ro_zone_lookup(data=None):
+    """Build RO-to-zone labels from the uploaded branch master and processed data."""
+    lookup = {}
+    for key in ['Master_Database', 'Legwise_Processed_Data', 'CPK_Raw_Data']:
+        frame = (data or {}).get(key, pd.DataFrame())
+        ro_col = get_col(frame, ['RO Name', 'Origin RO', 'VendorRO', 'RO_Clean', 'RO'])
+        zone_col = get_col(frame, ['Zone'])
+        if ro_col and zone_col:
+            pairs = zip(_clean_ro_series(frame[ro_col]), frame[zone_col].fillna('').astype(str).str.strip().str.upper())
+            for ro, zone in pairs:
+                if ro and zone and zone not in ('NAN', 'NONE', 'UNKNOWN ZONE'):
+                    lookup.setdefault(ro, zone)
+
+    branch_path = FILE_MAP.get('BRANCH_MASTER')
+    if branch_path and os.path.exists(branch_path):
+        try:
+            with pd.ExcelFile(branch_path, engine='openpyxl') as workbook:
+                for sheet in workbook.sheet_names:
+                    frame = workbook.parse(sheet)
+                    ro_col = get_col(frame, ['RPTRO', 'RPTROCode', 'RO Name', 'RO Code', 'RO', 'Regional Office'])
+                    zone_col = get_col(frame, ['Zone', 'Zone Name', 'Region'])
+                    if not ro_col or not zone_col:
+                        continue
+                    for ro_value, zone_value in zip(frame[ro_col], frame[zone_col]):
+                        ro = _clean_ro_series(pd.Series([ro_value])).iloc[0]
+                        zone = str(zone_value).strip().upper() if pd.notna(zone_value) else ''
+                        if ro and zone and zone not in ('NAN', 'NONE', 'UNKNOWN ZONE'):
+                            lookup[ro] = zone
+                    break
+        except Exception as exc:
+            logging.warning(f"Overall Issues branch-zone lookup warning: {exc}")
+    return lookup
+
+def normalize_overall_payment_raw(raw, data=None):
+    """Keep the payment source fields needed for counts and focused issue details."""
+    if raw is None or raw.empty:
+        return pd.DataFrame(columns=[
+            'Invoice Id', 'Invoice Date', 'Base Date', 'RO Name', 'Zone', 'Vendor Name',
+            'Category', 'Amount', 'Status', 'Pending With'
+        ])
+    source = raw.copy()
+    source.columns = source.columns.astype(str).str.strip()
+    aliases = {
+        'Invoice Id': ['Invoice Id', 'InvoiceID', 'Invoice Id No', 'Invoice No'],
+        'Invoice Date': ['Invoice Date', 'InvoiceDate'],
+        'RO Name': ['RO Name', 'ro_selection', 'ROSelection', 'RO'],
+        'Vendor Name': ['Vendor Name', 'VendorName'],
+        'Category': ['Category', 'Bill Category'],
+        'Amount': ['Amount', 'Net Payable', 'net_payable'],
+        'Status': ['Status', 'Invoice Status'],
+        'Pending With': ['Pending With', 'PendingWith'],
+        'Last Approved At': ['Last Approved At', 'LastApprovedAt'],
+        'Finance Revert Remarks 1': ['Finance Revert Remarks 1', 'FinanceRevertRemarks1'],
+        'Approver Revert Remarks': ['Approver Revert Remarks', 'ApproverRevertRemarks'],
+        'Hold Name': ['hold.name', 'Hold Name', 'HoldName'],
+        'Hold Key': ['hold-key', 'Hold Key', 'HoldKey'],
+        'Partial Payment': ['Partial Payment', 'PartialPayment'],
+        'Balance Payable Amount': ['Balance Payable Amount', 'BalancePayableAmount'],
+        'Branch': ['branch_name', 'Branch Name', 'Branch'],
+        'State': ['state_name', 'State Name', 'State']
+    }
+    normalized = pd.DataFrame(index=source.index)
+    for target, candidates in aliases.items():
+        col = get_col(source, candidates)
+        if col:
+            normalized[target] = source[col]
+    for col in ['Invoice Date', 'Last Approved At']:
+        if col in normalized.columns:
+            normalized[col] = pd.to_datetime(normalized[col], dayfirst=True, errors='coerce')
+    invoice_date = normalized.get('Invoice Date', pd.Series(pd.NaT, index=normalized.index))
+    approved_date = normalized.get('Last Approved At', pd.Series(pd.NaT, index=normalized.index))
+    normalized['Base Date'] = approved_date.combine_first(invoice_date).fillna(pd.Timestamp(get_ist_now().date()))
+    for col in ['RO Name', 'Vendor Name', 'Category', 'Status', 'Pending With']:
+        if col not in normalized.columns:
+            normalized[col] = ''
+    normalized['RO Name'] = _clean_ro_series(normalized['RO Name'])
+    normalized['Status'] = normalized['Status'].fillna('').astype(str).str.strip().str.upper().str.replace(' ', '_', regex=False)
+    normalized['Vendor Name'] = normalized['Vendor Name'].fillna('').apply(normalize_vendor_name)
+    ro_zone = get_overall_issue_ro_zone_lookup(data)
+    normalized['Zone'] = normalized['RO Name'].map(ro_zone).fillna('UNKNOWN ZONE')
+    return normalized.reset_index(drop=True)
+
 def load_dashboard_data(page):
     if page == "🧭 Scheduled Route Master":
         return {'Scheduled_Route_Master': get_scheduled_route_master(get_route_lookup_signature())}
     path = FILE_MAP["FINAL_OUTPUT"]
     if not os.path.exists(path):
         if page in ["📝 Today's Call Action Plan", "🔐 User & Access Control", "⚠️ Overall Issues"]:
-            return {"dummy": pd.DataFrame()}
+            data = {"dummy": pd.DataFrame()}
+            if page == "⚠️ Overall Issues" and os.path.exists(FILE_MAP.get('PAYMENT', '')):
+                try:
+                    with pd.ExcelFile(FILE_MAP['PAYMENT'], engine='openpyxl') as payment_book:
+                        payment_sheet = 'Report' if 'Report' in payment_book.sheet_names else payment_book.sheet_names[0]
+                        payment_raw = payment_book.parse(payment_sheet)
+                    data['Payment_Raw'] = normalize_overall_payment_raw(payment_raw, data)
+                except Exception as exc:
+                    logging.warning(f"Could not load raw payment data for Overall Issues: {exc}")
+            return data
         return {}
-    cache_key = (file_version(path), page)
+    payment_signature = file_version(FILE_MAP['PAYMENT']) if page == "⚠️ Overall Issues" and os.path.exists(FILE_MAP.get('PAYMENT', '')) else None
+    branch_signature = file_version(FILE_MAP['BRANCH_MASTER']) if page == "⚠️ Overall Issues" and os.path.exists(FILE_MAP.get('BRANCH_MASTER', '')) else None
+    cache_key = (file_version(path), page, payment_signature, branch_signature)
     cached = st.session_state.get('_dashboard_cache')
     if cached and cached[0] == cache_key:
         return cached[1]
@@ -2513,6 +2659,14 @@ def load_dashboard_data(page):
                     for name in MENU_SHEETS[page]
                     if name in workbook.sheet_names
                 }
+        if page == "⚠️ Overall Issues" and os.path.exists(FILE_MAP.get('PAYMENT', '')):
+            try:
+                with pd.ExcelFile(FILE_MAP['PAYMENT'], engine='openpyxl') as payment_book:
+                    payment_sheet = 'Report' if 'Report' in payment_book.sheet_names else payment_book.sheet_names[0]
+                    payment_raw = payment_book.parse(payment_sheet)
+                data['Payment_Raw'] = normalize_overall_payment_raw(payment_raw, data)
+            except Exception as exc:
+                logging.warning(f"Could not load raw payment data for Overall Issues: {exc}")
         if 'Vendor_Perf_Raw' in data and not data['Vendor_Perf_Raw'].empty:
             data['Vendor_Perf_Raw']['VendorName'] = data['Vendor_Perf_Raw']['VendorName'].apply(normalize_vendor_name)
             data['Vendor_Perf_Summary'] = build_vendor_summary_from_raw(data['Vendor_Perf_Raw'])
@@ -2644,26 +2798,26 @@ def render_scheduled_route_master(data):
     poster_specs = [
         {
             'key': 'departure', 'tab': '🚚 Departure Poster', 'label': 'Scheduled Departure Poster',
-            'columns': ['RO', 'Origin Branch', 'Scheduled Departure Time'],
+            'columns': ['Route Path', 'Legwise', 'Legs', 'RO', 'Origin Branch', 'Scheduled Departure Time'],
             'scope_columns': ['Origin', 'Origin Branch', 'From Branch'],
-            'caption': 'Origin branch, its RO, and scheduled departure time only.',
-            'widths': {'Origin RO': 20, 'Origin Branch': 34, 'Scheduled Departure Time': 28},
-            'paper_size': 9, 'landscape': False
+            'caption': 'Route Path, leg number and leg endpoints, origin branch and RO, and scheduled departure time.',
+            'widths': {'Route Path': 28, 'Legwise': 11, 'Legs': 24, 'Origin RO': 16, 'Origin Branch': 28, 'Scheduled Departure Time': 24},
+            'paper_size': 8, 'landscape': True
         },
         {
             'key': 'arrival', 'tab': '🏁 Arrival Poster', 'label': 'Scheduled Arrival Poster',
-            'columns': ['Origin Branch', 'RO', 'Destination Branch', 'Destination RO', 'Scheduled Arrival Time'],
+            'columns': ['Route Path', 'Legwise', 'Legs', 'Origin Branch', 'RO', 'Destination Branch', 'Destination RO', 'Scheduled Driving Hours'],
             'scope_columns': ['Destination', 'Destination Branch', 'To Branch'],
-            'caption': 'Origin and destination branches with both ROs, plus scheduled arrival time. No departure or halting fields.',
-            'widths': {'Origin Branch': 28, 'Origin RO': 19, 'Destination Branch': 30, 'Destination RO': 21, 'Scheduled Arrival Time': 27},
+            'caption': 'Route Path, leg number and endpoints, both branches and ROs, and scheduled arrival/driving hours. No departure time or halting fields.',
+            'widths': {'Route Path': 26, 'Legwise': 10, 'Legs': 21, 'Origin Branch': 22, 'Origin RO': 15, 'Destination Branch': 25, 'Destination RO': 18, 'Scheduled Arrival Hours': 21},
             'paper_size': 8, 'landscape': True
         },
         {
             'key': 'halting', 'tab': '⏱️ Halting Poster', 'label': 'Scheduled Halting Poster',
-            'columns': ['Origin Branch', 'RO', 'Destination Branch', 'Destination RO', 'Scheduled Arrival Time', 'Scheduled Halting'],
+            'columns': ['Route Path', 'Legwise', 'Legs', 'Origin Branch', 'RO', 'Destination Branch', 'Destination RO', 'Scheduled Driving Hours', 'Scheduled Halting'],
             'scope_columns': ['Origin', 'Origin Branch', 'From Branch', 'Scheduled Halting'],
-            'caption': 'Branch/RO details, scheduled arrival time, and scheduled halting only. Departure time is excluded.',
-            'widths': {'Origin Branch': 26, 'Origin RO': 18, 'Destination Branch': 27, 'Destination RO': 20, 'Scheduled Arrival Time': 25, 'Scheduled Halting': 25},
+            'caption': 'Route Path, leg number and endpoints, both branches and ROs, scheduled arrival/driving hours, and scheduled halting. Departure time is excluded.',
+            'widths': {'Route Path': 25, 'Legwise': 10, 'Legs': 20, 'Origin Branch': 21, 'Origin RO': 15, 'Destination Branch': 23, 'Destination RO': 17, 'Scheduled Arrival Hours': 20, 'Scheduled Halting': 20},
             'paper_size': 8, 'landscape': True
         }
     ]
@@ -2680,7 +2834,7 @@ def render_scheduled_route_master(data):
                 poster_source = poster_source[branch_mask].copy()
 
             poster = poster_source.reindex(columns=spec['columns']).fillna('')
-            poster = poster.rename(columns={'RO': 'Origin RO'})
+            poster = poster.rename(columns={'RO': 'Origin RO', 'Scheduled Driving Hours': 'Scheduled Arrival Hours'})
             st.caption(spec['caption'])
             if poster.empty:
                 st.info(f"No {spec['label'].lower()} rows for {branch_label} with these filters.")
@@ -2711,7 +2865,7 @@ def render_scheduled_route_master(data):
 
 def get_overall_issue_frames(data):
     ops_raw = data.get('Legwise_Processed_Data', pd.DataFrame()).copy()
-    pay_raw = data.get('Master_Database', pd.DataFrame()).copy()
+    pay_raw = data.get('Payment_Raw', data.get('Master_Database', pd.DataFrame())).copy()
     if not st.session_state.get('all_vendors', True):
         ops_vendor_col = get_col(ops_raw, ['VendorName', 'Vendor Name'])
         pay_vendor_col = get_col(pay_raw, ['Vendor Name', 'VendorName'])
@@ -2719,9 +2873,19 @@ def get_overall_issue_frames(data):
         pay_raw = filter_df_by_user_vendors(pay_raw, pay_vendor_col) if pay_vendor_col else pay_raw.iloc[0:0].copy()
     return ops_raw, pay_raw
 
-def get_overall_issue_date_bounds(ops_raw, pay_raw):
+def get_overall_cpk_frame(data):
+    cpk_raw = data.get('CPK_Raw_Data', pd.DataFrame()).copy()
+    if not st.session_state.get('all_vendors', True):
+        vendor_col = get_col(cpk_raw, ['VendorName', 'Vendor Name'])
+        cpk_raw = filter_df_by_user_vendors(cpk_raw, vendor_col) if vendor_col else cpk_raw.iloc[0:0].copy()
+    return cpk_raw
+
+def get_overall_issue_date_bounds(ops_raw, pay_raw, cpk_raw=None):
     available = []
-    for frame, candidates in [(ops_raw, ['MCD_StartDate', 'Date']), (pay_raw, ['Base Date', 'Invoice Date'])]:
+    frames = [(ops_raw, ['MCD_StartDate', 'Date']), (pay_raw, ['Base Date', 'Invoice Date'])]
+    if isinstance(cpk_raw, pd.DataFrame):
+        frames.append((cpk_raw, ['Date']))
+    for frame, candidates in frames:
         date_col = get_col(frame, candidates)
         if date_col and not frame.empty:
             parsed = pd.to_datetime(frame[date_col], dayfirst=True, errors='coerce').dropna()
@@ -2750,6 +2914,19 @@ def filter_overall_issue_frames(ops_raw, pay_raw, start_date, end_date, selected
                 result = result.iloc[0:0].copy()
         return result
     return apply_filters(ops_raw, ['MCD_StartDate', 'Date']), apply_filters(pay_raw, ['Base Date', 'Invoice Date'])
+
+def filter_overall_utilization_frame(cpk_raw, start_date, end_date, selected_zone='ALL ZONES'):
+    result = cpk_raw.copy() if isinstance(cpk_raw, pd.DataFrame) else pd.DataFrame()
+    if result.empty:
+        return result
+    date_col = get_col(result, ['Date'])
+    if date_col:
+        parsed = pd.to_datetime(result[date_col], dayfirst=True, errors='coerce')
+        result = result[parsed.dt.date.between(start_date, end_date)].copy()
+    if selected_zone != 'ALL ZONES':
+        zone_col = get_col(result, ['Zone'])
+        result = result[result[zone_col].fillna('UNKNOWN ZONE').astype(str).str.strip().str.upper().eq(selected_zone.upper())].copy() if zone_col else result.iloc[0:0].copy()
+    return result
 
 def get_overall_issue_query_url():
     try:
@@ -2788,45 +2965,236 @@ a:hover {{ filter:brightness(1.12); }}
 </style>'''
     st.components.v1.html(link_html, height=52, scrolling=False)
 
-def get_overall_issue_raw_records(ops_raw, pay_raw, ro, issue_type):
+def get_overall_payment_status_masks(frame):
+    status_col = get_col(frame, ['Status', 'Invoice Status'])
+    status = frame[status_col].fillna('').astype(str).str.strip().str.upper().str.replace(' ', '_', regex=False) if status_col else pd.Series('', index=frame.index)
+    draft = status.eq('DRAFT')
+    pending = status.eq('PENDING')
+    payment_pending_paid = status.isin(['PAYMENT_PENDING', 'PAID'])
+    finance_pending_hold = status.isin(['FINANCE_PENDING', 'FINANCE_HOLD'])
+    other = status.ne('') & ~(draft | pending | payment_pending_paid | finance_pending_hold)
+    return {
+        'Draft bills': draft,
+        'Pending bills': pending,
+        'Payment pending / paid': payment_pending_paid,
+        'Finance pending / hold': finance_pending_hold,
+        'Other bills': other
+    }
+
+def get_overall_issue_raw_records(ops_raw, pay_raw, ro, issue_type, cpk_raw=None):
     if issue_type in ['Late departures', 'Late arrivals']:
         ro_col = get_col(ops_raw, ['Origin RO', 'RO Name', 'RO'])
         status_col = get_col(ops_raw, ['Dep_Status'] if issue_type == 'Late departures' else ['Arr_Status'])
         remark_col = get_col(ops_raw, ['Remark'])
-        raw = ops_raw[_clean_ro_series(ops_raw[ro_col]).eq(ro)].copy() if ro_col else pd.DataFrame()
+        raw = ops_raw.copy() if ro == 'ALL ROS' else (ops_raw[_clean_ro_series(ops_raw[ro_col]).eq(ro)].copy() if ro_col else pd.DataFrame())
         status_source = raw[status_col].fillna('').astype(str) if status_col and status_col in raw.columns else (raw[remark_col].fillna('').astype(str) if remark_col and remark_col in raw.columns else pd.Series('', index=raw.index))
         phrase = 'Late Dep' if issue_type == 'Late departures' else 'Late Arr'
         raw = raw[status_source.str.contains(phrase, case=False, na=False)].copy()
         preferred = [
             'MCD_StartDate', 'Origin RO', 'Zone', 'Route Path', 'Legwise', 'Legs',
-            'CD_FromBranch', 'CD_ToBranch', 'Scheduled Departure Time',
-            'Actual Departure Time', 'Dep_Status', 'Scheduled Arrival Time',
-            'Actual Arrival Time', 'Arr_Status', 'MasterCDNo'
+            'CD_FromBranch', 'CD_ToBranch', 'MasterCDNo'
         ]
-    else:
-        ro_col = get_col(pay_raw, ['RO Name', 'Origin RO', 'RO'])
-        bucket_col = get_col(pay_raw, ['Department Bucket'])
-        raw = pay_raw[_clean_ro_series(pay_raw[ro_col]).eq(ro)].copy() if ro_col else pd.DataFrame()
-        bucket = raw[bucket_col].fillna('').astype(str).str.upper() if bucket_col and bucket_col in raw.columns else pd.Series('', index=raw.index)
-        draft_mask = bucket.str.contains('DRAFT|USER', regex=True, na=False)
-        finance_mask = bucket.str.contains('FINANCE', regex=False, na=False)
-        if issue_type == 'Draft bills':
-            raw = raw[draft_mask].copy()
-        elif issue_type == 'Finance pending':
-            raw = raw[finance_mask].copy()
+        if issue_type == 'Late departures':
+            preferred += ['Scheduled Departure Time', 'Actual Departure Time', 'Dep_Status']
         else:
-            raw = raw[bucket.ne('') & ~draft_mask & ~finance_mask].copy()
+            preferred += ['Scheduled Arrival Time', 'Actual Arrival Time', 'Arr_Status']
+        preferred = [col for col in preferred if col in raw.columns]
+    elif issue_type in ['Draft bills', 'Pending bills', 'Payment pending / paid', 'Finance pending / hold', 'Other bills']:
+        ro_col = get_col(pay_raw, ['RO Name', 'Origin RO', 'RO'])
+        raw = pay_raw.copy() if ro == 'ALL ROS' else (pay_raw[_clean_ro_series(pay_raw[ro_col]).eq(ro)].copy() if ro_col else pd.DataFrame())
+        masks = get_overall_payment_status_masks(raw)
+        raw = raw[masks.get(issue_type, pd.Series(False, index=raw.index))].copy()
         preferred = [
-            'Invoice Id', 'RO Name', 'Vendor Name', 'Amount', 'Department Bucket',
-            'Status', 'Pending With', 'Days Pending', 'Aging Bucket', 'Revert Remarks'
+            'Invoice Id', 'Invoice Date', 'Base Date', 'RO Name', 'Zone', 'Vendor Name',
+            'Category', 'Amount', 'Status'
         ]
+        if issue_type in ['Pending bills', 'Draft bills', 'Other bills']:
+            preferred += ['Pending With']
+        elif issue_type == 'Payment pending / paid':
+            preferred += ['Last Approved At', 'Partial Payment', 'Balance Payable Amount']
+        elif issue_type == 'Finance pending / hold':
+            preferred += [
+                'Pending With', 'Hold Name', 'Hold Key',
+                'Finance Revert Remarks 1', 'Approver Revert Remarks'
+            ]
+    elif issue_type in [
+        'National underutilized routes', 'National efficiently utilized routes',
+        'Zonal underutilized routes', 'Zonal efficiently utilized routes'
+    ]:
+        raw_source = cpk_raw.copy() if isinstance(cpk_raw, pd.DataFrame) else pd.DataFrame()
+        route_master = build_cpk_tables_from_raw(raw_source).get('CPK_National_Zonal_UpDown', pd.DataFrame()) if not raw_source.empty else pd.DataFrame()
+        route_ro_col = get_col(route_master, ['VendorRO', 'RO_Clean', 'RO'])
+        route_type_col = get_col(route_master, ['Type'])
+        route_name_col = get_col(route_master, ['Route (UP/DOWN)'])
+        util_col = get_col(route_master, ['Overall Util %'])
+        type_label = 'National LH' if issue_type.startswith('National') else 'Zonal LH'
+        underutilized = 'underutilized' in issue_type
+        matching_routes = route_master.copy()
+        if route_ro_col and ro != 'ALL ROS':
+            matching_routes = matching_routes[_clean_ro_series(matching_routes[route_ro_col]).eq(ro)]
+        if route_type_col:
+            matching_routes = matching_routes[matching_routes[route_type_col].astype(str).str.upper().eq(type_label.upper())]
+        util_values = pd.to_numeric(matching_routes[util_col], errors='coerce') if util_col else pd.Series(dtype=float, index=matching_routes.index)
+        matching_routes = matching_routes[util_values.lt(0.60) if underutilized else util_values.ge(0.60)].copy()
+        route_values = set(matching_routes[route_name_col].fillna('').astype(str).str.strip().str.upper()) if route_name_col else set()
+
+        raw_ro_col = get_col(raw_source, ['RO_Clean', 'VendorRO', 'RO'])
+        raw_type_col = get_col(raw_source, ['Final_Type', 'Type'])
+        raw_route_col = get_col(raw_source, ['Final_Route', 'Route'])
+        raw = raw_source.copy()
+        if raw_ro_col and ro != 'ALL ROS':
+            raw = raw[_clean_ro_series(raw[raw_ro_col]).eq(ro)]
+        if raw_type_col:
+            raw = raw[raw[raw_type_col].astype(str).str.upper().eq(type_label.upper())]
+        if raw_route_col:
+            raw = raw[raw[raw_route_col].fillna('').astype(str).str.strip().str.upper().isin(route_values)]
+        util_lookup = {}
+        if route_name_col and util_col:
+            util_lookup = dict(zip(
+                matching_routes[route_name_col].fillna('').astype(str).str.strip().str.upper(),
+                pd.to_numeric(matching_routes[util_col], errors='coerce')
+            ))
+        raw = raw.copy()
+        if raw_route_col:
+            raw['Route Utilization'] = raw[raw_route_col].fillna('').astype(str).str.strip().str.upper().map(util_lookup)
+            raw['Utilization Class'] = np.where(raw['Route Utilization'] < 0.60, 'Underutilized (<60%)', 'Efficiently utilized (60%+)')
+            raw['Route Utilization'] = (raw['Route Utilization'] * 100).round(1).astype(str) + '%'
+        preferred = [
+            'Date', 'Zone', 'RO_Clean', 'Final_Route', 'Final_Type', 'Vehicle No',
+            'Trips', 'Wt', 'Cap', 'Cost', 'VendorName', 'Route Utilization', 'Utilization Class'
+        ]
+        rename = {
+            'RO_Clean': 'RO', 'Final_Route': 'Route', 'Final_Type': 'Route Type',
+            'Vehicle No': 'Vehicle', 'Wt': 'Carried Weight', 'Cap': 'Vehicle Capacity',
+            'Cost': 'Trip Cost', 'VendorName': 'Vendor'
+        }
+        raw = raw.rename(columns=rename)
+        preferred = [rename.get(col, col) for col in preferred]
+    else:
+        return pd.DataFrame()
     columns = [col for col in preferred if col in raw.columns]
     return raw[columns].fillna('')
+
+def render_overall_issues_clickable_table(summary, start_date, end_date):
+    """Render clickable percentage/count cells that open focused records in a new tab."""
+    metric_to_issue = {
+        'Late Departures': 'Late departures', 'Late Arrivals': 'Late arrivals',
+        'Draft Bills': 'Draft bills', 'Pending': 'Pending bills',
+        'Payment Pending / Paid': 'Payment pending / paid',
+        'Finance Pending / Hold': 'Finance pending / hold', 'Other': 'Other bills',
+        'National Underutilized Routes': 'National underutilized routes',
+        'National Efficiently Utilized Routes': 'National efficiently utilized routes',
+        'Zonal Underutilized Routes': 'Zonal underutilized routes',
+        'Zonal Efficiently Utilized Routes': 'Zonal efficiently utilized routes'
+    }
+    columns = [
+        'RO Name', 'Zone', 'Total Trips', 'Late Departures', 'Late Arrivals', 'Total Bills',
+        'Draft Bills', 'Pending', 'Payment Pending / Paid', 'Finance Pending / Hold', 'Other',
+        'National Underutilized Routes', 'National Efficiently Utilized Routes',
+        'Zonal Underutilized Routes', 'Zonal Efficiently Utilized Routes'
+    ]
+    columns = [col for col in columns if col in summary.columns]
+    header_html = ''.join(f'<th>{html_module.escape(str(col))}</th>' for col in columns)
+    row_html = []
+    for _, row in summary.iterrows():
+        cells = []
+        for col in columns:
+            value = html_module.escape(str(row.get(col, '')))
+            if col in metric_to_issue:
+                pct = parse_pct_from_str(str(row.get(col, '')))
+                issue_type = html_module.escape(metric_to_issue[col], quote=True)
+                ro = html_module.escape(str(row.get('RO Name', '')), quote=True)
+                zone = html_module.escape(str(row.get('Zone', '')), quote=True)
+                pct_class = 'high' if pct is not None and pct >= 50 else 'low'
+                cells.append(
+                    f'<td><a class="issue-cell {pct_class}" href="#" data-ro="{ro}" '
+                    f'data-zone="{zone}" data-issue="{issue_type}" title="Click to open {issue_type} raw records">{value}</a></td>'
+                )
+            else:
+                cells.append(f'<td>{value}</td>')
+        row_html.append('<tr>' + ''.join(cells) + '</tr>')
+    base_url_json = json.dumps(get_overall_issue_query_url(), ensure_ascii=True).replace('</', '<\\/')
+    markup = f'''<!doctype html><html><head><meta charset="utf-8"><style>
+    * {{ box-sizing: border-box; }} body {{ margin:0; font:12px/1.35 Arial,sans-serif; color:#e5eef9; background:#091521; }}
+    .wrap {{ height:590px; overflow:auto; border:1px solid #33475b; border-radius:12px; }}
+    table {{ border-collapse:separate; border-spacing:0; width:max-content; min-width:100%; }}
+    th {{ position:sticky; top:0; z-index:2; background:#182b40; color:#bdd1e5; text-align:left; white-space:nowrap; padding:10px 11px; border-bottom:1px solid #3b4c60; }}
+    td {{ white-space:nowrap; padding:8px 11px; border-bottom:1px solid rgba(148,163,184,.13); }}
+    tr:nth-child(even) td {{ background:rgba(30,49,69,.44); }}
+    .issue-cell {{ display:block; margin:-8px -11px; padding:8px 11px; color:inherit; text-decoration:none; font-weight:700; }}
+    .issue-cell.low {{ background:rgba(52,211,153,.15); color:#a7f3d0; }}
+    .issue-cell.high {{ background:rgba(248,113,113,.22); color:#fecaca; }}
+    .issue-cell:hover {{ outline:2px solid #67e8f9; outline-offset:-2px; filter:brightness(1.18); }}
+    </style></head><body><div class="wrap"><table><thead><tr>{header_html}</tr></thead><tbody>{''.join(row_html)}</tbody></table></div>
+    <script>
+    const appBase = {base_url_json};
+    document.querySelectorAll('.issue-cell').forEach((link) => link.addEventListener('click', (event) => {{
+      event.preventDefault();
+      try {{
+        let target = null;
+        for (const candidate of [appBase, document.referrer]) {{
+          try {{ if (candidate) {{ target = new URL(candidate); break; }} }} catch (ignored) {{}}
+        }}
+        if (!target) throw new Error('No dashboard URL available');
+        const values = {{issues_raw:'1', issues_ro:link.dataset.ro, issues_zone:link.dataset.zone,
+          issues_type:link.dataset.issue, issues_start:{json.dumps(start_date.isoformat())}, issues_end:{json.dumps(end_date.isoformat())}}};
+        Object.entries(values).forEach(([key,value]) => target.searchParams.set(key, value));
+        window.open(target.toString(), '_blank', 'noopener,noreferrer');
+      }} catch (error) {{ window.alert('Could not open the raw records. Open the dashboard in a browser tab and try again.'); }}
+    }}));
+    </script></body></html>'''
+    height = 610
+    st.components.v1.html(markup, height=height, scrolling=False)
+
+def render_overall_issues_metric_cards(metric_specs, zone, start_date, end_date):
+    """Make the headline issue totals clickable for an all-RO raw-data view."""
+    issue_map = {
+        'Late Departures': 'Late departures', 'Late Arrivals': 'Late arrivals',
+        'Draft Bills': 'Draft bills', 'Pending': 'Pending bills',
+        'Payment Pending / Paid': 'Payment pending / paid',
+        'Finance Pending / Hold': 'Finance pending / hold', 'Other': 'Other bills'
+    }
+    cards = []
+    for label, count, total, unit in metric_specs:
+        pct = (count / total * 100) if total else 0
+        safe_label = html_module.escape(label, quote=True)
+        safe_issue = html_module.escape(issue_map[label], quote=True)
+        safe_zone = html_module.escape(zone, quote=True)
+        cards.append(
+            f'<a class="card" href="#" data-issue="{safe_issue}" data-zone="{safe_zone}" '
+            f'title="Open {safe_issue} records for all ROs"><span>{safe_label} · {pct:.1f}%</span>'
+            f'<strong>{count:,}</strong><small>{count:,} of {total:,} {html_module.escape(unit)}</small></a>'
+        )
+    base_url_json = json.dumps(get_overall_issue_query_url(), ensure_ascii=True).replace('</', '<\\/')
+    markup = f'''<!doctype html><html><head><meta charset="utf-8"><style>
+    * {{ box-sizing:border-box; }} body {{ margin:0; font:12px/1.35 Arial,sans-serif; background:#091521; color:#e5eef9; }}
+    .grid {{ display:grid; grid-template-columns:repeat(4,minmax(150px,1fr)); gap:11px; }}
+    .card {{ display:flex; flex-direction:column; gap:4px; min-height:86px; padding:12px 14px; border:1px solid #31475e; border-radius:12px; background:linear-gradient(135deg,#122b40,#101d30); color:#eaf5ff; text-decoration:none; }}
+    .card:hover {{ border-color:#67e8f9; transform:translateY(-1px); box-shadow:0 8px 22px rgba(8,145,178,.16); }}
+    .card span {{ color:#a9bfd4; font-weight:700; }} .card strong {{ color:#9cc8ff; font-size:23px; line-height:1.05; }}
+    .card small {{ color:#8299ae; }} @media(max-width:760px) {{ .grid {{ grid-template-columns:repeat(2,minmax(140px,1fr)); }} }}
+    </style></head><body><div class="grid">{''.join(cards)}</div><script>
+    const appBase = {base_url_json};
+    document.querySelectorAll('.card').forEach((link) => link.addEventListener('click', (event) => {{
+      event.preventDefault();
+      try {{
+        let target = null;
+        for (const candidate of [appBase, document.referrer]) {{ try {{ if (candidate) {{ target = new URL(candidate); break; }} }} catch (ignored) {{}} }}
+        if (!target) throw new Error('No dashboard URL available');
+        const values = {{issues_raw:'1', issues_ro:'ALL ROS', issues_zone:link.dataset.zone,
+          issues_type:link.dataset.issue, issues_start:{json.dumps(start_date.isoformat())}, issues_end:{json.dumps(end_date.isoformat())}}};
+        Object.entries(values).forEach(([key,value]) => target.searchParams.set(key,value));
+        window.open(target.toString(), '_blank', 'noopener,noreferrer');
+      }} catch (error) {{ window.alert('Could not open the raw records. Open the dashboard in a browser tab and try again.'); }}
+    }}));
+    </script></body></html>'''
+    st.components.v1.html(markup, height=206, scrolling=False)
 
 def render_overall_issue_raw_page(data, query):
     st.markdown("## Issue detail records")
     ops_raw, pay_raw = get_overall_issue_frames(data)
-    default_start, default_end = get_overall_issue_date_bounds(ops_raw, pay_raw)
+    cpk_raw = get_overall_cpk_frame(data)
+    default_start, default_end = get_overall_issue_date_bounds(ops_raw, pay_raw, cpk_raw)
     try:
         start_date = datetime.date.fromisoformat(query.get('issues_start', ''))
         end_date = datetime.date.fromisoformat(query.get('issues_end', ''))
@@ -2836,16 +3204,22 @@ def render_overall_issue_raw_page(data, query):
         start_date, end_date = end_date, start_date
     zone = query.get('issues_zone', 'ALL ZONES') or 'ALL ZONES'
     issue_type = query.get('issues_type', 'Late departures') or 'Late departures'
-    valid_types = ['Late departures', 'Late arrivals', 'Draft bills', 'Finance pending', 'Other pending bills']
+    valid_types = [
+        'Late departures', 'Late arrivals', 'Draft bills', 'Pending bills',
+        'Payment pending / paid', 'Finance pending / hold', 'Other bills',
+        'National underutilized routes', 'National efficiently utilized routes',
+        'Zonal underutilized routes', 'Zonal efficiently utilized routes'
+    ]
     if issue_type not in valid_types:
         issue_type = 'Late departures'
     ro = _clean_ro_series(pd.Series([query.get('issues_ro', '')])).iloc[0]
     ops_view, pay_view = filter_overall_issue_frames(ops_raw, pay_raw, start_date, end_date, zone)
-    raw = get_overall_issue_raw_records(ops_view, pay_view, ro, issue_type)
+    cpk_view = filter_overall_utilization_frame(cpk_raw, start_date, end_date, zone)
+    raw = get_overall_issue_raw_records(ops_view, pay_view, ro, issue_type, cpk_view)
     if raw.empty:
         st.info(f"No {issue_type.lower()} records for {ro} in {zone}, {start_date:%d %b}–{end_date:%d %b %Y}.")
         return
-    st.caption(f"{ro} · {zone} · {start_date:%d %b %Y} to {end_date:%d %b %Y}")
+    st.caption(f"{issue_type} · {ro} · {zone} · {start_date:%d %b %Y} to {end_date:%d %b %Y} · {len(raw):,} focused records")
     st.dataframe(raw, use_container_width=True, hide_index=True, height=560)
     safe_ro = re.sub(r'[^A-Za-z0-9_-]+', '_', ro).strip('_') or 'RO'
     safe_issue = re.sub(r'[^A-Za-z0-9_-]+', '_', issue_type).strip('_')
@@ -2865,12 +3239,13 @@ def render_overall_issues(data):
     st.markdown("## ⚠️ Overall Issues")
     st.caption("RO/zone performance by period · rates with counts · click through to focused raw data")
     ops_all, pay_all = get_overall_issue_frames(data)
-    if ops_all.empty and pay_all.empty:
+    cpk_all = get_overall_cpk_frame(data)
+    if ops_all.empty and pay_all.empty and cpk_all.empty:
         st.info("No operations or payment records are available yet. Upload the relevant files and process the data first.")
         return
 
     today = get_ist_now().date()
-    all_start, all_end = get_overall_issue_date_bounds(ops_all, pay_all)
+    all_start, all_end = get_overall_issue_date_bounds(ops_all, pay_all, cpk_all)
     date_state_key = 'overall_issues_date_range'
     if date_state_key not in st.session_state:
         st.session_state[date_state_key] = (all_start, all_end)
@@ -2887,7 +3262,7 @@ def render_overall_issues(data):
         st.rerun()
 
     all_zones = set()
-    for frame in [ops_all, pay_all]:
+    for frame in [ops_all, pay_all, cpk_all]:
         zone_col = get_col(frame, ['Zone'])
         if zone_col:
             all_zones.update(frame[zone_col].dropna().astype(str).str.strip().str.upper().tolist())
@@ -2896,7 +3271,7 @@ def render_overall_issues(data):
     selected_zone = filter_zone_col.selectbox('Zone', zone_options, key='overall_issues_zone')
     selected_dates = filter_date_col.date_input(
         'Duration', value=st.session_state[date_state_key], key=date_state_key,
-        help='Operations use MCD start date; payment bills use their Base Date.'
+        help='Operations use MCD start date, payment bills use Base Date, and utilization uses trip date.'
     )
     if isinstance(selected_dates, (list, tuple)) and len(selected_dates) == 2:
         start_date, end_date = selected_dates
@@ -2906,10 +3281,11 @@ def render_overall_issues(data):
         start_date, end_date = end_date, start_date
     if st.session_state.get(date_state_key) != (start_date, end_date):
         st.session_state[date_state_key] = (start_date, end_date)
-    st.caption(f"Showing {start_date:%d %b %Y} to {end_date:%d %b %Y}. Operations use MCD start date; payments use Base Date.")
+    st.caption(f"Showing {start_date:%d %b %Y} to {end_date:%d %b %Y}. Operations use MCD start date, payments use Base Date, and utilization uses trip date.")
 
     ops_view, pay_view = filter_overall_issue_frames(ops_all, pay_all, start_date, end_date, selected_zone)
-    summary = build_overall_issues_summary(ops_view, pay_view)
+    cpk_view = filter_overall_utilization_frame(cpk_all, start_date, end_date, selected_zone)
+    summary = build_overall_issues_summary(ops_view, pay_view, cpk_view)
     if summary.empty:
         st.info("No records match this zone and duration.")
         return
@@ -2924,48 +3300,27 @@ def render_overall_issues(data):
     bills = len(pay_view)
     late_dep_count = status_count(ops_view, ['Dep_Status'], 'Late Dep')
     late_arr_count = status_count(ops_view, ['Arr_Status'], 'Late Arr')
-    bucket_col = get_col(pay_view, ['Department Bucket'])
-    bucket = pay_view[bucket_col].fillna('').astype(str).str.upper() if bucket_col else pd.Series('', index=pay_view.index)
-    draft_count = int(bucket.str.contains('DRAFT|USER', regex=True, na=False).sum())
-    finance_count = int(bucket.str.contains('FINANCE', regex=False, na=False).sum())
-    pending_count = int((bucket.ne('') & ~bucket.str.contains('DRAFT|USER|FINANCE', regex=True, na=False)).sum())
-
+    payment_masks = get_overall_payment_status_masks(pay_view)
     metric_specs = [
-        ('Late Departures', late_dep_count, trips), ('Late Arrivals', late_arr_count, trips),
-        ('Draft Bills', draft_count, bills), ('Finance Pending', finance_count, bills),
-        ('Other Pending', pending_count, bills)
+        ('Late Departures', late_dep_count, trips, 'trips'),
+        ('Late Arrivals', late_arr_count, trips, 'trips'),
+        ('Draft Bills', int(payment_masks['Draft bills'].sum()), bills, 'bills'),
+        ('Pending', int(payment_masks['Pending bills'].sum()), bills, 'bills'),
+        ('Payment Pending / Paid', int(payment_masks['Payment pending / paid'].sum()), bills, 'bills'),
+        ('Finance Pending / Hold', int(payment_masks['Finance pending / hold'].sum()), bills, 'bills'),
+        ('Other', int(payment_masks['Other bills'].sum()), bills, 'bills')
     ]
-    metric_cols = st.columns(5)
-    for metric_col, (label, count, total) in zip(metric_cols, metric_specs):
-        pct = (count / total * 100) if total else 0
-        metric_col.metric(f"{label} · {pct:.1f}%", f"{count:,}", help=f"{count:,} of {total:,} {'trips' if total == trips else 'bills'}")
+    render_overall_issues_metric_cards(metric_specs, selected_zone, start_date, end_date)
 
     st.markdown("### RO-wise exception rates")
-    st.caption("Each issue cell shows percentage followed by count. Green is below 50%; red is 50% or higher.")
-    pct_cols = ['Late Departures', 'Late Arrivals', 'Draft Bills', 'Finance Pending', 'Other Pending']
-    def shade_issue_rate(value):
-        pct = parse_pct_from_str(value)
-        if pct is None:
-            return ''
-        if pct >= 50:
-            return 'background-color: rgba(248, 113, 113, .25); color: #fecaca; font-weight: 700;'
-        return 'background-color: rgba(52, 211, 153, .20); color: #bbf7d0; font-weight: 700;'
-    summary_view = summary.copy()
-    summary_view.insert(0, 'Open Raw', False)
-    styled_summary = summary_view.style.applymap(shade_issue_rate, subset=pct_cols)
-    editor_key = f"overall_issues_editor_{selected_zone}_{start_date.isoformat()}_{end_date.isoformat()}"
-    edited_summary = st.data_editor(
-        styled_summary,
-        column_config={
-            'Open Raw': st.column_config.CheckboxColumn('Select RO', help='Select an RO to open raw records in another tab'),
-            'RO Name': st.column_config.TextColumn('RO', width='small'),
-            'Zone': st.column_config.TextColumn('Zone', width='small')
-        },
-        disabled=[col for col in summary_view.columns if col != 'Open Raw'],
-        hide_index=True,
-        use_container_width=True,
-        key=editor_key
-    )
+    st.caption("Click any percentage/count cell to open only its matching raw records in a new tab. Red is 50% or higher; green is below 50%. Route utilization below 60% is classified as underutilized.")
+    pct_cols = [col for col in summary.columns if col in {
+        'Late Departures', 'Late Arrivals', 'Draft Bills', 'Pending', 'Payment Pending / Paid',
+        'Finance Pending / Hold', 'Other', 'National Underutilized Routes',
+        'National Efficiently Utilized Routes', 'Zonal Underutilized Routes',
+        'Zonal Efficiently Utilized Routes'
+    }]
+    render_overall_issues_clickable_table(summary, start_date, end_date)
     summary_bytes = build_formatted_excel_bytes(
         summary, 'Issue Summary', f"Overall Issues · {selected_zone} · {start_date:%d %b %Y} to {end_date:%d %b %Y}",
         percent_columns=pct_cols,
@@ -2977,22 +3332,6 @@ def render_overall_issues(data):
         file_name=f"Overall_Issues_{start_date:%Y%m%d}_{end_date:%Y%m%d}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-
-    selected_rows = edited_summary[edited_summary['Open Raw'] == True].index.tolist()
-    if not selected_rows:
-        return
-    selected_idx = selected_rows[0]
-    selected_ro = str(summary.loc[selected_idx, 'RO Name'])
-    selected_row_zone = str(summary.loc[selected_idx, 'Zone'])
-    st.markdown(f"### Deep dive · {selected_ro} · {selected_row_zone}")
-    issue_type = st.radio(
-        'Choose the raw issue group',
-        ['Late departures', 'Late arrivals', 'Draft bills', 'Finance pending', 'Other pending bills'],
-        horizontal=True,
-        key='overall_issues_type'
-    )
-    render_overall_issue_new_tab_link(selected_ro, selected_row_zone, issue_type, start_date, end_date)
-
 
 # -------------------------------------------------------------
 # A. DAILY STANDUP (Operations Summary)
