@@ -51,6 +51,13 @@ THEME_OPTIONS = {
         "accent": "#86efac", "blue": "#6ee7b7", "card1": "#1a3a2a", "card2": "#10271d",
         "sidebar1": "#10261a", "sidebar2": "#09170f", "line": "rgba(134, 239, 172, .19)",
         "text": "#effcf3", "muted": "#b1cdb9", "button1": "#166534", "button2": "#14532d"
+    },
+    "🤍 Bright Executive": {
+        "navy950": "#f4f7fb", "navy900": "#ffffff", "navy800": "#eaf1f8",
+        "glow1": "rgba(59, 130, 246, .10)", "glow2": "rgba(20, 184, 166, .08)",
+        "accent": "#087e8b", "blue": "#2563eb", "card1": "#ffffff", "card2": "#f1f6fc",
+        "sidebar1": "#edf4fb", "sidebar2": "#e5eef8", "line": "rgba(51, 65, 85, .18)",
+        "text": "#172033", "muted": "#526176", "button1": "#dceafe", "button2": "#d8f3ee"
     }
 }
 selected_theme_name = st.sidebar.selectbox("✨ Choose your theme", list(THEME_OPTIONS), key="app_visual_theme")
@@ -154,6 +161,24 @@ theme_css = """
 for theme_key, theme_value in selected_theme.items():
     theme_css = theme_css.replace(f"__{theme_key.upper()}__", theme_value)
 st.markdown(theme_css, unsafe_allow_html=True)
+if selected_theme_name == "🤍 Bright Executive":
+    st.markdown("""
+    <style>
+    [data-testid="stHeader"] { background: rgba(255,255,255,.92) !important; }
+    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
+    p, label, [data-testid="stCaptionContainer"], [data-baseweb="tab"] { color:#475569 !important; }
+    h1, h2, h3, h4 { color:#172033 !important; }
+    [data-testid="stMetricLabel"] { color:#526176 !important; }
+    [data-testid="stMetricValue"] { color:#172033 !important; }
+    [data-testid="stDataFrame"], [data-testid="stDataEditor"] { background:#fff !important; }
+    th { background-color:#dce7f3 !important; color:#172033 !important; }
+    .stButton > button, .stDownloadButton > button { color:#17314f !important; }
+    .stButton > button:hover, .stDownloadButton > button:hover { color:#0f253e !important; }
+    [data-baseweb="select"] > div, [data-baseweb="input"] > div,
+    [data-baseweb="textarea"] > div { background:#fff !important; color:#172033 !important; }
+    [data-testid="stDataFrame"], [data-testid="stDataEditor"] { width:100%; max-width:100%; }
+    </style>
+    """, unsafe_allow_html=True)
 
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploaded_raw_data")
@@ -970,7 +995,8 @@ def parse_pct_from_str(val):
     if not isinstance(val, str) or '%' not in val:
         return None
     try:
-        return float(val.split('%')[0].replace('₹', '').strip())
+        matches = re.findall(r'(-?\d+(?:\.\d+)?)\s*%', val)
+        return float(matches[-1]) if matches else None
     except:
         return None
 
@@ -1681,7 +1707,7 @@ def build_clean_email_message(recipient_title, duration_label, ops_sum_df=None, 
 
     # 4. PAYMENT PENDING BLOCK
     if pay_df is not None and not pay_df.empty:
-        lines.append(f"📌 PENDING INVOICES SUMMARY (Total Bills: {len(pay_df)})")
+        lines.append(f"📌 PAYMENT RECORDS SUMMARY (Total Bills: {len(pay_df)})")
         lines.append("==========================================================")
         if 'Department Bucket' in pay_df.columns:
             b_counts = pay_df['Department Bucket'].value_counts()
@@ -1765,6 +1791,22 @@ def style_ui_dataframe(df_in):
     if df_in is None or df_in.empty:
         return df_in
 
+    def tone_css(tone):
+        if selected_theme_name == '🤍 Bright Executive':
+            palette = {
+                'green': ('#dcfce7', '#166534'), 'red': ('#fee2e2', '#991b1b'),
+                'yellow': ('#fef3c7', '#92400e'), 'purple': ('#f3e8ff', '#6b21a8'),
+                'muted': ('#f1f5f9', '#64748b')
+            }
+        else:
+            palette = {
+                'green': ('rgba(56, 142, 60, 0.25)', '#b9f6ca'), 'red': ('rgba(211, 47, 47, 0.25)', '#ff8a80'),
+                'yellow': ('rgba(245, 127, 23, 0.25)', '#ffe57f'), 'purple': ('rgba(123, 31, 162, 0.25)', '#ea80fc'),
+                'muted': ('transparent', '#78909C')
+            }
+        bg, fg = palette[tone]
+        return f'background-color: {bg}; color: {fg}; font-weight: bold;'
+
     def ui_cell_color(val, col_name):
         if pd.isna(val):
             return ''
@@ -1773,41 +1815,62 @@ def style_ui_dataframe(df_in):
         c_lower = str(col_name).lower()
 
         pct = parse_pct_from_str(s_val)
+        if 'util' in c_lower and pct is not None and pct <= 1:
+            pct *= 100
+        if 'payment pending / paid' in s_lower or 'paid achievement' in s_lower:
+            return tone_css('green')
+        if 'other' in s_lower or 'draft' in s_lower:
+            return tone_css('red')
+        if 'finance pending' in s_lower or 'finance hold' in s_lower or 'cost control pending' in s_lower:
+            return tone_css('yellow')
+        payment_col = any(word in c_lower for word in ['payment pending / paid', 'payment pending', 'paid achievement'])
+        failure_col = any(word in c_lower for word in ['other', 'draft', 'cost control pending', 'finance pending', 'finance hold'])
+        if payment_col and pct is not None:
+            return tone_css('green')
+        if failure_col and pct is not None:
+            return tone_css('red' if ('other' in c_lower or 'draft' in c_lower) else 'yellow')
         if pct is not None and pct == 0:
-            return 'color: #78909C;'
+            return tone_css('muted')
 
-        if any(k in c_lower for k in ['ontime dep, ontime arr', 'ontime arrival']):
-            if pct is not None and pct > 0:
-                return 'background-color: rgba(56, 142, 60, 0.25); color: #b9f6ca; font-weight: bold;'
-        elif any(k in c_lower for k in ['late dep, late arr', 'late arrival', 'late dep, in-transit']):
-            if pct is not None and pct > 0:
-                return 'background-color: rgba(211, 47, 47, 0.25); color: #ff8a80; font-weight: bold;'
+        if '%' in c_lower and pct is not None:
+            if 'util' in c_lower:
+                return tone_css('red') if pct < 60 else (tone_css('yellow') if pct < 80 else tone_css('green'))
+            if any(k in c_lower for k in ['achievement', 'ontime']):
+                return tone_css('green' if pct >= 50 else 'yellow')
+            return tone_css('green' if pct < 50 else 'red')
+
+        if any(k in c_lower for k in ['ontime dep, ontime arr', 'ontime arrival', 'on-time']):
+            if pct is not None:
+                return tone_css('green' if pct >= 50 else 'red')
+        elif any(k in c_lower for k in ['late dep, late arr', 'late arrival', 'late dep, in-transit', ' late']):
+            if pct is not None:
+                return tone_css('green' if pct < 50 else 'red')
         elif 'ontime dep, late arr' in c_lower or 'in-transit' in c_lower:
             if pct is not None and pct > 0:
-                return 'background-color: rgba(245, 127, 23, 0.25); color: #ffe57f; font-weight: bold;'
+                return tone_css('yellow')
         elif 'late dep, ontime arr' in c_lower:
             if pct is not None and pct > 0:
-                return 'background-color: rgba(123, 31, 162, 0.25); color: #ea80fc; font-weight: bold;'
+                return tone_css('purple')
 
         elif 'remark' in c_lower:
             if 'ontime dep, ontime arr' in s_lower or 'ontime arrival' in s_lower:
-                return 'background-color: rgba(56, 142, 60, 0.25); color: #b9f6ca; font-weight: bold;'
+                return tone_css('green')
             elif any(k in s_lower for k in ['late dep, late arr', 'late arrival', 'no dep', 'missing']):
-                return 'background-color: rgba(211, 47, 47, 0.25); color: #ff8a80; font-weight: bold;'
+                return tone_css('red')
             elif 'ontime dep, late arr' in s_lower or 'in-transit' in s_lower:
-                return 'background-color: rgba(245, 127, 23, 0.25); color: #ffe57f; font-weight: bold;'
+                return tone_css('yellow')
             elif 'late dep, ontime arr' in s_lower:
-                return 'background-color: rgba(123, 31, 162, 0.25); color: #ea80fc; font-weight: bold;'
+                return tone_css('purple')
 
         elif c_lower == 'delay hours' and s_val not in ['', '-', '0:00']:
             if not s_val.startswith('-'):
                 try:
                     parts = s_val.split(':')
                     if (int(parts[0]) + int(parts[1]) / 60.0) > 0.25:
-                        return 'background-color: rgba(211, 47, 47, 0.25); color: #ff8a80; font-weight: bold;'
+                        return tone_css('red')
                 except:
                     pass
-            return 'background-color: rgba(56, 142, 60, 0.2); color: #b9f6ca;'
+            return tone_css('green')
 
         return ''
 
@@ -1817,6 +1880,27 @@ def style_ui_dataframe(df_in):
             styled = styled.map(lambda x, c=col: ui_cell_color(x, c), subset=[col])
         else:
             styled = styled.applymap(lambda x, c=col: ui_cell_color(x, c), subset=[col])
+    status_cols = [col for col in ['Payment Group', 'Operations Outcome', 'Remark with 15 min waiver', 'Remark'] if col in df_in.columns]
+    status_text = df_in[status_cols].fillna('').astype(str).apply(lambda col: col.str.lower()) if status_cols else pd.DataFrame(index=df_in.index)
+    def contains_status(pattern):
+        if status_text.empty:
+            return pd.Series(False, index=df_in.index)
+        return status_text.apply(lambda col: col.str.contains(pattern, regex=True, na=False)).any(axis=1)
+    row_tones = pd.Series('', index=df_in.index, dtype=object)
+    payment_good = contains_status(r'payment pending / paid|^paid$')
+    row_tones.loc[payment_good] = 'green'
+    row_tones.loc[contains_status(r'^other$|^draft$|late dep, late arr|late arrival|no dep|missing')] = 'red'
+    row_tones.loc[contains_status(r'finance pending|finance hold|cost control pending|ontime dep, late arr|in-transit')] = 'yellow'
+    row_tones.loc[contains_status(r'late dep, ontime arr')] = 'purple'
+    row_tones.loc[contains_status(r'ontime dep, ontime arr|ontime arrival')] = 'green'
+    if 'Utilization Class' in df_in.columns:
+        util_class = df_in['Utilization Class'].fillna('').astype(str).str.lower()
+        row_tones.loc[util_class.str.contains('efficiently', na=False)] = 'green'
+        row_tones.loc[util_class.str.contains('underutilized', na=False)] = 'red'
+    row_style = pd.DataFrame('', index=df_in.index, columns=df_in.columns)
+    for tone in ['green', 'red', 'yellow', 'purple']:
+        row_style.loc[row_tones.eq(tone), :] = tone_css(tone)
+    styled = styled.apply(lambda col: row_style[col.name], axis=0)
     return styled
 
 def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic"):
@@ -1857,6 +1941,10 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic")
         'bold': True, 'bg_color': '#E2E8F0', 'font_color': '#0F172A',
         'border': 1, 'align': 'center', 'valign': 'vcenter'
     })
+    row_green_fmt = workbook.add_format({'border': 1, 'bg_color': '#E2F0D9', 'font_color': '#1F4E2B', 'valign': 'vcenter'})
+    row_red_fmt = workbook.add_format({'border': 1, 'bg_color': '#FCE4D6', 'font_color': '#7F1D1D', 'valign': 'vcenter'})
+    row_yellow_fmt = workbook.add_format({'border': 1, 'bg_color': '#FFF2CC', 'font_color': '#7F6000', 'valign': 'vcenter'})
+    row_purple_fmt = workbook.add_format({'border': 1, 'bg_color': '#E4DFEC', 'font_color': '#4C2A69', 'valign': 'vcenter'})
 
     if df.empty:
         worksheet.write(0, 0, "No Data Available", header_fmt)
@@ -1868,6 +1956,17 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic")
 
     for row_idx, (_, row) in enumerate(df.iterrows(), start=1):
         is_total_row = any(str(row.get(k, '')).upper() in ['TOTAL', 'GRAND TOTAL'] for k in ['VendorRO', 'RO Name', 'Route Path', 'Origin RO'])
+        row_labels = ' '.join(str(row.get(col, '')).strip().lower() for col in ['Payment Group', 'Operations Outcome', 'Remark with 15 min waiver', 'Remark', 'Status'] if col in row.index)
+        if 'payment pending / paid' in row_labels or 'paid' in row_labels or 'ontime arrival' in row_labels or 'ontime dep, ontime arr' in row_labels:
+            row_status_fmt = row_green_fmt
+        elif 'other' in row_labels or 'draft' in row_labels or 'late arrival' in row_labels or 'late dep, late arr' in row_labels or 'missing' in row_labels:
+            row_status_fmt = row_red_fmt
+        elif 'finance pending' in row_labels or 'finance hold' in row_labels or 'cost control pending' in row_labels or 'in-transit' in row_labels or 'ontime dep, late arr' in row_labels:
+            row_status_fmt = row_yellow_fmt
+        elif 'late dep, ontime arr' in row_labels:
+            row_status_fmt = row_purple_fmt
+        else:
+            row_status_fmt = None
         for col_idx, col_name in enumerate(df.columns):
             val = row[col_name]
             if pd.isna(val):
@@ -1881,17 +1980,23 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic")
             s_lower = s_val.lower()
             c_lower = str(col_name).lower()
             
-            chosen_fmt = total_row_fmt if is_total_row else cell_fmt
+            chosen_fmt = total_row_fmt if is_total_row else (row_status_fmt or cell_fmt)
             
             if not is_total_row:
-                if any(k in c_lower for k in ['ontime dep, ontime arr', 'ontime arrival']):
+                if any(k in c_lower for k in ['payment pending / paid', 'payment pending', 'paid achievement']):
+                    chosen_fmt = green_fmt if (parse_pct_from_str(s_val) or 0) > 0 or (s_val.isdigit() and int(s_val) > 0) else muted_fmt
+                elif 'other' in c_lower or 'draft' in c_lower:
+                    chosen_fmt = red_fmt if (parse_pct_from_str(s_val) or 0) > 0 or (s_val.isdigit() and int(s_val) > 0) else muted_fmt
+                elif 'cost control pending' in c_lower or 'finance pending' in c_lower or 'finance hold' in c_lower:
+                    chosen_fmt = yellow_fmt if (parse_pct_from_str(s_val) or 0) > 0 or (s_val.isdigit() and int(s_val) > 0) else muted_fmt
+                elif any(k in c_lower for k in ['ontime dep, ontime arr', 'ontime arrival', 'on-time']):
                     pct = parse_pct_from_str(s_val)
                     if pct is not None:
-                        chosen_fmt = green_fmt if pct > 0 else muted_fmt
-                elif any(k in c_lower for k in ['late dep, late arr', 'late arrival', 'late dep, in-transit']):
+                        chosen_fmt = green_fmt if pct >= 50 else red_fmt
+                elif any(k in c_lower for k in ['late dep, late arr', 'late arrival', 'late dep, in-transit', ' late']):
                     pct = parse_pct_from_str(s_val)
                     if pct is not None:
-                        chosen_fmt = red_fmt if pct > 0 else muted_fmt
+                        chosen_fmt = green_fmt if pct < 50 else red_fmt
                 elif 'ontime dep, late arr' in c_lower:
                     pct = parse_pct_from_str(s_val)
                     if pct is not None:
@@ -1925,8 +2030,10 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic")
                         chosen_fmt = green_fmt
                 elif 'overall util %' in c_lower:
                     pct = parse_pct_from_str(s_val)
+                    if pct is not None and isinstance(val_str, (int, float)) and pct <= 1:
+                        pct *= 100
                     if pct is not None:
-                        chosen_fmt = red_fmt if pct < 50 else (yellow_fmt if pct < 80 else green_fmt)
+                        chosen_fmt = red_fmt if pct < 60 else (yellow_fmt if pct < 80 else green_fmt)
                 elif 'overall cpk' in c_lower:
                     chosen_fmt = blue_bold_fmt
                 elif '1. user / draft pending' in c_lower:
@@ -1946,6 +2053,137 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic")
         max_val_len = df[col].astype(str).map(len).max() if not df.empty else 10
         col_len = max(max_val_len, len(str(col))) + 3
         worksheet.set_column(i, i, min(col_len, 42))
+    worksheet.autofilter(0, 0, len(df), max(len(df.columns) - 1, 0))
+    worksheet.freeze_panes(1, 0)
+    worksheet.set_landscape()
+    worksheet.fit_to_pages(1, 0)
+    worksheet.repeat_rows(0)
+    worksheet.set_margins(0.25, 0.25, 0.4, 0.4)
+
+def get_selected_cell_from_event(event, displayed_df):
+    """Return (row index, column name) from a Streamlit dataframe selection event."""
+    try:
+        selection = getattr(event, 'selection', {})
+        if not isinstance(selection, dict):
+            selection = {name: getattr(selection, name, None) for name in ['rows', 'columns', 'cells']}
+        cells = selection.get('cells') or []
+        if cells:
+            cell = cells[-1]
+            if isinstance(cell, (tuple, list)) and len(cell) >= 2:
+                row_idx, col_ref = cell[0], cell[1]
+            else:
+                row_text, col_text = str(cell).replace(':', ',').split(',', 1)
+                row_idx, col_ref = int(row_text), col_text
+            col_name = col_ref if isinstance(col_ref, str) and col_ref in displayed_df.columns else displayed_df.columns[int(col_ref)]
+            return int(row_idx), col_name
+        rows = selection.get('rows') or []
+        if rows:
+            cols = selection.get('columns') or []
+            col_name = cols[-1] if cols and cols[-1] in displayed_df.columns else None
+            return int(rows[-1]), col_name
+    except Exception:
+        pass
+    return None, None
+
+
+def compact_detail_frame(frame, kind):
+    if frame is None or frame.empty:
+        return pd.DataFrame()
+    preferred_by_kind = {
+        'ven_raw': ['Date', 'Origin RO', 'Route Path', 'Legwise', 'VendorName', 'Actual Arrival Time', 'Delay Hours', 'Remark with 15 min waiver', 'MasterCDNo'],
+        'ops_raw': ['MCD_StartDate', 'Zone', 'Origin RO', 'Route Path', 'Legwise', 'Legs', 'CD_FromBranch', 'CD_ToBranch', 'MasterCDNo', 'Remark'],
+        'pay_raw': ['Invoice Id', 'Invoice Date', 'RO Name', 'Zone', 'Vendor Name', 'Amount', 'Status', 'Payment Group', 'Pending With', 'Days Pending'],
+        'cpk_raw': ['Date', 'RO_Clean', 'Final_Route', 'Final_Type', 'VendorName', 'Vehicle No', 'Cap', 'Wt', 'Trips', 'Cost']
+    }
+    cols = [col for col in preferred_by_kind.get(kind, list(frame.columns)) if col in frame.columns]
+    out = frame.loc[:, cols].copy() if cols else frame.copy()
+    for col in out.columns:
+        if pd.api.types.is_datetime64_any_dtype(out[col]) or col in ['Date', 'Invoice Date', 'Base Date', 'Last Approved At', 'MCD_StartDate']:
+            parsed = pd.to_datetime(out[col], dayfirst=True, errors='coerce')
+            if pd.api.types.is_datetime64_any_dtype(out[col]) or parsed.notna().sum() >= max(1, int(out[col].notna().sum() * 0.7)):
+                out[col] = parsed.dt.strftime('%d-%b-%Y').fillna('')
+    return out.reset_index(drop=True)
+
+
+def render_summary_with_raw_drilldown(summary, raw, title, raw_kind, key, match_columns=None):
+    """A compact, selectable summary that opens only the clicked row's raw records below."""
+    if summary is None or summary.empty:
+        st.info(f'No {title.lower()} summary is available for this selection.')
+        return
+    display = summary.reset_index(drop=True).copy()
+    try:
+        event = st.dataframe(
+            style_ui_dataframe(display), use_container_width=True, hide_index=True,
+            on_select='rerun', selection_mode='single-cell', key=key
+        )
+    except TypeError:
+        st.dataframe(style_ui_dataframe(display), use_container_width=True, hide_index=True)
+        st.caption('Select a summary cell to open its focused raw records.')
+        return
+    row_idx, selected_col = get_selected_cell_from_event(event, display)
+    if row_idx is None or not (0 <= row_idx < len(display)):
+        st.caption('Click a count or percentage above to open the matching raw records.')
+        return
+    selected = display.iloc[row_idx]
+    detail = raw.copy() if isinstance(raw, pd.DataFrame) else pd.DataFrame()
+    match_pairs = match_columns or [
+        ('Origin RO', 'Origin RO'), ('RO Name', 'RO Name'), ('VendorRO', 'RO_Clean'),
+        ('Route Path', 'Route Path'), ('Route (UP/DOWN)', 'Final_Route'), ('Final_Route', 'Final_Route'),
+        ('Route Pair', 'Final_Route'), ('Type', 'Final_Type'), ('Legwise', 'Legwise'),
+        ('VendorName', 'VendorName'), ('Vendor(s)', 'VendorName'), ('Vendor Name', 'Vendor Name')
+    ]
+    for summary_col, raw_col in match_pairs:
+        if summary_col in selected.index and raw_col in detail.columns:
+            target = str(selected[summary_col]).strip()
+            if target and target.casefold() not in ('nan', 'none', 'all', 'total', 'grand total'):
+                detail = detail[detail[raw_col].fillna('').astype(str).str.strip().eq(target)].copy()
+    clicked_metric = str(selected_col or '').strip().lower()
+    if raw_kind == 'ven_raw':
+        target_status = None
+        if 'ontime arrival' in clicked_metric or 'on-time' in clicked_metric:
+            target_status = 'Ontime Arrival'
+        elif 'late arrival' in clicked_metric or clicked_metric.endswith(' late'):
+            target_status = 'Late Arrival'
+        elif 'in-transit' in clicked_metric:
+            target_status = 'In-Transit'
+        status_col = get_col(detail, ['Remark with 15 min waiver'])
+        if target_status and status_col:
+            detail = detail[detail[status_col].fillna('').astype(str).str.strip().str.casefold().eq(target_status.casefold())].copy()
+    elif raw_kind == 'ops_raw':
+        outcome_map = {
+            'ontime dep, ontime arr': 'Ontime Dep, Ontime Arr',
+            'ontime dep, late arr': 'Ontime Dep, Late Arr',
+            'late dep, late arr': 'Late Dep, Late Arr',
+            'late dep, ontime arr': 'Late Dep, Ontime Arr'
+        }
+        clicked_outcome = next((outcome for token, outcome in outcome_map.items() if token in clicked_metric), None)
+        remark_col = get_col(detail, ['Remark'])
+        if clicked_outcome and remark_col:
+            detail = detail[detail[remark_col].fillna('').astype(str).str.contains(re.escape(clicked_outcome), case=False, na=False)].copy()
+        elif clicked_outcome:
+            dep_col, arr_col = get_col(detail, ['Dep_Status']), get_col(detail, ['Arr_Status'])
+            if dep_col and arr_col:
+                dep_wanted, arr_wanted = clicked_outcome.split(', ')
+                detail = detail[
+                    detail[dep_col].fillna('').astype(str).str.contains(dep_wanted.replace(' Dep', ''), case=False, na=False) &
+                    detail[arr_col].fillna('').astype(str).str.contains(arr_wanted.replace(' Arr', ''), case=False, na=False)
+                ].copy()
+    st.markdown(f'#### {title} · {selected_col or "selected row"} detail · {len(detail):,} records')
+    compact = compact_detail_frame(detail, raw_kind)
+    if compact.empty:
+        st.info('No matching raw rows were found for the selected summary line.')
+        return
+    st.dataframe(style_ui_dataframe(compact), use_container_width=True, hide_index=True, height=330)
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+        write_styled_sheet_to_excel(writer, compact, 'Focused_Raw_Data', sheet_type=raw_kind)
+    st.download_button(
+        f'📥 Download {title} detail (formatted Excel)', data=buffer.getvalue(),
+        file_name=f'{re.sub(r"[^A-Za-z0-9_-]+", "_", title)}_Detail.xlsx',
+        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        key=f'{key}_download'
+    )
+
 
 def add_total_row_cpk_df(df):
     if df is None or df.empty:
@@ -2751,6 +2989,47 @@ def normalize_overall_payment_raw(raw, data=None):
     normalized['Zone'] = normalized['RO Name'].map(ro_zone).fillna('UNKNOWN ZONE')
     return normalized.reset_index(drop=True)
 
+
+def prepare_payment_dashboard_frame(raw_frame):
+    """Keep active and paid payment rows, then assign the dashboard's five action buckets."""
+    if not isinstance(raw_frame, pd.DataFrame) or raw_frame.empty:
+        return pd.DataFrame()
+    frame = raw_frame.copy()
+    valid_categories = {
+        'Contract - Feeder Connection vehicle charges',
+        'Market - Feeder Connection vehicle charges',
+        'Market Vehicle Hired -Linehaul',
+        'Contract Network Vehicle Hired - Regional',
+        'Contract Network Vehicle Hired - Zonal',
+        'Contract Network Vehicle Hired - National'
+    }
+    if 'Category' in frame.columns:
+        frame = frame[frame['Category'].fillna('').astype(str).str.strip().isin(valid_categories)].copy()
+    status = frame.get('Status', pd.Series('', index=frame.index)).fillna('').astype(str).str.upper().str.replace(' ', '_', regex=False)
+    pending_with = frame.get('Pending With', pd.Series('', index=frame.index)).fillna('').astype(str).str.upper()
+    revert = frame.get('Finance Revert Remarks 1', pd.Series('', index=frame.index)).fillna('').astype(str)
+    approver_revert = frame.get('Approver Revert Remarks', pd.Series('', index=frame.index)).fillna('').astype(str)
+    extra_revert = frame.get('Revert Remarks', pd.Series('', index=frame.index)).fillna('').astype(str)
+    has_revert = revert.ne('') | approver_revert.ne('') | extra_revert.ne('')
+    paid_or_payment = status.str.contains('PAID|PROCESSED|PAYMENT', na=False) | pending_with.str.contains('PAYMENT', na=False)
+    finance = status.str.contains('FINANCE|HOLD', na=False) | pending_with.str.contains(r'FINANCE|LEVEL\s*3', na=False)
+    draft = status.str.contains('DRAFT', na=False) | pending_with.str.contains('AJAY', na=False) | has_revert
+    cost_control = status.str.contains('PENDING', na=False) | pending_with.str.contains(r'COST\s*CONTROL|OPSACCTS|ACC', na=False)
+    frame['Payment Group'] = np.select(
+        [paid_or_payment, finance, draft, cost_control],
+        ['Payment Pending / Paid', 'Finance Pending / Hold', 'Draft', 'Cost Control Pending'],
+        default='Other'
+    )
+    frame['Department Bucket'] = frame['Payment Group'].map({
+        'Payment Pending / Paid': '1. PAYMENT PENDING / PAID',
+        'Finance Pending / Hold': '2. FINANCE PENDING / HOLD',
+        'Draft': '3. DRAFT', 'Cost Control Pending': '4. COST CONTROL PENDING', 'Other': '5. OTHER'
+    })
+    if 'Base Date' in frame.columns:
+        base_date = pd.to_datetime(frame['Base Date'], dayfirst=True, errors='coerce')
+        frame['Days Pending'] = (pd.Timestamp(get_ist_now().date()) - base_date.dt.normalize()).dt.days
+    return frame.reset_index(drop=True)
+
 def get_normalized_overall_payment(path, data=None, processed_signature=None):
     if not path or not os.path.exists(path):
         return pd.DataFrame()
@@ -2783,9 +3062,9 @@ def load_dashboard_data(page):
         return {'Scheduled_Route_Master': get_scheduled_route_master(get_route_lookup_signature())}
     path = FILE_MAP["FINAL_OUTPUT"]
     if not os.path.exists(path):
-        if page in ["📝 Today's Call Action Plan", "🔐 User & Access Control", "⚠️ Overall Issues"]:
+        if page in ["📝 Today's Call Action Plan", "🔐 User & Access Control", "⚠️ Overall Issues", "💳 Payment Dashboard", "📱 Communication Hub"]:
             data = {"dummy": pd.DataFrame()}
-            if page == "⚠️ Overall Issues" and os.path.exists(FILE_MAP.get('PAYMENT', '')):
+            if page in ["⚠️ Overall Issues", "💳 Payment Dashboard", "📱 Communication Hub"] and os.path.exists(FILE_MAP.get('PAYMENT', '')):
                 try:
                     data['Payment_Raw'] = get_normalized_overall_payment(FILE_MAP['PAYMENT'], data)
                 except Exception as exc:
@@ -2795,7 +3074,7 @@ def load_dashboard_data(page):
     try:
         processed_signature = file_version(path)
         data = read_dashboard_sheets_cached(path, processed_signature, MENU_SHEETS[page])
-        if page == "⚠️ Overall Issues" and os.path.exists(FILE_MAP.get('PAYMENT', '')):
+        if page in ["⚠️ Overall Issues", "💳 Payment Dashboard", "📱 Communication Hub"] and os.path.exists(FILE_MAP.get('PAYMENT', '')):
             try:
                 data['Payment_Raw'] = get_normalized_overall_payment(FILE_MAP['PAYMENT'], data, processed_signature)
             except Exception as exc:
@@ -3196,6 +3475,10 @@ def build_overall_issues_excel_bytes(summary, payment, operations, utilization, 
         low_odd = workbook.add_format({'bg_color': '#EAF8F0', 'font_color': '#14532D', 'bold': True, 'bottom': 1, 'bottom_color': '#B8DDC8', 'align': 'center'})
         high_even = workbook.add_format({'bg_color': '#FCE1E1', 'font_color': '#8A1C1C', 'bold': True, 'bottom': 1, 'bottom_color': '#E9BABA', 'align': 'center'})
         high_odd = workbook.add_format({'bg_color': '#FFF0E0', 'font_color': '#8A3B0A', 'bold': True, 'bottom': 1, 'bottom_color': '#E9CBAA', 'align': 'center'})
+        row_green_fmt = workbook.add_format({'bg_color': '#E2F0D9', 'font_color': '#1F4E2B', 'bottom': 1, 'bottom_color': '#B8DDC8', 'valign': 'vcenter', 'text_wrap': True})
+        row_red_fmt = workbook.add_format({'bg_color': '#FCE4D6', 'font_color': '#7F1D1D', 'bottom': 1, 'bottom_color': '#E9BABA', 'valign': 'vcenter', 'text_wrap': True})
+        row_yellow_fmt = workbook.add_format({'bg_color': '#FFF2CC', 'font_color': '#7F6000', 'bottom': 1, 'bottom_color': '#E9CBAA', 'valign': 'vcenter', 'text_wrap': True})
+        row_purple_fmt = workbook.add_format({'bg_color': '#E4DFEC', 'font_color': '#4C2A69', 'bottom': 1, 'bottom_color': '#D5C8E5', 'valign': 'vcenter', 'text_wrap': True})
         for sheet_name, source_df, thresholds in sheets:
             frame = source_df.copy() if isinstance(source_df, pd.DataFrame) else pd.DataFrame()
             if frame.empty:
@@ -3214,13 +3497,33 @@ def build_overall_issues_excel_bytes(summary, payment, operations, utilization, 
                 ws.set_column(ci, ci, width)
             for ri, (_, row) in enumerate(frame.iterrows(), start=3):
                 even = (ri - 3) % 2 == 0
+                row_label_text = ' '.join(str(row.get(col, '')).strip().lower() for col in ['Payment Group', 'Operations Outcome', 'Utilization Class'] if col in row.index)
+                if 'payment pending / paid' in row_label_text or 'efficiently' in row_label_text or 'ontime dep, ontime arr' in row_label_text:
+                    row_fmt = row_green_fmt
+                elif 'other' in row_label_text or 'draft' in row_label_text or 'underutilized' in row_label_text or 'late dep, late arr' in row_label_text:
+                    row_fmt = row_red_fmt
+                elif 'finance pending' in row_label_text or 'finance pending / hold' in row_label_text or 'cost control pending' in row_label_text or 'ontime dep, late arr' in row_label_text:
+                    row_fmt = row_yellow_fmt
+                elif 'late dep, ontime arr' in row_label_text:
+                    row_fmt = row_purple_fmt
+                else:
+                    row_fmt = base_even if even else base_odd
                 for ci, col in enumerate(frame.columns):
                     value = row[col]
                     if isinstance(value, np.generic):
                         value = value.item()
                     if value is None or (not isinstance(value, (list, dict)) and pd.isna(value)):
                         value = ''
-                    fmt = base_even if even else base_odd
+                    fmt = row_fmt
+                    col_lower = str(col).strip().lower()
+                    if col_lower == 'payment pending / paid':
+                        fmt = row_green_fmt
+                    elif col_lower == 'other' or col_lower == 'other bills':
+                        fmt = row_red_fmt
+                    elif col_lower in ['draft', 'draft bills']:
+                        fmt = row_red_fmt
+                    elif col_lower in ['finance pending / hold', 'finance pending']:
+                        fmt = row_yellow_fmt
                     threshold = thresholds.get(col)
                     if threshold is not None:
                         pct = None if col == 'Overall Util %' and isinstance(value, (int, float)) else parse_pct_from_str(value)
@@ -3231,6 +3534,12 @@ def build_overall_issues_excel_bytes(summary, payment, operations, utilization, 
                             if col in ('Route Utilization', 'Overall Util %'):
                                 is_low = not is_low
                             fmt = (low_even if even else low_odd) if is_low else (high_even if even else high_odd)
+                    if col_lower == 'payment pending / paid':
+                        fmt = row_green_fmt
+                    elif col_lower in ['other', 'other bills', 'draft', 'draft bills']:
+                        fmt = row_red_fmt
+                    elif col_lower in ['finance pending / hold', 'finance pending', 'pending']:
+                        fmt = row_yellow_fmt
                     ws.write(ri, ci, value, fmt)
                 ws.set_row(ri, 23)
             ws.autofilter(2, 0, len(frame) + 2, max(len(frame.columns) - 1, 0))
@@ -3241,11 +3550,11 @@ def build_overall_issues_excel_bytes(summary, payment, operations, utilization, 
             ws.set_footer('&LConfidential report&RPage &P of &N')
     return buffer.getvalue()
 
-def _overall_issue_pivot_selection(frame, group_columns, count_label, key):
+def _overall_issue_pivot_selection(frame, group_columns, count_label, key, default_frame=None):
     """Show a compact pivot; selecting a row narrows the raw records below it."""
     if frame.empty or not all(column in frame.columns for column in group_columns):
         st.info('No records for this section in the selected window.')
-        return frame
+        return default_frame.copy() if isinstance(default_frame, pd.DataFrame) else frame
     pivot = frame.groupby(group_columns, dropna=False).size().reset_index(name=count_label)
     pivot = pivot.sort_values(count_label, ascending=False).reset_index(drop=True)
     try:
@@ -3267,7 +3576,7 @@ def _overall_issue_pivot_selection(frame, group_columns, count_label, key):
                 return narrowed.copy()
     except TypeError:
         st.dataframe(pivot, use_container_width=True, hide_index=True, height=210)
-    return frame
+    return default_frame.copy() if isinstance(default_frame, pd.DataFrame) else frame
 
 def render_overall_issue_raw_page(data, query):
     """Show focused issue details with summaries, filters and one formatted workbook."""
@@ -3371,41 +3680,73 @@ def render_overall_issue_raw_page(data, query):
         denominator = len(utilization)
     issue_count = len(focused)
     issue_pct = issue_count / denominator * 100 if denominator else 0
-    pivot_suffix = f"_{start_date:%Y%m%d}_{end_date:%Y%m%d}_{selected_ro}_{selected_route}"
+    safe_issue_key = re.sub(r'[^A-Za-z0-9]+', '_', issue_type).strip('_')
+    pivot_suffix = f"_{safe_issue_key}_{start_date:%Y%m%d}_{end_date:%Y%m%d}_{selected_ro}_{selected_route}"
     st.caption(f"{issue_type} · {selected_ro} · {zone} · {start_date:%d %b %Y} to {end_date:%d %b %Y} · {selected_route}")
     m1, m2, m3 = st.columns(3)
     m1.metric('Selected issue rate', f'{issue_pct:.1f}%')
     m2.metric('Matching records', f'{issue_count:,}')
     m3.metric('Selected denominator', f'{denominator:,}')
 
-    tabs = st.tabs(['Payment', 'Operations Performance', 'Utilization'])
-    with tabs[0]:
-        pivot_detail = _overall_issue_pivot_selection(payments, ['RO Name', 'Payment Group'], 'Bills', f'overall_issues_payment_pivot{pivot_suffix}')
+    if issue_type in operations_issues:
+        detail_tab_order = ['Operations Performance', 'Payment', 'Utilization']
+    elif issue_type in ['Underutilized routes', 'Efficiently utilized routes']:
+        detail_tab_order = ['Utilization', 'Payment', 'Operations Performance']
+    else:
+        detail_tab_order = ['Payment', 'Operations Performance', 'Utilization']
+    detail_tab_containers = st.tabs(detail_tab_order)
+    detail_tabs = dict(zip(detail_tab_order, detail_tab_containers))
+    with detail_tabs['Payment']:
         payment_group = payment_groups.get(issue_type)
-        view = payments[payments['Payment Group'].eq(payment_group)].copy() if payment_group and 'Payment Group' in payments else payments.copy()
-        if not pivot_detail.equals(payments):
-            view = pivot_detail
+        payment_default = payments[payments['Payment Group'].eq(payment_group)].copy() if payment_group and 'Payment Group' in payments else payments.iloc[0:0].copy()
+        view = _overall_issue_pivot_selection(
+            payments, ['RO Name', 'Payment Group'], 'Bills', f'overall_issues_payment_pivot{pivot_suffix}', payment_default
+        )
         st.markdown('#### Payment records')
-        st.dataframe(view, use_container_width=True, hide_index=True, height=330)
-    with tabs[1]:
-        pivot_detail = _overall_issue_pivot_selection(operations, ['Origin RO', 'Route Path', 'Operations Outcome'], 'Trips', f'overall_issues_ops_pivot{pivot_suffix}')
-        view = operations[operations['Operations Outcome'].eq(issue_type)].copy() if issue_type in operations_issues and 'Operations Outcome' in operations else operations.copy()
-        if not pivot_detail.equals(operations):
-            view = pivot_detail
+        compact_view = compact_detail_frame(view, 'pay_raw')
+        if compact_view.empty:
+            st.info('Payment details are hidden until you click a payment issue or select a payment row in the summary above.')
+        else:
+            st.dataframe(style_ui_dataframe(compact_view), use_container_width=True, hide_index=True, height=330)
+    with detail_tabs['Operations Performance']:
+        operations_default = operations[operations['Operations Outcome'].eq(issue_type)].copy() if issue_type in operations_issues and 'Operations Outcome' in operations else operations.iloc[0:0].copy()
+        view = _overall_issue_pivot_selection(
+            operations, ['Origin RO', 'Route Path', 'Operations Outcome'], 'Trips', f'overall_issues_ops_pivot{pivot_suffix}', operations_default
+        )
         st.markdown('#### Operations performance records')
-        st.dataframe(view, use_container_width=True, hide_index=True, height=330)
-    with tabs[2]:
+        compact_view = compact_detail_frame(view, 'ops_raw')
+        if compact_view.empty:
+            st.info('Operations details are hidden until you click an operations issue or select an operations row in the summary above.')
+        else:
+            st.dataframe(style_ui_dataframe(compact_view), use_container_width=True, hide_index=True, height=330)
+    with detail_tabs['Utilization']:
         util_ro_col = get_col(utilization, ['RO'])
         util_route_col = get_col(utilization, ['Route'])
         util_type_col = get_col(utilization, ['Route Type'])
         util_class_col = get_col(utilization, ['Utilization Class'])
         util_group_cols = [c for c in [util_ro_col, util_route_col, util_type_col, util_class_col] if c]
-        pivot_detail = _overall_issue_pivot_selection(utilization, util_group_cols, 'Routes', f'overall_issues_util_pivot{pivot_suffix}') if util_group_cols else utilization
-        view = focused if issue_type in ['Underutilized routes', 'Efficiently utilized routes'] else utilization
-        if not pivot_detail.equals(utilization):
-            view = pivot_detail
+        util_default = focused if issue_type in ['Underutilized routes', 'Efficiently utilized routes'] else utilization.iloc[0:0].copy()
+        view = _overall_issue_pivot_selection(utilization, util_group_cols, 'Routes', f'overall_issues_util_pivot{pivot_suffix}', util_default) if util_group_cols else util_default
         st.markdown('#### Utilization records')
-        st.dataframe(view, use_container_width=True, hide_index=True, height=330)
+        compact_view = compact_detail_frame(view, 'cpk_raw')
+        if compact_view.empty:
+            st.info('Utilization details are hidden until you click a utilization issue or select a utilization row in the summary above.')
+        else:
+            st.dataframe(style_ui_dataframe(compact_view), use_container_width=True, hide_index=True, height=330)
+
+    focused_kind = 'ops_raw' if issue_type in operations_issues else ('pay_raw' if issue_type in payment_groups else 'cpk_raw')
+    focused_compact = compact_detail_frame(focused, focused_kind)
+    if not focused_compact.empty:
+        focused_excel = io.BytesIO()
+        with pd.ExcelWriter(focused_excel, engine='xlsxwriter') as writer:
+            write_styled_sheet_to_excel(writer, focused_compact, 'Selected_Issue_Raw', sheet_type=focused_kind)
+        st.download_button(
+            f'📥 Download only {issue_type} raw records (formatted Excel)',
+            data=focused_excel.getvalue(),
+            file_name=f"Overall_Issue_{safe_issue_key}_{selected_ro}_{start_date:%Y%m%d}_{end_date:%Y%m%d}.xlsx",
+            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            key='overall_issues_focused_download'
+        )
 
     title = f"Overall Issues · {selected_ro} · {zone} · {start_date:%d %b %Y} to {end_date:%d %b %Y}"
     excel_bytes = build_overall_issues_excel_bytes(summary, payments, operations, utilization, title)
@@ -3450,8 +3791,9 @@ def render_overall_issues_metric_cards(metric_specs, zone=None, start_date=None,
             continue
         pct = (count / total * 100) if total else 0
         params_json, base_url_json = _overall_issue_link_markup(issue, ro, zone or 'ALL ZONES', start_date, end_date, route)
+        tone = 'good' if label == 'Payment Pending / Paid' else ('bad' if label == 'Other' else 'neutral')
         cards.append(
-            f'<a class="card" href="#" data-params="{html_module.escape(params_json, quote=True)}" '
+            f'<a class="card {tone}" href="#" data-params="{html_module.escape(params_json, quote=True)}" '
             f'data-base="{html_module.escape(base_url_json, quote=True)}"><span>{html_module.escape(label)} · {pct:.1f}%</span>'
             f'<strong>{count:,}</strong><small>{count:,} of {total:,} {html_module.escape(unit)}</small></a>'
         )
@@ -3461,6 +3803,8 @@ def render_overall_issues_metric_cards(metric_specs, zone=None, start_date=None,
     .card { display:flex; flex-direction:column; gap:4px; min-height:82px; padding:11px 13px; border:1px solid #31475e; border-radius:12px; background:linear-gradient(135deg,#122b40,#101d30); color:#eaf5ff; text-decoration:none; }
     .card:hover { border-color:#67e8f9; transform:translateY(-1px); box-shadow:0 8px 22px rgba(8,145,178,.16); }
     .card span { color:#a9bfd4; font-weight:700; } .card strong { color:#9cc8ff; font-size:23px; line-height:1.05; }
+    .card.good { border-color:rgba(52,211,153,.48); } .card.good strong { color:#6ee7b7; }
+    .card.bad { border-color:rgba(248,113,113,.52); } .card.bad strong { color:#fca5a5; }
     .card small { color:#8299ae; } @media(max-width:900px) { .grid { grid-template-columns:repeat(2,minmax(140px,1fr)); } }
     </style></head><body><div class="grid">CARD_HTML</div><script>
     document.querySelectorAll('.card').forEach((link) => link.addEventListener('click', (event) => {
@@ -3471,6 +3815,13 @@ def render_overall_issues_metric_cards(metric_specs, zone=None, start_date=None,
       } catch (error) { window.alert('Could not open issue details. Please open the dashboard in a browser tab and try again.'); }
     }));
     </script></body></html>'''.replace('CARD_HTML', ''.join(cards))
+    if selected_theme_name == '🤍 Bright Executive':
+        markup = (markup.replace('background:#091521; color:#e5eef9;', 'background:#f4f7fb; color:#172033;')
+                  .replace('border:1px solid #31475e;', 'border:1px solid #cbd5e1;')
+                  .replace('background:linear-gradient(135deg,#122b40,#101d30);', 'background:linear-gradient(135deg,#ffffff,#f1f6fc);')
+                  .replace('color:#a9bfd4;', 'color:#526176;').replace('color:#9cc8ff;', 'color:#1d4ed8;')
+                  .replace('color:#8299ae;', 'color:#64748b;').replace('rgba(52,211,153,.48)', 'rgba(22,163,74,.38)')
+                  .replace('rgba(248,113,113,.52)', 'rgba(220,38,38,.38)'))
     st.components.v1.html(markup, height=190, scrolling=False)
 
 def render_overall_issues_clickable_table(summary, start_date=None, end_date=None,
@@ -3496,7 +3847,12 @@ def render_overall_issues_clickable_table(summary, start_date=None, end_date=Non
             value = html_module.escape(str(row.get(col, '')))
             if col in issue_lookup:
                 pct = parse_pct_from_str(str(row.get(col, '')))
-                tone = 'high' if pct is not None and pct >= 50 else 'low'
+                if col == 'Payment Pending / Paid':
+                    tone = 'low'
+                elif col == 'Other':
+                    tone = 'high'
+                else:
+                    tone = 'high' if pct is not None and pct >= 50 else 'low'
                 params_json, base_url_json = _overall_issue_link_markup(
                     issue_lookup[col], row.get('RO Name', 'ALL ROS'), zone, start_date, end_date, route
                 )
@@ -3524,6 +3880,15 @@ def render_overall_issues_clickable_table(summary, start_date=None, end_date=Non
       } catch (error) { window.alert('Could not open issue details. Please open the dashboard in a browser tab and try again.'); }
     }));
     </script></body></html>'''.replace('HEADER_HTML', header_html).replace('ROWS_HTML', ''.join(rows_html))
+    if selected_theme_name == '🤍 Bright Executive':
+        markup = (markup.replace('color:#e5eef9; background:#091521;', 'color:#172033; background:#f4f7fb;')
+                  .replace('border:1px solid #33475b;', 'border:1px solid #cbd5e1;')
+                  .replace('background:#182b40; color:#bdd1e5;', 'background:#e2e8f0; color:#334155;')
+                  .replace('border-bottom:1px solid #3b4c60;', 'border-bottom:1px solid #cbd5e1;')
+                  .replace('rgba(30,49,69,.44)', 'rgba(226,232,240,.55)')
+                  .replace('rgba(148,163,184,.13)', 'rgba(100,116,139,.20)')
+                  .replace('rgba(52,211,153,.15); color:#a7f3d0;', 'rgba(22,163,74,.14); color:#166534;')
+                  .replace('rgba(248,113,113,.22); color:#fecaca;', 'rgba(220,38,38,.14); color:#991b1b;'))
     st.components.v1.html(markup, height=580, scrolling=False)
 
 def render_overall_issues(data):
@@ -3859,188 +4224,230 @@ elif choice == "🚚 Vendor Performance":
         )
 
         st.markdown("### Vendor Arrival Performance Summary")
-        
-        df_display.insert(0, 'Select 👁️', False)
         ap_data = load_action_plans()
         mod_ap = ap_data.get("Vendor Performance", {})
-        
-        if st.session_state['role'] != 'Vendor':
-            df_display['Action Plan ✍️'] = df_display['RowKey'].map(mod_ap).fillna("")
-            disp_cols = ['Select 👁️'] + [c for c in df_display.columns if c not in ['RowKey', 'Select 👁️']]
-            disabled_cols = [c for c in disp_cols if c not in ['Action Plan ✍️', 'Select 👁️']]
-        else:
-            disp_cols = ['Select 👁️'] + [c for c in df_display.columns if c not in ['RowKey', 'Select 👁️', 'Action Plan ✍️']]
-            disabled_cols = [c for c in disp_cols if c != 'Select 👁️']
-            
-        styled_df = style_ui_dataframe(df_display[disp_cols])
-        
-        edited_df = st.data_editor(
-            styled_df,
-            column_config={"Action Plan ✍️": st.column_config.TextColumn("Action Plan ✍️", width="large")},
-            disabled=disabled_cols,
-            use_container_width=True,
-            height=350,
-            key="vend_editor"
-        )
-        
-        if st.session_state['role'] != 'Vendor':
-            changes = False
-            for idx, row in edited_df.iterrows():
-                r_key = str(df_display.loc[idx, 'RowKey'])
-                new_val = str(row['Action Plan ✍️']).strip()
-                old_val = str(mod_ap.get(r_key, "")).strip()
-                if new_val != old_val:
-                    if new_val: mod_ap[r_key] = new_val
-                    else: mod_ap.pop(r_key, None)
-                    changes = True
-            if changes:
-                ap_data["Vendor Performance"] = mod_ap
-                save_action_plans(ap_data)
+        summary_cols = [c for c in display_cols if c in df_display.columns and c not in ['RowKey', 'Action Plan ✍️', 'Select 👁️']]
+        table_display = df_display[summary_cols].reset_index(drop=True)
+        st.caption('Click any trip count or performance rate to see the matching trip records.')
+        try:
+            vendor_event = st.dataframe(
+                style_ui_dataframe(table_display), use_container_width=True, height=350, hide_index=True,
+                on_select='rerun', selection_mode='single-cell', key='vendor_performance_click'
+            )
+            selected_idx, selected_vendor_metric = get_selected_cell_from_event(vendor_event, table_display)
+        except TypeError:
+            st.dataframe(style_ui_dataframe(table_display), use_container_width=True, height=350, hide_index=True)
+            selected_idx = None
+            selected_vendor_metric = None
 
-        selected_rows = edited_df[edited_df['Select 👁️'] == True].index.tolist()
-        
-        if selected_rows:
-            selected_idx = selected_rows[0]
-            selected_route = df_display.loc[selected_idx, 'Route Path']
-            selected_leg = df_display.loc[selected_idx, 'Legwise']
-            selected_vendor = df_display.loc[selected_idx, 'VendorName']
-            
-            st.markdown("---")
-            st.markdown(f"### 📄 Raw Data for `{selected_vendor}` on `{selected_route}` - `{selected_leg}`")
-            
-            filtered_raw = df_vperf_raw[
-                (df_vperf_raw['Route Path'] == selected_route) & 
-                (df_vperf_raw['Legwise'] == selected_leg) &
-                (df_vperf_raw['VendorName'] == selected_vendor)
-            ].copy()
-            filtered_raw_clean = clean_dataframe_for_excel(filtered_raw, sheet_type="ven_raw")
-            
+        if selected_idx is not None and 0 <= selected_idx < len(table_display):
+            selected_row = df_display.iloc[selected_idx]
+            filtered_raw = df_vperf_raw.copy()
+            for match_col in ['Origin RO', 'VendorName', 'Route Path', 'Legwise']:
+                if match_col in selected_row.index and match_col in filtered_raw.columns:
+                    filtered_raw = filtered_raw[filtered_raw[match_col].fillna('').astype(str).eq(str(selected_row[match_col]))].copy()
+            vendor_metric_to_status = {'Ontime Arrival': 'Ontime Arrival', 'Late Arrival': 'Late Arrival', 'In-Transit': 'In-Transit'}
+            status_wanted = vendor_metric_to_status.get(selected_vendor_metric)
+            if status_wanted and 'Remark with 15 min waiver' in filtered_raw.columns:
+                filtered_raw = filtered_raw[filtered_raw['Remark with 15 min waiver'].fillna('').astype(str).str.strip().eq(status_wanted)].copy()
+            filtered_raw_clean = compact_detail_frame(filtered_raw, 'ven_raw')
+            st.markdown(f"#### 📄 `{selected_row['VendorName']}` · `{selected_row['Route Path']}` · `{selected_row['Legwise']}` · {selected_vendor_metric or 'All trip metrics'} · {len(filtered_raw_clean):,} trips")
+            st.dataframe(style_ui_dataframe(filtered_raw_clean), use_container_width=True, hide_index=True, height=330)
             output_raw = io.BytesIO()
             with pd.ExcelWriter(output_raw, engine='xlsxwriter') as writer:
-                write_styled_sheet_to_excel(writer, filtered_raw, 'Raw_Data', sheet_type="ven_raw")
+                write_styled_sheet_to_excel(writer, filtered_raw_clean, 'Focused_Trips', sheet_type='ven_raw')
             st.download_button(
-                "⬇️ Download This Leg Raw Data (Excel)",
-                data=output_raw.getvalue(),
-                file_name=f"Raw_Data_{selected_vendor}_{selected_leg}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                '📥 Download selected performance records (formatted Excel)', data=output_raw.getvalue(),
+                file_name=f"Vendor_Performance_{re.sub(r'[^A-Za-z0-9_-]+', '_', str(selected_row['VendorName']))}_{selected_idx + 1}.xlsx",
+                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', key='vendor_focused_raw_download'
             )
-            st.dataframe(style_ui_dataframe(filtered_raw_clean), use_container_width=True)
         else:
-            st.info("👆 Check the 'Select 👁️' box in the table above to view detailed trip records.")
+            st.info('Click a count or percentage in the summary to open only those trip records.')
+
+        # Compare the same filtered vendors across the prior/current seven-day windows and all data.
+        compare_raw = df_vperf_raw_full.copy()
+        if selected_zone != 'ALL' and 'Zone' in compare_raw.columns:
+            compare_raw = compare_raw[compare_raw['Zone'].eq(selected_zone)]
+        if selected_ro != 'ALL' and 'Origin RO' in compare_raw.columns:
+            compare_raw = compare_raw[compare_raw['Origin RO'].eq(selected_ro)]
+        if selected_vendor_b != 'ALL' and 'VendorName' in compare_raw.columns:
+            compare_raw = compare_raw[compare_raw['VendorName'].eq(selected_vendor_b)]
+        compare_date_col = get_col(compare_raw, ['Date'])
+        today_compare = get_ist_now().date()
+        current_7_start = today_compare - datetime.timedelta(days=6)
+        previous_7_start = today_compare - datetime.timedelta(days=13)
+        previous_7_end = today_compare - datetime.timedelta(days=7)
+        compare_dates = pd.to_datetime(compare_raw[compare_date_col], dayfirst=True, errors='coerce').dt.date if compare_date_col else pd.Series([None] * len(compare_raw), index=compare_raw.index)
+        compare_status_col = get_col(compare_raw, ['Remark with 15 min waiver'])
+        compare_status = compare_raw[compare_status_col].fillna('').astype(str) if compare_status_col else pd.Series('', index=compare_raw.index)
+        compare_rows = []
+        compare_vendors = sorted(compare_raw.get('VendorName', pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
+        for vendor_name in compare_vendors:
+            vendor_rows = compare_raw[compare_raw['VendorName'].astype(str).eq(vendor_name)].copy()
+            vendor_dates = compare_dates.loc[vendor_rows.index]
+            vendor_status = compare_status.loc[vendor_rows.index]
+            result = {'Vendor': vendor_name}
+            windows = [
+                ('Previous 7 Days', (vendor_dates >= previous_7_start) & (vendor_dates <= previous_7_end)),
+                ('Current 7 Days', (vendor_dates >= current_7_start) & (vendor_dates <= today_compare)),
+                ('All Available', pd.Series(True, index=vendor_rows.index))
+            ]
+            for window_name, window_mask in windows:
+                window_status = vendor_status.loc[window_mask.index[window_mask]]
+                window_count = int(window_mask.sum())
+                ontime_count = int(window_status.eq('Ontime Arrival').sum())
+                late_count = int(window_status.eq('Late Arrival').sum())
+                result[f'{window_name} Trips'] = window_count
+                result[f'{window_name} On-time'] = f'{ontime_count:,} · {(ontime_count / window_count * 100 if window_count else 0):.1f}%'
+                result[f'{window_name} Late'] = f'{late_count:,} · {(late_count / window_count * 100 if window_count else 0):.1f}%'
+            compare_rows.append(result)
+        comparison = pd.DataFrame(compare_rows)
+        if not comparison.empty:
+            st.markdown('### 7-day and overall vendor comparison')
+            st.caption(f'Previous 7 days: {previous_7_start:%d %b}–{previous_7_end:%d %b} · Current 7 days: {current_7_start:%d %b}–{today_compare:%d %b}')
+            try:
+                comparison_event = st.dataframe(
+                    style_ui_dataframe(comparison), use_container_width=True, hide_index=True,
+                    on_select='rerun', selection_mode='single-cell', key='vendor_7day_comparison_click'
+                )
+                comparison_idx, comparison_col = get_selected_cell_from_event(comparison_event, comparison)
+            except TypeError:
+                st.dataframe(style_ui_dataframe(comparison), use_container_width=True, hide_index=True)
+                comparison_idx, comparison_col = None, None
+            if comparison_idx is not None and 0 <= comparison_idx < len(comparison):
+                compare_vendor = str(comparison.iloc[comparison_idx]['Vendor'])
+                compare_detail = compare_raw[compare_raw['VendorName'].astype(str).eq(compare_vendor)].copy()
+                if comparison_col and comparison_col.startswith('Previous 7 Days'):
+                    selected_period = (previous_7_start, previous_7_end)
+                    compare_detail = compare_detail[compare_dates.loc[compare_detail.index].between(*selected_period)].copy()
+                elif comparison_col and comparison_col.startswith('Current 7 Days'):
+                    compare_detail = compare_detail[compare_dates.loc[compare_detail.index].between(current_7_start, today_compare)].copy()
+                comparison_metric_lower = str(comparison_col or '').lower()
+                if 'on-time' in comparison_metric_lower and compare_status_col:
+                    compare_detail = compare_detail[compare_detail[compare_status_col].fillna('').astype(str).eq('Ontime Arrival')].copy()
+                elif 'late' in comparison_metric_lower and compare_status_col:
+                    compare_detail = compare_detail[compare_detail[compare_status_col].fillna('').astype(str).eq('Late Arrival')].copy()
+                st.markdown(f'#### `{compare_vendor}` · {comparison_col or "All available period"}')
+                compare_detail_compact = compact_detail_frame(compare_detail, 'ven_raw')
+                st.dataframe(style_ui_dataframe(compare_detail_compact), use_container_width=True, hide_index=True, height=300)
+                compare_excel = io.BytesIO()
+                with pd.ExcelWriter(compare_excel, engine='xlsxwriter') as writer:
+                    write_styled_sheet_to_excel(writer, comparison.iloc[[comparison_idx]], 'Period_Summary', sheet_type='ven_sum')
+                    write_styled_sheet_to_excel(writer, compare_detail_compact, 'Focused_Trips', sheet_type='ven_raw')
+                st.download_button(
+                    '📥 Download selected comparison trips (formatted Excel)', data=compare_excel.getvalue(),
+                    file_name=f"Vendor_Comparison_{re.sub(r'[^A-Za-z0-9_-]+', '_', compare_vendor)}.xlsx",
+                    mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    key='vendor_comparison_raw_download'
+                )
+
+        if st.session_state.get('role') != 'Vendor' and not df_display.empty:
+            with st.expander('✍️ Vendor action plans', expanded=False):
+                ap_editor = df_display[['RowKey']].copy()
+                ap_editor['Action Plan ✍️'] = ap_editor['RowKey'].map(mod_ap).fillna('')
+                edited_ap = st.data_editor(
+                    ap_editor, disabled=['RowKey'], use_container_width=True, hide_index=True,
+                    column_config={'RowKey': st.column_config.TextColumn('RO · Vendor · Route · Leg', width='large'),
+                                   'Action Plan ✍️': st.column_config.TextColumn('Action Plan ✍️', width='large')},
+                    key='vendor_action_plan_editor'
+                )
+                changes = False
+                for idx, plan_row in edited_ap.iterrows():
+                    r_key = str(ap_editor.loc[idx, 'RowKey'])
+                    new_val = str(plan_row['Action Plan ✍️']).strip()
+                    if new_val != str(mod_ap.get(r_key, '')).strip():
+                        if new_val:
+                            mod_ap[r_key] = new_val
+                        else:
+                            mod_ap.pop(r_key, None)
+                        changes = True
+                if changes:
+                    ap_data['Vendor Performance'] = mod_ap
+                    save_action_plans(ap_data)
 
 # -------------------------------------------------------------
 # C. VENDOR PAYMENT DASHBOARD 
 # -------------------------------------------------------------
 elif choice == "💳 Payment Dashboard":
     st.markdown("<h2>Pending Payments Tracker</h2>", unsafe_allow_html=True)
-    
-    if 'Master_Database' in data:
-        df_pay = data['Master_Database'].copy()
+    st.caption('Each RO bucket shows count and share of bills. Click a count or percentage to open only those invoices.')
+
+    if 'Master_Database' in data or 'Payment_Raw' in data:
+        payment_source = data.get('Payment_Raw', data.get('Master_Database', pd.DataFrame()))
+        df_pay = prepare_payment_dashboard_frame(payment_source)
+        if df_pay.empty and 'Master_Database' in data:
+            df_pay = prepare_payment_dashboard_frame(data['Master_Database'])
         if not st.session_state.get('all_vendors', True):
             df_pay = filter_df_by_user_vendors(df_pay, 'Vendor Name')
-        
+
         if df_pay.empty:
-            st.warning("No pending invoices found for your assigned vendor access.")
+            st.warning("No payment records found for your assigned vendor access.")
             st.stop()
 
-        if PLOTLY_AVAILABLE and not df_pay.empty:
-            st.markdown("### 📊 Payment Buckets Overview")
-            pvt_chart = pd.pivot_table(df_pay, values='Invoice Id', index='Department Bucket', aggfunc='count').reset_index()
-            fig_pay = px.pie(
-                pvt_chart, values='Invoice Id', names='Department Bucket', hole=0.4,
-                color_discrete_sequence=['#F87171', '#FBBF24', '#34D399', '#60A5FA', '#A78BFA']
-            )
-            fig_pay.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color="white", height=350)
-            st.plotly_chart(fig_pay, use_container_width=True)
-            st.markdown("---")
-
-        col1, col2 = st.columns([1, 2])
+        col1, col2, col3 = st.columns([1, 1, 2])
         all_zones = sorted(df_pay['Zone'].dropna().unique().tolist()) if 'Zone' in df_pay.columns else []
-        selected_zone = col1.selectbox("Filter by Zone:", ["ALL"] + all_zones)
+        selected_zone = col1.selectbox("Filter by Zone:", ["ALL"] + all_zones, key='payment_zone_filter')
         if selected_zone != "ALL":
             df_pay = df_pay[df_pay['Zone'] == selected_zone]
-        search_q = col2.text_input("🔍 Quick Search (Invoice, Vendor, RO...):")
-            
-        pvt = pd.pivot_table(df_pay, values='Invoice Id', index='RO Name', columns='Department Bucket', aggfunc='count', fill_value=0, margins=True, margins_name='Grand Total')
-        cols_order = ["1. USER / DRAFT PENDING", "2. COST CONTROL PENDING", "3. FINANCE PENDING", "4. PAYMENT PENDING", "5. OTHER PENDING", "Grand Total"]
-        existing_cols = [c for c in cols_order if c in pvt.columns]
-        pvt = pvt.reindex(columns=existing_cols).reset_index()
-        pvt['RowKey'] = pvt['RO Name'].astype(str) + " || " + pvt['RO Name'].astype(str)
-        
-        def color_payment_columns(val, col_name):
-            if pd.isna(val) or val == 0: return ''
-            if col_name == '1. USER / DRAFT PENDING': return 'background-color: rgba(211, 47, 47, 0.3); color: #ff8a80; font-weight: bold;' 
-            elif col_name == '2. COST CONTROL PENDING': return 'background-color: rgba(245, 127, 23, 0.3); color: #ffe57f; font-weight: bold;'
-            elif col_name == '3. FINANCE PENDING': return 'background-color: rgba(245, 127, 23, 0.1); color: #ffb74d; font-weight: bold;'
-            return ''
+        all_ros = sorted(df_pay['RO Name'].dropna().astype(str).unique().tolist()) if 'RO Name' in df_pay.columns else []
+        selected_ro = col2.selectbox("Filter by RO:", ["ALL"] + all_ros, key='payment_ro_filter')
+        if selected_ro != "ALL":
+            df_pay = df_pay[df_pay['RO Name'].astype(str).eq(selected_ro)]
+        search_q = col3.text_input("🔍 Quick Search (Invoice, Vendor, RO...):", key='payment_quick_search')
+        if search_q.strip():
+            mask = df_pay.astype(str).apply(lambda col: col.str.contains(search_q.strip(), case=False, regex=False, na=False)).any(axis=1)
+            df_pay = df_pay[mask].copy()
 
-        st.markdown("### RO-Wise Summary")
-        
-        pvt.insert(0, 'Select 👁️', False)
-        ap_data = load_action_plans()
-        mod_ap = ap_data.get("Payment Dashboard", {})
-        pvt['Action Plan ✍️'] = pvt['RowKey'].map(mod_ap).fillna("")
-        
-        disp_cols = ['Select 👁️'] + [c for c in pvt.columns if c not in ['RowKey', 'Select 👁️']]
-        styled_pvt = pvt[disp_cols].style
-        for col in existing_cols:
-            styled_pvt = styled_pvt.map(lambda x, c=col: color_payment_columns(x, c), subset=[col])
-            
-        disabled_cols = [c for c in disp_cols if c not in ['Action Plan ✍️', 'Select 👁️']]
-        
-        edited_pvt = st.data_editor(
-            styled_pvt,
-            column_config={"Action Plan ✍️": st.column_config.TextColumn("Action Plan ✍️", width="large")},
-            disabled=disabled_cols,
-            use_container_width=True,
-            key="pay_editor"
-        )
-        
-        changes = False
-        for idx, row in edited_pvt.iterrows():
-            r_key = str(pvt.loc[idx, 'RowKey'])
-            new_val = str(row['Action Plan ✍️']).strip()
-            old_val = str(mod_ap.get(r_key, "")).strip()
-            if new_val != old_val:
-                if new_val: mod_ap[r_key] = new_val
-                else: mod_ap.pop(r_key, None)
-                changes = True
-        if changes:
-            ap_data["Payment Dashboard"] = mod_ap
-            save_action_plans(ap_data)
-        
-        selected_rows = edited_pvt[edited_pvt['Select 👁️'] == True].index.tolist()
-
-        if selected_rows:
-            selected_idx = selected_rows[0]
-            sel_pay_ro = pvt.loc[selected_idx, 'RO Name']
-            
-            st.markdown("---")
-            st.markdown(f"### 📄 Detailed Invoices for `{sel_pay_ro}`")
-            
-            sel_bucket = st.selectbox("Filter Pending Status:", existing_cols[:-1])
-            
-            if sel_pay_ro == 'Grand Total':
-                filtered_pay = df_pay[df_pay['Department Bucket'] == sel_bucket].copy()
-            else:
-                filtered_pay = df_pay[(df_pay['RO Name'] == sel_pay_ro) & (df_pay['Department Bucket'] == sel_bucket)].copy()
-                
-            if search_q:
-                mask = filtered_pay.astype(str).apply(lambda x: x.str.contains(search_q, case=False, regex=False, na=False)).any(axis=1)
-                filtered_pay = filtered_pay[mask]
-                
-            pay_order = ['Invoice Id', 'RO Name', 'Vendor Name', 'Amount', 'Status', 'Pending With', 'Days Pending', 'Aging Bucket', 'Revert Remarks']
-            final_pay_cols = [c for c in pay_order if c in filtered_pay.columns]
-            leftovers_pay = [c for c in filtered_pay.columns if c not in final_pay_cols and c not in ['Bill Uploader', 'Zone']]
-            if 'Bill Uploader' in filtered_pay.columns:
-                leftovers_pay.append('Bill Uploader') 
-            filtered_pay = filtered_pay[final_pay_cols + leftovers_pay]
-            if 'Amount' in filtered_pay.columns:
-                filtered_pay = filtered_pay.sort_values(by='Amount', ascending=False)
-                
-            st.dataframe(filtered_pay, use_container_width=True)
+        bucket_labels = ['Payment Pending / Paid', 'Finance Pending / Hold', 'Draft', 'Cost Control Pending', 'Other']
+        ro_col = get_col(df_pay, ['RO Name'])
+        summary_rows = []
+        if ro_col:
+            for ro_name, ro_rows in df_pay.groupby(ro_col, dropna=False):
+                total_bills = len(ro_rows)
+                row = {'RO': str(ro_name), 'Total Bills': total_bills}
+                for bucket in bucket_labels:
+                    count = int(ro_rows['Payment Group'].eq(bucket).sum())
+                    pct = count / total_bills * 100 if total_bills else 0
+                    row[bucket] = f'{count:,} · {pct:.1f}%'
+                summary_rows.append(row)
+        payment_summary = pd.DataFrame(summary_rows, columns=['RO', 'Total Bills'] + bucket_labels)
+        st.markdown('### RO-wise payment summary')
+        st.caption('Green = Payment Pending / Paid achievement · orange = finance and cost-control follow-up · red = draft and other failures.')
+        if payment_summary.empty:
+            st.info('No payment rows match the selected filters.')
         else:
-            st.info("👆 Check the 'Select 👁️' box in the table above to view specific invoices.")
+            event = st.dataframe(
+                style_ui_dataframe(payment_summary), use_container_width=True, hide_index=True,
+                on_select='rerun', selection_mode='single-cell', key='payment_summary_click'
+            )
+            row_idx, selected_col = get_selected_cell_from_event(event, payment_summary)
+            if row_idx is None or not (0 <= row_idx < len(payment_summary)):
+                st.info('Click any count or percentage above to open its invoices.')
+            else:
+                selected_summary = payment_summary.iloc[row_idx]
+                detail = df_pay[df_pay['RO Name'].astype(str).eq(str(selected_summary['RO']))].copy()
+                selected_bucket = selected_col if selected_col in bucket_labels else None
+                if selected_bucket:
+                    detail = detail[detail['Payment Group'].eq(selected_bucket)].copy()
+                count = len(detail)
+                denominator = len(df_pay[df_pay['RO Name'].astype(str).eq(str(selected_summary['RO']))])
+                pct = count / denominator * 100 if denominator else 0
+                st.markdown(f"#### {selected_summary['RO']} · {selected_bucket or 'All payment buckets'}")
+                k1, k2 = st.columns(2)
+                k1.metric('Matching invoices', f'{count:,}')
+                k2.metric('Share of this RO bills', f'{pct:.1f}%')
+                compact = compact_detail_frame(detail.sort_values('Amount', ascending=False) if 'Amount' in detail.columns else detail, 'pay_raw')
+                st.dataframe(style_ui_dataframe(compact), use_container_width=True, hide_index=True, height=340)
+                pay_bytes = io.BytesIO()
+                with pd.ExcelWriter(pay_bytes, engine='xlsxwriter') as writer:
+                    write_styled_sheet_to_excel(writer, payment_summary, 'Payment_Summary', sheet_type='payment_summary')
+                    write_styled_sheet_to_excel(writer, compact, 'Focused_Invoices', sheet_type='pay_raw')
+                st.download_button(
+                    '📥 Download selected payment detail (formatted Excel)', data=pay_bytes.getvalue(),
+                    file_name=f"Payment_Detail_{re.sub(r'[^A-Za-z0-9_-]+', '_', str(selected_summary['RO']))}.xlsx",
+                    mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    type='primary', key='payment_detail_download'
+                )
 
 # -------------------------------------------------------------
 # D. COMMUNICATION HUB (3 Full Sub-Modules: National, Vendor, RO)
@@ -4055,7 +4462,9 @@ elif choice == "📱 Communication Hub":
     if not st.session_state.get('all_vendors', True):
         df_ven_raw_base = filter_df_by_user_vendors(df_ven_raw_base, 'VendorName')
         
-    df_pay_base = data.get('Master_Database', pd.DataFrame()).copy()
+    df_pay_base = prepare_payment_dashboard_frame(data.get('Payment_Raw', data.get('Master_Database', pd.DataFrame())))
+    if not st.session_state.get('all_vendors', True):
+        df_pay_base = filter_df_by_user_vendors(df_pay_base, 'Vendor Name')
     df_cpk_raw_base = data.get('CPK_Raw_Data', pd.DataFrame()).copy()
     
     df_ven_raw_hub, is_hub_filtered, hub_dur_str = render_duration_selector(df_ven_raw_base, 'Date', 'comm_hub')
@@ -4176,11 +4585,15 @@ elif choice == "📱 Communication Hub":
         
         st.markdown("#### Preview: Current Vendor Performance")
         ven_prev_df = clean_dataframe_for_excel(nat_ven_sum, sheet_type="ven_sum")
-        st.dataframe(style_ui_dataframe(ven_prev_df), use_container_width=True, hide_index=True)
+        render_summary_with_raw_drilldown(
+            ven_prev_df, nat_ven_raw, 'National route vendor performance', 'ven_raw', 'comm_national_vendor_drilldown'
+        )
         
         st.markdown("#### Preview: Current Ops Performance (Full Route)")
         ops_prev_df = clean_dataframe_for_excel(nat_ops_sum, sheet_type="ops_sum")
-        st.dataframe(style_ui_dataframe(ops_prev_df), use_container_width=True, hide_index=True)
+        render_summary_with_raw_drilldown(
+            ops_prev_df, nat_ops_raw, 'National route operations performance', 'ops_raw', 'comm_national_ops_drilldown'
+        )
 
     # =========================================================
     # HUB TAB 2: INDIVIDUAL VENDOR & BULK MESSAGING HUB
@@ -4249,7 +4662,9 @@ elif choice == "📱 Communication Hub":
                 
                 st.markdown(f"#### Performance View: `{target_vendor}`")
                 ind_ven_prev = clean_dataframe_for_excel(ven_sum, sheet_type="ven_sum")
-                st.dataframe(style_ui_dataframe(ind_ven_prev), use_container_width=True, hide_index=True)
+                render_summary_with_raw_drilldown(
+                    ind_ven_prev, ven_raw, f'{target_vendor} performance', 'ven_raw', 'comm_vendor_detail_drilldown'
+                )
 
                 v_master_data_live = {}
                 if os.path.exists(FILE_MAP.get("VENDOR_MASTER")):
@@ -4364,7 +4779,44 @@ elif choice == "📱 Communication Hub":
         k1.metric(f"{sel_ro_hub} Ops Trips", int(ro_ops_sum['Total_Trips'].sum()) if not ro_ops_sum.empty else 0)
         k2.metric(f"{sel_ro_hub} Ops Failures", len(ro_ops_fail_raw))
         k3.metric(f"{sel_ro_hub} Vendor Late Trips", len(ro_ven_fail_raw))
-        k4.metric(f"{sel_ro_hub} Pending Bills", len(ro_pay_raw))
+        k4.metric(f"{sel_ro_hub} Payment Records", len(ro_pay_raw))
+
+        st.markdown(f'#### `{sel_ro_hub}` payment buckets · count and percentage')
+        comm_payment_buckets = ['Payment Pending / Paid', 'Finance Pending / Hold', 'Draft', 'Cost Control Pending', 'Other']
+        comm_payment_total = len(ro_pay_raw)
+        comm_payment_row = {'RO': sel_ro_hub, 'Total Bills': comm_payment_total}
+        for bucket in comm_payment_buckets:
+            bucket_count = int(ro_pay_raw.get('Payment Group', pd.Series('', index=ro_pay_raw.index)).eq(bucket).sum())
+            bucket_pct = bucket_count / comm_payment_total * 100 if comm_payment_total else 0
+            comm_payment_row[bucket] = f'{bucket_count:,} · {bucket_pct:.1f}%'
+        comm_payment_summary = pd.DataFrame([comm_payment_row])
+        if not ro_pay_raw.empty:
+            payment_event = st.dataframe(
+                style_ui_dataframe(comm_payment_summary), use_container_width=True, hide_index=True,
+                on_select='rerun', selection_mode='single-cell', key='comm_ro_payment_bucket_click'
+            )
+            payment_row_idx, payment_col = get_selected_cell_from_event(payment_event, comm_payment_summary)
+            if payment_row_idx is not None:
+                payment_detail = ro_pay_raw.copy()
+                if payment_col in comm_payment_buckets:
+                    payment_detail = payment_detail[payment_detail['Payment Group'].eq(payment_col)].copy()
+                payment_compact = compact_detail_frame(payment_detail, 'pay_raw')
+                st.markdown(f'Focused payment records · {payment_col if payment_col in comm_payment_buckets else "all buckets"} · {len(payment_compact):,}')
+                st.dataframe(style_ui_dataframe(payment_compact), use_container_width=True, hide_index=True, height=300)
+                payment_excel = io.BytesIO()
+                with pd.ExcelWriter(payment_excel, engine='xlsxwriter') as writer:
+                    write_styled_sheet_to_excel(writer, comm_payment_summary, 'Payment_Summary', sheet_type='payment_summary')
+                    write_styled_sheet_to_excel(writer, payment_compact, 'Focused_Payments', sheet_type='pay_raw')
+                st.download_button(
+                    '📥 Download focused payment records (formatted Excel)', data=payment_excel.getvalue(),
+                    file_name=f'{sel_ro_hub}_Focused_Payment_Records.xlsx',
+                    mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    key='comm_ro_payment_download'
+                )
+            else:
+                st.caption('Click a payment count or percentage to show matching invoices.')
+        else:
+            st.info(f'No payment records available for {sel_ro_hub}.')
 
         ro_excel_buf = io.BytesIO()
         with pd.ExcelWriter(ro_excel_buf, engine='xlsxwriter') as writer:
@@ -4385,7 +4837,7 @@ elif choice == "📱 Communication Hub":
                 if not ro_cpk_raw.empty:
                     write_styled_sheet_to_excel(writer, ro_cpk_raw, 'CPK_Raw', sheet_type="cpk_raw")
                 if not ro_pay_raw.empty:
-                    write_styled_sheet_to_excel(writer, ro_pay_raw, 'Payment_Pending_Raw', sheet_type="pay_raw")
+                    write_styled_sheet_to_excel(writer, ro_pay_raw, 'Payment_Records', sheet_type="pay_raw")
 
         ro_subject = f"Trackon {sel_ro_hub} Regional Performance & Exception Report - {hub_dur_str}"
         ro_body = build_clean_email_message(
@@ -4414,11 +4866,28 @@ elif choice == "📱 Communication Hub":
 
         st.markdown(f"#### Preview: `{sel_ro_hub}` Vendor Performance Summary")
         ro_ven_prev = clean_dataframe_for_excel(ro_ven_sum, sheet_type="ven_sum")
-        st.dataframe(style_ui_dataframe(ro_ven_prev), use_container_width=True, hide_index=True)
+        render_summary_with_raw_drilldown(
+            ro_ven_prev, ro_ven_raw, f'{sel_ro_hub} vendor performance', 'ven_raw', 'comm_ro_vendor_drilldown'
+        )
 
         st.markdown(f"#### Preview: `{sel_ro_hub}` Operations Exception Summary")
         ro_ops_prev = clean_dataframe_for_excel(ro_ops_sum, sheet_type="ops_sum")
-        st.dataframe(style_ui_dataframe(ro_ops_prev), use_container_width=True, hide_index=True)
+        render_summary_with_raw_drilldown(
+            ro_ops_prev, ro_ops_raw, f'{sel_ro_hub} operations summary', 'ops_raw', 'comm_ro_ops_drilldown'
+        )
+        if not ro_cpk_tables.get('CPK_National_Zonal_UpDown', pd.DataFrame()).empty:
+            st.markdown(f"#### Preview: `{sel_ro_hub}` National and Zonal Utilization")
+            comm_util_summary = ro_cpk_tables['CPK_National_Zonal_UpDown'].copy()
+            if 'Overall Util %' in comm_util_summary.columns:
+                util_values = pd.to_numeric(comm_util_summary['Overall Util %'], errors='coerce')
+                if util_values.dropna().le(1).all():
+                    util_values = util_values * 100
+                comm_util_summary['Overall Util %'] = util_values.map(lambda value: f'{value:.1f}%' if pd.notna(value) else '')
+            render_summary_with_raw_drilldown(
+                comm_util_summary, ro_cpk_raw,
+                f'{sel_ro_hub} national-zonal utilization', 'cpk_raw', 'comm_ro_utilization_drilldown',
+                match_columns=[('VendorRO', 'RO_Clean'), ('Route (UP/DOWN)', 'Final_Route'), ('Type', 'Final_Type')]
+            )
 
 # -------------------------------------------------------------
 # E. CPK & UTILIZATION (100% Original Logic + Duration Filter)
