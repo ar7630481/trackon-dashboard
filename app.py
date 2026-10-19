@@ -8,6 +8,8 @@ import warnings
 import json
 import gc
 import hashlib
+import hmac
+import base64
 import tempfile
 import logging
 import io
@@ -605,6 +607,82 @@ def save_users_db(db_dict):
 
 USERS_DB = load_users_db()
 
+ISSUE_LINK_KEY_PATH = os.path.join(DATA_DIR, ".overall_issues_link_key")
+
+@st.cache_resource(show_spinner=False)
+def _get_issue_link_key():
+    """Return a private signing key used only for short-lived issue-detail links."""
+    try:
+        with open(ISSUE_LINK_KEY_PATH, 'rb') as key_file:
+            key = key_file.read()
+        if len(key) >= 32:
+            return key
+    except OSError:
+        pass
+    key = os.urandom(32)
+    try:
+        with open(ISSUE_LINK_KEY_PATH, 'xb') as key_file:
+            key_file.write(key)
+        return key
+    except FileExistsError:
+        with open(ISSUE_LINK_KEY_PATH, 'rb') as key_file:
+            return key_file.read()
+
+def create_overall_issue_access_token(username):
+    """Create a 15-minute token scoped to the Overall Issues drill-down only."""
+    user = USERS_DB.get(username, {})
+    if not user or not user.get('active', True):
+        return ''
+    if username != 'admin' and '⚠️ Overall Issues' not in user.get('modules', []):
+        return ''
+    now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+    cached = st.session_state.get('_overall_issue_link_token')
+    if cached and cached[0] == username and cached[1] > now + 60:
+        return cached[2]
+    payload = json.dumps({
+        'user': username,
+        'scope': 'overall-issues',
+        'expires': now + 900
+    }, separators=(',', ':')).encode('utf-8')
+    encoded = base64.urlsafe_b64encode(payload).decode('ascii').rstrip('=')
+    signature = hmac.new(_get_issue_link_key(), encoded.encode('ascii'), hashlib.sha256).hexdigest()
+    token = f'{encoded}.{signature}'
+    st.session_state['_overall_issue_link_token'] = (username, now + 900, token)
+    return token
+
+def verify_overall_issue_access_token(token):
+    if not token or '.' not in token:
+        return None
+    encoded, supplied_signature = token.rsplit('.', 1)
+    expected_signature = hmac.new(_get_issue_link_key(), encoded.encode('ascii'), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(supplied_signature, expected_signature):
+        return None
+    try:
+        padded = encoded + ('=' * (-len(encoded) % 4))
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode('ascii')).decode('utf-8'))
+        username = str(payload.get('user', ''))
+        user = USERS_DB.get(username, {})
+        now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+        if payload.get('scope') != 'overall-issues' or int(payload.get('expires', 0)) < now:
+            return None
+        if not user or not user.get('active', True):
+            return None
+        if username != 'admin' and '⚠️ Overall Issues' not in user.get('modules', []):
+            return None
+        return username
+    except Exception:
+        return None
+
+def rotate_overall_issue_link_key():
+    """Revoke already-issued drill-down links when the user logs out."""
+    try:
+        with open(ISSUE_LINK_KEY_PATH, 'wb') as key_file:
+            key_file.write(os.urandom(32))
+        _get_issue_link_key.clear()
+        st.session_state.pop('_overall_issue_link_token', None)
+    except OSError:
+        logging.warning('Could not rotate Overall Issues link key during logout.')
+
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 if 'role' not in st.session_state:
@@ -617,6 +695,31 @@ if 'all_vendors' not in st.session_state:
     st.session_state['all_vendors'] = True
 if 'allowed_modules' not in st.session_state:
     st.session_state['allowed_modules'] = []
+
+# A signed, expiring link lets a logged-in user open Overall Issues details in a
+# new tab without sharing their password or disabling the portal's login check.
+try:
+    early_params = st.query_params
+    incoming_raw_flag = str(early_params.get('issues_raw', ''))
+    incoming_issue_token = str(early_params.get('issues_auth', ''))
+except Exception:
+    try:
+        early_params = st.experimental_get_query_params()
+        incoming_raw_flag = str((early_params.get('issues_raw') or [''])[0])
+        incoming_issue_token = str((early_params.get('issues_auth') or [''])[0])
+    except Exception:
+        incoming_raw_flag, incoming_issue_token = '', ''
+if not st.session_state['logged_in'] and incoming_raw_flag == '1':
+    token_user = verify_overall_issue_access_token(incoming_issue_token)
+    if token_user:
+        token_user_data = USERS_DB[token_user]
+        st.session_state['logged_in'] = True
+        st.session_state['username'] = token_user
+        st.session_state['role'] = token_user_data.get('role', 'User')
+        st.session_state['all_vendors'] = token_user_data.get('all_vendors', True)
+        st.session_state['allowed_vendors'] = token_user_data.get('vendors', [])
+        st.session_state['allowed_modules'] = token_user_data.get('modules', STANDARD_MODULES)
+        st.session_state['user_label'] = token_user_data.get('label', token_user)
 
 if not st.session_state['logged_in']:
     st.markdown("<br><br><br>", unsafe_allow_html=True)
@@ -692,6 +795,16 @@ def normalize_vendor_name(val):
     if "TEJAS CARGO" in s:
         return "TEJAS CARGO INDIA PVT LTD"
     return s
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def normalize_vendor_column_cached(frame, column):
+    """Normalize repeated vendor labels once per workbook version/frame."""
+    result = frame.copy()
+    if column in result.columns and not result.empty:
+        source = result[column].fillna('').astype(str)
+        mapping = {value: normalize_vendor_name(value) for value in source.unique()}
+        result[column] = source.map(mapping)
+    return result
 
 def filter_df_by_user_vendors(df, vendor_col):
     """Filters any DataFrame by the logged-in user's allowed vendors if restricted."""
@@ -1214,20 +1327,29 @@ def build_overall_issues_summary(ops_raw, pay_raw, cpk_raw=None):
     pay_rows = {}
 
     if ops_ro_col:
+        remark_col = get_col(ops, ['Remark'])
         dep_col = get_col(ops, ['Dep_Status'])
         arr_col = get_col(ops, ['Arr_Status'])
-        remark_col = get_col(ops, ['Remark'])
-        dep_status = ops[dep_col].fillna('').astype(str) if dep_col else (ops[remark_col].fillna('').astype(str) if remark_col else pd.Series('', index=ops.index))
-        arr_status = ops[arr_col].fillna('').astype(str) if arr_col else (ops[remark_col].fillna('').astype(str) if remark_col else pd.Series('', index=ops.index))
+        remark = ops[remark_col].fillna('').astype(str) if remark_col else pd.Series('', index=ops.index)
+        dep_status = ops[dep_col].fillna('').astype(str) if dep_col else remark
+        arr_status = ops[arr_col].fillna('').astype(str) if arr_col else remark
+        outcome_source = remark.where(remark.str.strip().ne(''), dep_status + ', ' + arr_status)
         ops_ro = _clean_ro_series(ops[ops_ro_col])
         ops_zone = ops[ops_zone_col].fillna('UNKNOWN ZONE').astype(str).str.strip().str.upper() if ops_zone_col else pd.Series('UNKNOWN ZONE', index=ops.index)
         ops_zone = ops_zone.replace({'': 'UNKNOWN ZONE', 'NAN': 'UNKNOWN ZONE', 'NONE': 'UNKNOWN ZONE'})
+        outcome_patterns = {
+            '_OO': 'Ontime Dep, Ontime Arr',
+            '_OL': 'Ontime Dep, Late Arr',
+            '_LL': 'Late Dep, Late Arr',
+            '_LO': 'Late Dep, Ontime Arr'
+        }
         grouped = pd.DataFrame({
             '_RO': ops_ro, '_ZONE': ops_zone,
-            '_LATE_DEP': dep_status.str.contains('Late Dep', case=False, na=False).astype(int),
-            '_LATE_ARR': arr_status.str.contains('Late Arr', case=False, na=False).astype(int)
+            **{key: outcome_source.str.contains(pattern, case=False, na=False).astype(int)
+               for key, pattern in outcome_patterns.items()}
         }).groupby(['_RO', '_ZONE'], dropna=False).agg(
-            Total_Trips=('_RO', 'size'), Late_Dep_Cnt=('_LATE_DEP', 'sum'), Late_Arr_Cnt=('_LATE_ARR', 'sum')
+            Total_Trips=('_RO', 'size'), OO_Cnt=('_OO', 'sum'), OL_Cnt=('_OL', 'sum'),
+            LL_Cnt=('_LL', 'sum'), LO_Cnt=('_LO', 'sum')
         )
         for (ro, zone), row in grouped.iterrows():
             ops_rows[(ro, zone)] = row.to_dict()
@@ -1279,15 +1401,15 @@ def build_overall_issues_summary(ops_raw, pay_raw, cpk_raw=None):
                     route_data['_ZONE'] = route_data['_ZONE'].replace({'': 'UNKNOWN ZONE', 'NAN': 'UNKNOWN ZONE', 'NONE': 'UNKNOWN ZONE'})
                     route_data = route_data[route_data['_TYPE'].isin(['NATIONAL LH', 'ZONAL LH']) & route_data['_UTIL'].notna()]
                     for (ro, zone), group in route_data.groupby(['_RO', '_ZONE'], dropna=False):
-                        stats = {}
-                        for type_label, key in [('NATIONAL LH', 'National'), ('ZONAL LH', 'Zonal')]:
-                            type_routes = group[group['_TYPE'].eq(type_label)]
-                            total_routes = len(type_routes)
-                            under_count = int(type_routes['_UTIL'].lt(0.60).sum())
-                            efficient_count = int(type_routes['_UTIL'].ge(0.60).sum())
-                            stats[f'{key} Underutilized Routes'] = format_pct_cnt(under_count, total_routes)
-                            stats[f'{key} Efficiently Utilized Routes'] = format_pct_cnt(efficient_count, total_routes)
-                        utilization_rows[(ro, zone)] = stats
+                        # The summary combines national and zonal route counts; detailed
+                        # records still keep their route type for the drill-down tabs.
+                        total_routes = len(group)
+                        under_count = int(group['_UTIL'].lt(0.60).sum())
+                        efficient_count = int(group['_UTIL'].ge(0.60).sum())
+                        utilization_rows[(ro, zone)] = {
+                            'Underutilized Routes': format_pct_cnt(under_count, total_routes),
+                            'Efficiently Utilized Routes': format_pct_cnt(efficient_count, total_routes)
+                        }
         except Exception as exc:
             logging.warning(f"Overall Issues utilization summary warning: {exc}")
 
@@ -1297,8 +1419,10 @@ def build_overall_issues_summary(ops_raw, pay_raw, cpk_raw=None):
         pay_stats = pay_rows.get((ro, zone), {})
         trips = int(ops_stats.get('Total_Trips', 0))
         bills = int(pay_stats.get('Total_Bills', 0))
-        ld = int(ops_stats.get('Late_Dep_Cnt', 0))
-        la = int(ops_stats.get('Late_Arr_Cnt', 0))
+        oo = int(ops_stats.get('OO_Cnt', 0))
+        ol = int(ops_stats.get('OL_Cnt', 0))
+        ll = int(ops_stats.get('LL_Cnt', 0))
+        lo = int(ops_stats.get('LO_Cnt', 0))
         draft = int(pay_stats.get('Draft_Cnt', 0))
         pending = int(pay_stats.get('Pending_Cnt', 0))
         payment_pending_paid = int(pay_stats.get('Payment_Pending_Paid_Cnt', 0))
@@ -1307,29 +1431,30 @@ def build_overall_issues_summary(ops_raw, pay_raw, cpk_raw=None):
         utilization = utilization_rows.get((ro, zone), {})
         rows.append({
             'RO Name': ro, 'Zone': zone, 'Total Trips': trips,
-            'Late Departures': format_pct_cnt(ld, trips),
-            'Late Arrivals': format_pct_cnt(la, trips), 'Total Bills': bills,
+            'Ontime Dep, Ontime Arr': format_pct_cnt(oo, trips),
+            'Ontime Dep, Late Arr': format_pct_cnt(ol, trips),
+            'Late Dep, Late Arr': format_pct_cnt(ll, trips),
+            'Late Dep, Ontime Arr': format_pct_cnt(lo, trips), 'Total Bills': bills,
             'Draft Bills': format_pct_cnt(draft, bills),
             'Pending': format_pct_cnt(pending, bills),
             'Payment Pending / Paid': format_pct_cnt(payment_pending_paid, bills),
             'Finance Pending / Hold': format_pct_cnt(finance_pending_hold, bills),
             'Other': format_pct_cnt(other, bills),
-            'National Underutilized Routes': utilization.get('National Underutilized Routes', '0.0% (0)'),
-            'National Efficiently Utilized Routes': utilization.get('National Efficiently Utilized Routes', '0.0% (0)'),
-            'Zonal Underutilized Routes': utilization.get('Zonal Underutilized Routes', '0.0% (0)'),
-            'Zonal Efficiently Utilized Routes': utilization.get('Zonal Efficiently Utilized Routes', '0.0% (0)')
+            'Underutilized Routes': utilization.get('Underutilized Routes', '0.0% (0)'),
+            'Efficiently Utilized Routes': utilization.get('Efficiently Utilized Routes', '0.0% (0)')
         })
     return pd.DataFrame(rows, columns=[
-        'RO Name', 'Zone', 'Total Trips', 'Late Departures', 'Late Arrivals',
+        'RO Name', 'Zone', 'Total Trips', 'Ontime Dep, Ontime Arr',
+        'Ontime Dep, Late Arr', 'Late Dep, Late Arr', 'Late Dep, Ontime Arr',
         'Total Bills', 'Draft Bills', 'Pending', 'Payment Pending / Paid',
-        'Finance Pending / Hold', 'Other', 'National Underutilized Routes',
-        'National Efficiently Utilized Routes', 'Zonal Underutilized Routes',
-        'Zonal Efficiently Utilized Routes'
+        'Finance Pending / Hold', 'Other', 'Underutilized Routes',
+        'Efficiently Utilized Routes'
     ])
 
 # ==========================================
 # 3B. DYNAMIC SUMMARY CALCULATORS (With Vendor Grouping)
 # ==========================================
+@st.cache_data(show_spinner=False, max_entries=12)
 def build_ops_summary_from_raw(df_group):
     if df_group is None or df_group.empty:
         return pd.DataFrame()
@@ -1350,8 +1475,6 @@ def build_ops_summary_from_raw(df_group):
     df_valid['LL_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Late Dep, Late Arr' in str(x) else 0)
     df_valid['LO_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Late Dep, Ontime Arr' in str(x) else 0)
     df_valid['OL_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Ontime Dep, Late Arr' in str(x) else 0)
-    df_valid['Ontime_Dep_IT_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Ontime Dep, In-Transit' in str(x) else 0)
-    df_valid['Late_Dep_IT_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Late Dep, In-Transit' in str(x) else 0)
     
     group_cols = ['Zone', 'LH Type', 'E2E_Pair', 'Origin RO', 'Route Path', 'Origin', 'Destination', 'Leg_Num', 'Legwise', 'Legs']
     existing_gcols = [c for c in group_cols if c in df_valid.columns]
@@ -1362,8 +1485,6 @@ def build_ops_summary_from_raw(df_group):
         'LO_Cnt': 'sum',
         'OL_Cnt': 'sum',
         'LL_Cnt': 'sum',
-        'Ontime_Dep_IT_Cnt': 'sum',
-        'Late_Dep_IT_Cnt': 'sum'
     }
     summary = df_valid.groupby(existing_gcols).agg(agg_dict).reset_index()
     summary.rename(columns={'MasterCDNo': trip_col}, inplace=True)
@@ -1372,11 +1493,9 @@ def build_ops_summary_from_raw(df_group):
     summary['Late Dep, Late Arr %'] = summary.apply(lambda r: format_pct_cnt(r['LL_Cnt'], r[trip_col]), axis=1)
     summary['Late Dep, Ontime Arr %'] = summary.apply(lambda r: format_pct_cnt(r['LO_Cnt'], r[trip_col]), axis=1)
     summary['Ontime Dep, Late Arr %'] = summary.apply(lambda r: format_pct_cnt(r['OL_Cnt'], r[trip_col]), axis=1)
-    summary['Ontime Dep, In-Transit'] = summary.apply(lambda r: format_pct_cnt(r['Ontime_Dep_IT_Cnt'], r[trip_col]), axis=1)
-    summary['Late Dep, In-Transit'] = summary.apply(lambda r: format_pct_cnt(r['Late_Dep_IT_Cnt'], r[trip_col]), axis=1)
-    
     return sort_by_route_and_leg(summary)
 
+@st.cache_data(show_spinner=False, max_entries=8)
 def build_vendor_summary_from_raw(df_vperf_raw):
     if df_vperf_raw is None or df_vperf_raw.empty:
         return pd.DataFrame()
@@ -1402,6 +1521,7 @@ def build_vendor_summary_from_raw(df_vperf_raw):
     perf_sum = perf_sum.drop(columns=['Ontime_Cnt', 'Late_Cnt', 'Transit_Cnt'], errors='ignore')
     return sort_by_route_and_leg(perf_sum)
 
+@st.cache_data(show_spinner=False, max_entries=8)
 def build_cpk_tables_from_raw(df_updn_in):
     out = {
         'CPK_National_Zonal_UpDown': pd.DataFrame(),
@@ -1596,10 +1716,10 @@ def clean_dataframe_for_excel(df_in, sheet_type="generic"):
         preferred = [
             'Origin RO', 'Route Path', 'Legwise', 'Legs', 'Total_Trips',
             'Ontime Dep, Ontime Arr %', 'Late Dep, Late Arr %',
-            'Ontime Dep, Late Arr %', 'Late Dep, Ontime Arr %',
-            'Ontime Dep, In-Transit', 'Late Dep, In-Transit'
+            'Ontime Dep, Late Arr %', 'Late Dep, Ontime Arr %'
         ]
-        pct_cols = [c for c in df.columns if '%' in c or 'In-Transit' in c]
+        df.drop(columns=['Ontime Dep, In-Transit', 'Late Dep, In-Transit'], errors='ignore', inplace=True)
+        pct_cols = [c for c in df.columns if '%' in c]
         for c in pct_cols:
             df[c] = df[c].apply(format_ops_badge)
     elif sheet_type == "ops_raw":
@@ -2376,6 +2496,7 @@ def process_all_data():
 st.sidebar.markdown(f"### Welcome, **{st.session_state.get('user_label', st.session_state['role'])}**")
 st.sidebar.caption(f"ID: `{st.session_state.get('username')}` | Role: `{st.session_state.get('role')}`")
 if st.sidebar.button("Logout", key="logout_btn", use_container_width=True):
+    rotate_overall_issue_link_key()
     st.session_state['logged_in'] = False
     st.session_state['role'] = None
     st.session_state['username'] = None
@@ -2496,7 +2617,10 @@ def read_overall_issue_query_params():
                 return str(value[0] if isinstance(value, (list, tuple)) and value else value or '')
         except Exception:
             return {}
-    return {key: read_value(key) for key in ['issues_raw', 'issues_ro', 'issues_zone', 'issues_type', 'issues_start', 'issues_end']}
+    return {key: read_value(key) for key in [
+        'issues_raw', 'issues_auth', 'issues_ro', 'issues_route', 'issues_zone',
+        'issues_type', 'issues_start', 'issues_end'
+    ]}
 
 MENU_SHEETS = {
     "📊 Operations Summary": ('Legwise_Route_Summary', 'Legwise_Processed_Data'),
@@ -2533,11 +2657,13 @@ if not menu:
     menu = ["🚚 Vendor Performance"]
 
 choice = st.sidebar.radio("Navigation:", menu)
-overall_issue_query = read_overall_issue_query_params()
-overall_issue_raw_view = overall_issue_query.get('issues_raw') == '1' and "⚠️ Overall Issues" in menu
+issue_query = read_overall_issue_query_params()
+overall_issue_raw_view = issue_query.get('issues_raw') == '1'
 if overall_issue_raw_view:
+    if st.session_state.get('role') != 'Admin' and "⚠️ Overall Issues" not in st.session_state.get('allowed_modules', []):
+        st.error('Your account does not have access to Overall Issues details.')
+        st.stop()
     choice = "⚠️ Overall Issues"
-    st.markdown("<style>[data-testid='stSidebar']{display:none!important} [data-testid='stHeader']{height:0;min-height:0}</style>", unsafe_allow_html=True)
 
 def file_version(path):
     stat = os.stat(path)
@@ -2625,6 +2751,33 @@ def normalize_overall_payment_raw(raw, data=None):
     normalized['Zone'] = normalized['RO Name'].map(ro_zone).fillna('UNKNOWN ZONE')
     return normalized.reset_index(drop=True)
 
+def get_normalized_overall_payment(path, data=None, processed_signature=None):
+    if not path or not os.path.exists(path):
+        return pd.DataFrame()
+    payment_signature = file_version(path)
+    branch_path = FILE_MAP.get('BRANCH_MASTER', '')
+    branch_signature = file_version(branch_path) if branch_path and os.path.exists(branch_path) else None
+    cache_key = (payment_signature, processed_signature, branch_signature)
+    cached = st.session_state.get('_normalized_overall_payment_cache')
+    if cached and cached[0] == cache_key:
+        return cached[1].copy()
+    payment_raw = read_payment_sheet_cached(path, payment_signature, 'Report')
+    normalized = normalize_overall_payment_raw(payment_raw, data)
+    st.session_state['_normalized_overall_payment_cache'] = (cache_key, normalized.copy())
+    return normalized
+
+@st.cache_data(show_spinner=False, max_entries=12)
+def read_dashboard_sheets_cached(path, signature, sheet_names):
+    """Keep workbook reads warm across navigation; the file signature invalidates stale data."""
+    with pd.ExcelFile(path, engine='openpyxl') as workbook:
+        return {name: workbook.parse(name) for name in sheet_names if name in workbook.sheet_names}
+
+@st.cache_data(show_spinner=False, max_entries=6)
+def read_payment_sheet_cached(path, signature, sheet_name):
+    with pd.ExcelFile(path, engine='openpyxl') as workbook:
+        selected_sheet = sheet_name if sheet_name in workbook.sheet_names else workbook.sheet_names[0]
+        return workbook.parse(selected_sheet)
+
 def load_dashboard_data(page):
     if page == "🧭 Scheduled Route Master":
         return {'Scheduled_Route_Master': get_scheduled_route_master(get_route_lookup_signature())}
@@ -2634,50 +2787,31 @@ def load_dashboard_data(page):
             data = {"dummy": pd.DataFrame()}
             if page == "⚠️ Overall Issues" and os.path.exists(FILE_MAP.get('PAYMENT', '')):
                 try:
-                    with pd.ExcelFile(FILE_MAP['PAYMENT'], engine='openpyxl') as payment_book:
-                        payment_sheet = 'Report' if 'Report' in payment_book.sheet_names else payment_book.sheet_names[0]
-                        payment_raw = payment_book.parse(payment_sheet)
-                    data['Payment_Raw'] = normalize_overall_payment_raw(payment_raw, data)
+                    data['Payment_Raw'] = get_normalized_overall_payment(FILE_MAP['PAYMENT'], data)
                 except Exception as exc:
                     logging.warning(f"Could not load raw payment data for Overall Issues: {exc}")
             return data
         return {}
-    payment_signature = file_version(FILE_MAP['PAYMENT']) if page == "⚠️ Overall Issues" and os.path.exists(FILE_MAP.get('PAYMENT', '')) else None
-    branch_signature = file_version(FILE_MAP['BRANCH_MASTER']) if page == "⚠️ Overall Issues" and os.path.exists(FILE_MAP.get('BRANCH_MASTER', '')) else None
-    cache_key = (file_version(path), page, payment_signature, branch_signature)
-    cached = st.session_state.get('_dashboard_cache')
-    if cached and cached[0] == cache_key:
-        return cached[1]
-    st.session_state.pop('_dashboard_cache', None)
-    del cached
-    gc.collect()
     try:
-        with st.spinner("Loading selected dashboard..."):
-            with pd.ExcelFile(path, engine='openpyxl') as workbook:
-                data = {
-                    name: workbook.parse(name)
-                    for name in MENU_SHEETS[page]
-                    if name in workbook.sheet_names
-                }
+        processed_signature = file_version(path)
+        data = read_dashboard_sheets_cached(path, processed_signature, MENU_SHEETS[page])
         if page == "⚠️ Overall Issues" and os.path.exists(FILE_MAP.get('PAYMENT', '')):
             try:
-                with pd.ExcelFile(FILE_MAP['PAYMENT'], engine='openpyxl') as payment_book:
-                    payment_sheet = 'Report' if 'Report' in payment_book.sheet_names else payment_book.sheet_names[0]
-                    payment_raw = payment_book.parse(payment_sheet)
-                data['Payment_Raw'] = normalize_overall_payment_raw(payment_raw, data)
+                data['Payment_Raw'] = get_normalized_overall_payment(FILE_MAP['PAYMENT'], data, processed_signature)
             except Exception as exc:
                 logging.warning(f"Could not load raw payment data for Overall Issues: {exc}")
         if 'Vendor_Perf_Raw' in data and not data['Vendor_Perf_Raw'].empty:
-            data['Vendor_Perf_Raw']['VendorName'] = data['Vendor_Perf_Raw']['VendorName'].apply(normalize_vendor_name)
+            if 'VendorName' in data['Vendor_Perf_Raw'].columns:
+                data['Vendor_Perf_Raw'] = normalize_vendor_column_cached(data['Vendor_Perf_Raw'], 'VendorName')
             data['Vendor_Perf_Summary'] = build_vendor_summary_from_raw(data['Vendor_Perf_Raw'])
         elif 'Vendor_Perf_Summary' in data and not data['Vendor_Perf_Summary'].empty:
-            data['Vendor_Perf_Summary']['VendorName'] = data['Vendor_Perf_Summary']['VendorName'].apply(normalize_vendor_name)
+            if 'VendorName' in data['Vendor_Perf_Summary'].columns:
+                data['Vendor_Perf_Summary'] = normalize_vendor_column_cached(data['Vendor_Perf_Summary'], 'VendorName')
         if 'Legwise_Processed_Data' in data and not data['Legwise_Processed_Data'].empty and 'VendorName' in data['Legwise_Processed_Data'].columns:
-            data['Legwise_Processed_Data']['VendorName'] = data['Legwise_Processed_Data']['VendorName'].apply(normalize_vendor_name)
+            data['Legwise_Processed_Data'] = normalize_vendor_column_cached(data['Legwise_Processed_Data'], 'VendorName')
 
         if page in ["📝 Today's Call Action Plan", "🔐 User & Access Control", "⚠️ Overall Issues"] and not data:
             data = {"dummy": pd.DataFrame()}
-        st.session_state['_dashboard_cache'] = (cache_key, data)
         return data
     except Exception as exc:
         logging.exception("Cannot read dashboard workbook")
@@ -2864,8 +2998,8 @@ def render_scheduled_route_master(data):
         st.dataframe(visible.reindex(columns=master_columns).fillna(''), use_container_width=True, hide_index=True, height=440)
 
 def get_overall_issue_frames(data):
-    ops_raw = data.get('Legwise_Processed_Data', pd.DataFrame()).copy()
-    pay_raw = data.get('Payment_Raw', data.get('Master_Database', pd.DataFrame())).copy()
+    ops_raw = data.get('Legwise_Processed_Data', pd.DataFrame())
+    pay_raw = data.get('Payment_Raw', data.get('Master_Database', pd.DataFrame()))
     if not st.session_state.get('all_vendors', True):
         ops_vendor_col = get_col(ops_raw, ['VendorName', 'Vendor Name'])
         pay_vendor_col = get_col(pay_raw, ['Vendor Name', 'VendorName'])
@@ -2874,7 +3008,7 @@ def get_overall_issue_frames(data):
     return ops_raw, pay_raw
 
 def get_overall_cpk_frame(data):
-    cpk_raw = data.get('CPK_Raw_Data', pd.DataFrame()).copy()
+    cpk_raw = data.get('CPK_Raw_Data', pd.DataFrame())
     if not st.session_state.get('all_vendors', True):
         vendor_col = get_col(cpk_raw, ['VendorName', 'Vendor Name'])
         cpk_raw = filter_df_by_user_vendors(cpk_raw, vendor_col) if vendor_col else cpk_raw.iloc[0:0].copy()
@@ -2934,37 +3068,6 @@ def get_overall_issue_query_url():
     except Exception:
         return ''
 
-def render_overall_issue_new_tab_link(ro, zone, issue_type, start_date, end_date):
-    link_id = 'overall-issues-open-raw'
-    params = {
-        'issues_raw': '1', 'issues_ro': str(ro), 'issues_zone': str(zone),
-        'issues_type': str(issue_type), 'issues_start': start_date.isoformat(),
-        'issues_end': end_date.isoformat()
-    }
-    params_json = json.dumps(params, ensure_ascii=True).replace('</', '<\\/')
-    base_json = json.dumps(get_overall_issue_query_url(), ensure_ascii=True).replace('</', '<\\/')
-    link_html = f'''<a id="{link_id}" href="#" target="_blank" rel="noopener noreferrer">Open selected raw data in a new tab ↗</a>
-<script>
-(() => {{
-  const link = document.getElementById({json.dumps(link_id)});
-  const candidates = [{base_json}, document.referrer];
-  let target = null;
-  for (const candidate of candidates) {{
-    try {{ if (candidate) {{ target = new URL(candidate); break; }} }} catch (e) {{}}
-  }}
-  if (!target) {{ link.textContent = 'Open this app in a browser tab to view raw records ↗'; link.removeAttribute('href'); return; }}
-  const values = {params_json};
-  for (const [key, value] of Object.entries(values)) target.searchParams.set(key, value);
-  link.href = target.toString();
-}})();
-</script>
-<style>
-body {{ margin: 0; padding: 5px 0; font: 600 14px Arial, sans-serif; }}
-a {{ display:inline-block; padding:11px 18px; border-radius:10px; color:#f5fbff; text-decoration:none; background:linear-gradient(115deg,#155e75,#1d4ed8); border:1px solid #4b9da8; }}
-a:hover {{ filter:brightness(1.12); }}
-</style>'''
-    st.components.v1.html(link_html, height=52, scrolling=False)
-
 def get_overall_payment_status_masks(frame):
     status_col = get_col(frame, ['Status', 'Invoice Status'])
     status = frame[status_col].fillna('').astype(str).str.strip().str.upper().str.replace(' ', '_', regex=False) if status_col else pd.Series('', index=frame.index)
@@ -2981,220 +3084,198 @@ def get_overall_payment_status_masks(frame):
         'Other bills': other
     }
 
-def get_overall_issue_raw_records(ops_raw, pay_raw, ro, issue_type, cpk_raw=None):
-    if issue_type in ['Late departures', 'Late arrivals']:
-        ro_col = get_col(ops_raw, ['Origin RO', 'RO Name', 'RO'])
-        status_col = get_col(ops_raw, ['Dep_Status'] if issue_type == 'Late departures' else ['Arr_Status'])
-        remark_col = get_col(ops_raw, ['Remark'])
-        raw = ops_raw.copy() if ro == 'ALL ROS' else (ops_raw[_clean_ro_series(ops_raw[ro_col]).eq(ro)].copy() if ro_col else pd.DataFrame())
-        status_source = raw[status_col].fillna('').astype(str) if status_col and status_col in raw.columns else (raw[remark_col].fillna('').astype(str) if remark_col and remark_col in raw.columns else pd.Series('', index=raw.index))
-        phrase = 'Late Dep' if issue_type == 'Late departures' else 'Late Arr'
-        raw = raw[status_source.str.contains(phrase, case=False, na=False)].copy()
-        preferred = [
-            'MCD_StartDate', 'Origin RO', 'Zone', 'Route Path', 'Legwise', 'Legs',
-            'CD_FromBranch', 'CD_ToBranch', 'MasterCDNo'
-        ]
-        if issue_type == 'Late departures':
-            preferred += ['Scheduled Departure Time', 'Actual Departure Time', 'Dep_Status']
-        else:
-            preferred += ['Scheduled Arrival Time', 'Actual Arrival Time', 'Arr_Status']
-        preferred = [col for col in preferred if col in raw.columns]
-    elif issue_type in ['Draft bills', 'Pending bills', 'Payment pending / paid', 'Finance pending / hold', 'Other bills']:
-        ro_col = get_col(pay_raw, ['RO Name', 'Origin RO', 'RO'])
-        raw = pay_raw.copy() if ro == 'ALL ROS' else (pay_raw[_clean_ro_series(pay_raw[ro_col]).eq(ro)].copy() if ro_col else pd.DataFrame())
-        masks = get_overall_payment_status_masks(raw)
-        raw = raw[masks.get(issue_type, pd.Series(False, index=raw.index))].copy()
-        preferred = [
-            'Invoice Id', 'Invoice Date', 'Base Date', 'RO Name', 'Zone', 'Vendor Name',
-            'Category', 'Amount', 'Status'
-        ]
-        if issue_type in ['Pending bills', 'Draft bills', 'Other bills']:
-            preferred += ['Pending With']
-        elif issue_type == 'Payment pending / paid':
-            preferred += ['Last Approved At', 'Partial Payment', 'Balance Payable Amount']
-        elif issue_type == 'Finance pending / hold':
-            preferred += [
-                'Pending With', 'Hold Name', 'Hold Key',
-                'Finance Revert Remarks 1', 'Approver Revert Remarks'
-            ]
-    elif issue_type in [
-        'National underutilized routes', 'National efficiently utilized routes',
-        'Zonal underutilized routes', 'Zonal efficiently utilized routes'
-    ]:
-        raw_source = cpk_raw.copy() if isinstance(cpk_raw, pd.DataFrame) else pd.DataFrame()
-        route_master = build_cpk_tables_from_raw(raw_source).get('CPK_National_Zonal_UpDown', pd.DataFrame()) if not raw_source.empty else pd.DataFrame()
-        route_ro_col = get_col(route_master, ['VendorRO', 'RO_Clean', 'RO'])
-        route_type_col = get_col(route_master, ['Type'])
-        route_name_col = get_col(route_master, ['Route (UP/DOWN)'])
-        util_col = get_col(route_master, ['Overall Util %'])
-        type_label = 'National LH' if issue_type.startswith('National') else 'Zonal LH'
-        underutilized = 'underutilized' in issue_type
-        matching_routes = route_master.copy()
-        if route_ro_col and ro != 'ALL ROS':
-            matching_routes = matching_routes[_clean_ro_series(matching_routes[route_ro_col]).eq(ro)]
-        if route_type_col:
-            matching_routes = matching_routes[matching_routes[route_type_col].astype(str).str.upper().eq(type_label.upper())]
-        util_values = pd.to_numeric(matching_routes[util_col], errors='coerce') if util_col else pd.Series(dtype=float, index=matching_routes.index)
-        matching_routes = matching_routes[util_values.lt(0.60) if underutilized else util_values.ge(0.60)].copy()
-        route_values = set(matching_routes[route_name_col].fillna('').astype(str).str.strip().str.upper()) if route_name_col else set()
+# --------------------- Overall Issues: in-session drill-down and export ---------------------
+def _overall_count_from_cell(value):
+    if isinstance(value, str):
+        match = re.search(r'\(([-\d,]+)\)', value)
+        if match:
+            try:
+                return int(match.group(1).replace(',', ''))
+            except ValueError:
+                pass
+    return int(value) if isinstance(value, (int, np.integer)) else 0
 
-        raw_ro_col = get_col(raw_source, ['RO_Clean', 'VendorRO', 'RO'])
-        raw_type_col = get_col(raw_source, ['Final_Type', 'Type'])
-        raw_route_col = get_col(raw_source, ['Final_Route', 'Route'])
-        raw = raw_source.copy()
-        if raw_ro_col and ro != 'ALL ROS':
-            raw = raw[_clean_ro_series(raw[raw_ro_col]).eq(ro)]
-        if raw_type_col:
-            raw = raw[raw[raw_type_col].astype(str).str.upper().eq(type_label.upper())]
-        if raw_route_col:
-            raw = raw[raw[raw_route_col].fillna('').astype(str).str.strip().str.upper().isin(route_values)]
-        util_lookup = {}
-        if route_name_col and util_col:
-            util_lookup = dict(zip(
-                matching_routes[route_name_col].fillna('').astype(str).str.strip().str.upper(),
-                pd.to_numeric(matching_routes[util_col], errors='coerce')
-            ))
-        raw = raw.copy()
-        if raw_route_col:
-            raw['Route Utilization'] = raw[raw_route_col].fillna('').astype(str).str.strip().str.upper().map(util_lookup)
-            raw['Utilization Class'] = np.where(raw['Route Utilization'] < 0.60, 'Underutilized (<60%)', 'Efficiently utilized (60%+)')
-            raw['Route Utilization'] = (raw['Route Utilization'] * 100).round(1).astype(str) + '%'
-        preferred = [
-            'Date', 'Zone', 'RO_Clean', 'Final_Route', 'Final_Type', 'Vehicle No',
-            'Trips', 'Wt', 'Cap', 'Cost', 'VendorName', 'Route Utilization', 'Utilization Class'
-        ]
-        rename = {
-            'RO_Clean': 'RO', 'Final_Route': 'Route', 'Final_Type': 'Route Type',
-            'Vehicle No': 'Vehicle', 'Wt': 'Carried Weight', 'Cap': 'Vehicle Capacity',
-            'Cost': 'Trip Cost', 'VendorName': 'Vendor'
-        }
-        raw = raw.rename(columns=rename)
-        preferred = [rename.get(col, col) for col in preferred]
-    else:
-        return pd.DataFrame()
-    columns = [col for col in preferred if col in raw.columns]
-    return raw[columns].fillna('')
+def build_overall_issue_export_frames(ops_raw, pay_raw, cpk_raw, ro='ALL ROS'):
+    """Return focused, purpose-built detail tables for the issue workbook."""
+    operations = ops_raw.copy() if isinstance(ops_raw, pd.DataFrame) else pd.DataFrame()
+    payments = pay_raw.copy() if isinstance(pay_raw, pd.DataFrame) else pd.DataFrame()
+    cpk = cpk_raw.copy() if isinstance(cpk_raw, pd.DataFrame) else pd.DataFrame()
 
-def render_overall_issues_clickable_table(summary, start_date, end_date):
-    """Render clickable percentage/count cells that open focused records in a new tab."""
-    metric_to_issue = {
-        'Late Departures': 'Late departures', 'Late Arrivals': 'Late arrivals',
-        'Draft Bills': 'Draft bills', 'Pending': 'Pending bills',
-        'Payment Pending / Paid': 'Payment pending / paid',
-        'Finance Pending / Hold': 'Finance pending / hold', 'Other': 'Other bills',
-        'National Underutilized Routes': 'National underutilized routes',
-        'National Efficiently Utilized Routes': 'National efficiently utilized routes',
-        'Zonal Underutilized Routes': 'Zonal underutilized routes',
-        'Zonal Efficiently Utilized Routes': 'Zonal efficiently utilized routes'
-    }
-    columns = [
-        'RO Name', 'Zone', 'Total Trips', 'Late Departures', 'Late Arrivals', 'Total Bills',
-        'Draft Bills', 'Pending', 'Payment Pending / Paid', 'Finance Pending / Hold', 'Other',
-        'National Underutilized Routes', 'National Efficiently Utilized Routes',
-        'Zonal Underutilized Routes', 'Zonal Efficiently Utilized Routes'
+    ops_ro_col = get_col(operations, ['Origin RO', 'RO Name', 'RO'])
+    if ro != 'ALL ROS' and ops_ro_col:
+        operations = operations[_clean_ro_series(operations[ops_ro_col]).eq(ro)].copy()
+    remark_col = get_col(operations, ['Remark'])
+    dep_col, arr_col = get_col(operations, ['Dep_Status']), get_col(operations, ['Arr_Status'])
+    remark = operations[remark_col].fillna('').astype(str) if remark_col else pd.Series('', index=operations.index)
+    dep = operations[dep_col].fillna('').astype(str) if dep_col else remark
+    arr = operations[arr_col].fillna('').astype(str) if arr_col else remark
+    source = remark.where(remark.str.strip().ne(''), dep + ', ' + arr)
+    outcomes = ['Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr', 'Late Dep, Late Arr', 'Late Dep, Ontime Arr']
+    operations['Operations Outcome'] = ''
+    for outcome in outcomes:
+        mask = source.str.contains(outcome, case=False, na=False)
+        operations.loc[mask, 'Operations Outcome'] = outcome
+    operations = operations[operations['Operations Outcome'].ne('')].copy()
+    operations_columns = [
+        'MCD_StartDate', 'Zone', 'Origin RO', 'Route Path', 'Legwise', 'Legs',
+        'CD_FromBranch', 'CD_ToBranch', 'MasterCDNo', 'Operations Outcome',
+        'Scheduled Departure Time', 'Actual Departure Time', 'Dep_Status',
+        'Scheduled Arrival Time', 'Actual Arrival Time', 'Arr_Status'
     ]
-    columns = [col for col in columns if col in summary.columns]
-    header_html = ''.join(f'<th>{html_module.escape(str(col))}</th>' for col in columns)
-    row_html = []
-    for _, row in summary.iterrows():
-        cells = []
-        for col in columns:
-            value = html_module.escape(str(row.get(col, '')))
-            if col in metric_to_issue:
-                pct = parse_pct_from_str(str(row.get(col, '')))
-                issue_type = html_module.escape(metric_to_issue[col], quote=True)
-                ro = html_module.escape(str(row.get('RO Name', '')), quote=True)
-                zone = html_module.escape(str(row.get('Zone', '')), quote=True)
-                pct_class = 'high' if pct is not None and pct >= 50 else 'low'
-                cells.append(
-                    f'<td><a class="issue-cell {pct_class}" href="#" data-ro="{ro}" '
-                    f'data-zone="{zone}" data-issue="{issue_type}" title="Click to open {issue_type} raw records">{value}</a></td>'
-                )
-            else:
-                cells.append(f'<td>{value}</td>')
-        row_html.append('<tr>' + ''.join(cells) + '</tr>')
-    base_url_json = json.dumps(get_overall_issue_query_url(), ensure_ascii=True).replace('</', '<\\/')
-    markup = f'''<!doctype html><html><head><meta charset="utf-8"><style>
-    * {{ box-sizing: border-box; }} body {{ margin:0; font:12px/1.35 Arial,sans-serif; color:#e5eef9; background:#091521; }}
-    .wrap {{ height:590px; overflow:auto; border:1px solid #33475b; border-radius:12px; }}
-    table {{ border-collapse:separate; border-spacing:0; width:max-content; min-width:100%; }}
-    th {{ position:sticky; top:0; z-index:2; background:#182b40; color:#bdd1e5; text-align:left; white-space:nowrap; padding:10px 11px; border-bottom:1px solid #3b4c60; }}
-    td {{ white-space:nowrap; padding:8px 11px; border-bottom:1px solid rgba(148,163,184,.13); }}
-    tr:nth-child(even) td {{ background:rgba(30,49,69,.44); }}
-    .issue-cell {{ display:block; margin:-8px -11px; padding:8px 11px; color:inherit; text-decoration:none; font-weight:700; }}
-    .issue-cell.low {{ background:rgba(52,211,153,.15); color:#a7f3d0; }}
-    .issue-cell.high {{ background:rgba(248,113,113,.22); color:#fecaca; }}
-    .issue-cell:hover {{ outline:2px solid #67e8f9; outline-offset:-2px; filter:brightness(1.18); }}
-    </style></head><body><div class="wrap"><table><thead><tr>{header_html}</tr></thead><tbody>{''.join(row_html)}</tbody></table></div>
-    <script>
-    const appBase = {base_url_json};
-    document.querySelectorAll('.issue-cell').forEach((link) => link.addEventListener('click', (event) => {{
-      event.preventDefault();
-      try {{
-        let target = null;
-        for (const candidate of [appBase, document.referrer]) {{
-          try {{ if (candidate) {{ target = new URL(candidate); break; }} }} catch (ignored) {{}}
-        }}
-        if (!target) throw new Error('No dashboard URL available');
-        const values = {{issues_raw:'1', issues_ro:link.dataset.ro, issues_zone:link.dataset.zone,
-          issues_type:link.dataset.issue, issues_start:{json.dumps(start_date.isoformat())}, issues_end:{json.dumps(end_date.isoformat())}}};
-        Object.entries(values).forEach(([key,value]) => target.searchParams.set(key, value));
-        window.open(target.toString(), '_blank', 'noopener,noreferrer');
-      }} catch (error) {{ window.alert('Could not open the raw records. Open the dashboard in a browser tab and try again.'); }}
-    }}));
-    </script></body></html>'''
-    height = 610
-    st.components.v1.html(markup, height=height, scrolling=False)
+    operations = operations.reindex(columns=[c for c in operations_columns if c in operations.columns]).fillna('')
 
-def render_overall_issues_metric_cards(metric_specs, zone, start_date, end_date):
-    """Make the headline issue totals clickable for an all-RO raw-data view."""
-    issue_map = {
-        'Late Departures': 'Late departures', 'Late Arrivals': 'Late arrivals',
-        'Draft Bills': 'Draft bills', 'Pending': 'Pending bills',
-        'Payment Pending / Paid': 'Payment pending / paid',
-        'Finance Pending / Hold': 'Finance pending / hold', 'Other': 'Other bills'
-    }
-    cards = []
-    for label, count, total, unit in metric_specs:
-        pct = (count / total * 100) if total else 0
-        safe_label = html_module.escape(label, quote=True)
-        safe_issue = html_module.escape(issue_map[label], quote=True)
-        safe_zone = html_module.escape(zone, quote=True)
-        cards.append(
-            f'<a class="card" href="#" data-issue="{safe_issue}" data-zone="{safe_zone}" '
-            f'title="Open {safe_issue} records for all ROs"><span>{safe_label} · {pct:.1f}%</span>'
-            f'<strong>{count:,}</strong><small>{count:,} of {total:,} {html_module.escape(unit)}</small></a>'
+    pay_ro_col = get_col(payments, ['RO Name', 'Origin RO', 'RO'])
+    if ro != 'ALL ROS' and pay_ro_col:
+        payments = payments[_clean_ro_series(payments[pay_ro_col]).eq(ro)].copy()
+    status_masks = get_overall_payment_status_masks(payments)
+    payments['Payment Group'] = ''
+    for label, mask_name in [
+        ('Draft', 'Draft bills'), ('Pending', 'Pending bills'),
+        ('Payment Pending / Paid', 'Payment pending / paid'),
+        ('Finance Pending / Hold', 'Finance pending / hold')
+    ]:
+        payments.loc[status_masks[mask_name], 'Payment Group'] = label
+    payments.loc[status_masks['Other bills'], 'Payment Group'] = 'Other'
+    payment_columns = [
+        'Base Date', 'Invoice Id', 'Invoice Date', 'RO Name', 'Zone', 'Vendor Name',
+        'Category', 'Amount', 'Status', 'Payment Group', 'Pending With', 'Last Approved At',
+        'Partial Payment', 'Balance Payable Amount', 'Hold Name', 'Finance Revert Remarks 1',
+        'Approver Revert Remarks'
+    ]
+    payments = payments.reindex(columns=[c for c in payment_columns if c in payments.columns]).fillna('')
+
+    utilization = pd.DataFrame()
+    if not cpk.empty:
+        try:
+            route_master = build_cpk_tables_from_raw(cpk).get('CPK_National_Zonal_UpDown', pd.DataFrame()).copy()
+            route_ro_col = get_col(route_master, ['VendorRO', 'RO_Clean', 'RO'])
+            if route_ro_col and ro != 'ALL ROS':
+                route_master = route_master[_clean_ro_series(route_master[route_ro_col]).eq(ro)].copy()
+            route_type_col = get_col(route_master, ['Type', 'Final_Type'])
+            util_col = get_col(route_master, ['Overall Util %', 'Utilization'])
+            if route_type_col and util_col:
+                route_master = route_master[route_master[route_type_col].astype(str).str.upper().isin(['NATIONAL LH', 'ZONAL LH'])].copy()
+                route_name_col = get_col(route_master, ['Route (UP/DOWN)', 'Final_Route', 'Route'])
+                route_zone_col = get_col(route_master, ['Zone'])
+                route_keys = [c for c in [route_ro_col, route_zone_col, route_type_col, route_name_col] if c]
+                if route_keys:
+                    route_master = route_master.drop_duplicates(route_keys)
+                rates = pd.to_numeric(route_master[util_col], errors='coerce')
+                if rates.dropna().gt(1).any():
+                    rates = rates / 100
+                route_master['Utilization Class'] = np.where(rates < 0.60, 'Underutilized (<60%)', 'Efficiently utilized (60%+)')
+                route_master['Route Utilization'] = (rates * 100).round(1).astype('string') + '%'
+            utilization_columns = [
+                'Zone', route_ro_col, 'Route (UP/DOWN)', route_type_col,
+                'Vehicle Count', 'Total Trips', 'Overall Util %', 'Route Utilization', 'Utilization Class'
+            ]
+            utilization = route_master.reindex(columns=[c for c in utilization_columns if c and c in route_master.columns]).fillna('')
+            utilization = utilization.rename(columns={route_ro_col: 'RO', route_type_col: 'Route Type'})
+        except Exception as exc:
+            logging.warning(f"Overall Issues utilization detail warning: {exc}")
+
+    return payments, operations, utilization
+
+def build_overall_issues_excel_bytes(summary, payment, operations, utilization, report_title):
+    """Build one polished workbook with summary and three focused data sheets."""
+    buffer = io.BytesIO()
+    sheets = [
+        ('Summary', summary, {c: 0.50 for c in summary.columns if c not in ['RO Name', 'Zone', 'Total Trips', 'Total Bills']}),
+        ('Payment', payment, {}),
+        ('Operations Performance', operations, {}),
+        ('Utilization', utilization, {'Route Utilization': 0.60, 'Overall Util %': 0.60})
+    ]
+    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+        workbook = writer.book
+        title_fmt = workbook.add_format({'bold': True, 'font_size': 16, 'font_color': '#FFFFFF', 'bg_color': '#102B46', 'valign': 'vcenter'})
+        sub_fmt = workbook.add_format({'font_color': '#42566B', 'italic': True, 'bg_color': '#EAF2F8', 'valign': 'vcenter'})
+        head_fmt = workbook.add_format({'bold': True, 'font_color': '#FFFFFF', 'bg_color': '#155E75', 'border': 1, 'border_color': '#0E7490', 'align': 'center', 'valign': 'vcenter', 'text_wrap': True})
+        base_even = workbook.add_format({'bg_color': '#F2F7FB', 'font_color': '#14283B', 'bottom': 1, 'bottom_color': '#D9E3EC', 'valign': 'vcenter', 'text_wrap': True})
+        base_odd = workbook.add_format({'bg_color': '#FFFFFF', 'font_color': '#14283B', 'bottom': 1, 'bottom_color': '#D9E3EC', 'valign': 'vcenter', 'text_wrap': True})
+        low_even = workbook.add_format({'bg_color': '#DDF3E8', 'font_color': '#14532D', 'bold': True, 'bottom': 1, 'bottom_color': '#B8DDC8', 'align': 'center'})
+        low_odd = workbook.add_format({'bg_color': '#EAF8F0', 'font_color': '#14532D', 'bold': True, 'bottom': 1, 'bottom_color': '#B8DDC8', 'align': 'center'})
+        high_even = workbook.add_format({'bg_color': '#FCE1E1', 'font_color': '#8A1C1C', 'bold': True, 'bottom': 1, 'bottom_color': '#E9BABA', 'align': 'center'})
+        high_odd = workbook.add_format({'bg_color': '#FFF0E0', 'font_color': '#8A3B0A', 'bold': True, 'bottom': 1, 'bottom_color': '#E9CBAA', 'align': 'center'})
+        for sheet_name, source_df, thresholds in sheets:
+            frame = source_df.copy() if isinstance(source_df, pd.DataFrame) else pd.DataFrame()
+            if frame.empty:
+                frame = pd.DataFrame({'Status': ['No records for the selected RO, zone, and duration.']})
+            frame = frame.reset_index(drop=True)
+            ncols = max(len(frame.columns), 1)
+            frame.to_excel(writer, sheet_name=sheet_name, startrow=2, index=False)
+            ws = writer.sheets[sheet_name]
+            ws.merge_range(0, 0, 0, ncols - 1, report_title, title_fmt)
+            ws.merge_range(1, 0, 1, ncols - 1, f"{sheet_name} · Generated {get_ist_now():%d %b %Y, %I:%M %p} IST", sub_fmt)
+            ws.set_row(0, 30); ws.set_row(1, 21); ws.set_row(2, 34)
+            for ci, col in enumerate(frame.columns):
+                ws.write(2, ci, str(col), head_fmt)
+                vals = frame[col].fillna('').astype(str).tolist()
+                width = min(max(max([len(str(col))] + [min(len(v), 55) for v in vals]) + 2, 12), 38)
+                ws.set_column(ci, ci, width)
+            for ri, (_, row) in enumerate(frame.iterrows(), start=3):
+                even = (ri - 3) % 2 == 0
+                for ci, col in enumerate(frame.columns):
+                    value = row[col]
+                    if isinstance(value, np.generic):
+                        value = value.item()
+                    if value is None or (not isinstance(value, (list, dict)) and pd.isna(value)):
+                        value = ''
+                    fmt = base_even if even else base_odd
+                    threshold = thresholds.get(col)
+                    if threshold is not None:
+                        pct = None if col == 'Overall Util %' and isinstance(value, (int, float)) else parse_pct_from_str(value)
+                        if pct is None and isinstance(value, (int, float)):
+                            pct = float(value) * 100 if float(value) <= 1 else float(value)
+                        if pct is not None:
+                            is_low = pct < threshold * 100
+                            if col in ('Route Utilization', 'Overall Util %'):
+                                is_low = not is_low
+                            fmt = (low_even if even else low_odd) if is_low else (high_even if even else high_odd)
+                    ws.write(ri, ci, value, fmt)
+                ws.set_row(ri, 23)
+            ws.autofilter(2, 0, len(frame) + 2, max(len(frame.columns) - 1, 0))
+            ws.freeze_panes(3, 0)
+            ws.set_landscape(); ws.fit_to_pages(1, 0); ws.repeat_rows(2)
+            ws.set_margins(0.25, 0.25, 0.4, 0.4)
+            ws.set_header('&LTrackon Command Center&R&P')
+            ws.set_footer('&LConfidential report&RPage &P of &N')
+    return buffer.getvalue()
+
+def _overall_issue_pivot_selection(frame, group_columns, count_label, key):
+    """Show a compact pivot; selecting a row narrows the raw records below it."""
+    if frame.empty or not all(column in frame.columns for column in group_columns):
+        st.info('No records for this section in the selected window.')
+        return frame
+    pivot = frame.groupby(group_columns, dropna=False).size().reset_index(name=count_label)
+    pivot = pivot.sort_values(count_label, ascending=False).reset_index(drop=True)
+    try:
+        event = st.dataframe(
+            pivot, use_container_width=True, hide_index=True, height=210,
+            on_select='rerun', selection_mode='single-row', key=key
         )
-    base_url_json = json.dumps(get_overall_issue_query_url(), ensure_ascii=True).replace('</', '<\\/')
-    markup = f'''<!doctype html><html><head><meta charset="utf-8"><style>
-    * {{ box-sizing:border-box; }} body {{ margin:0; font:12px/1.35 Arial,sans-serif; background:#091521; color:#e5eef9; }}
-    .grid {{ display:grid; grid-template-columns:repeat(4,minmax(150px,1fr)); gap:11px; }}
-    .card {{ display:flex; flex-direction:column; gap:4px; min-height:86px; padding:12px 14px; border:1px solid #31475e; border-radius:12px; background:linear-gradient(135deg,#122b40,#101d30); color:#eaf5ff; text-decoration:none; }}
-    .card:hover {{ border-color:#67e8f9; transform:translateY(-1px); box-shadow:0 8px 22px rgba(8,145,178,.16); }}
-    .card span {{ color:#a9bfd4; font-weight:700; }} .card strong {{ color:#9cc8ff; font-size:23px; line-height:1.05; }}
-    .card small {{ color:#8299ae; }} @media(max-width:760px) {{ .grid {{ grid-template-columns:repeat(2,minmax(140px,1fr)); }} }}
-    </style></head><body><div class="grid">{''.join(cards)}</div><script>
-    const appBase = {base_url_json};
-    document.querySelectorAll('.card').forEach((link) => link.addEventListener('click', (event) => {{
-      event.preventDefault();
-      try {{
-        let target = null;
-        for (const candidate of [appBase, document.referrer]) {{ try {{ if (candidate) {{ target = new URL(candidate); break; }} }} catch (ignored) {{}} }}
-        if (!target) throw new Error('No dashboard URL available');
-        const values = {{issues_raw:'1', issues_ro:'ALL ROS', issues_zone:link.dataset.zone,
-          issues_type:link.dataset.issue, issues_start:{json.dumps(start_date.isoformat())}, issues_end:{json.dumps(end_date.isoformat())}}};
-        Object.entries(values).forEach(([key,value]) => target.searchParams.set(key,value));
-        window.open(target.toString(), '_blank', 'noopener,noreferrer');
-      }} catch (error) {{ window.alert('Could not open the raw records. Open the dashboard in a browser tab and try again.'); }}
-    }}));
-    </script></body></html>'''
-    st.components.v1.html(markup, height=206, scrolling=False)
+        selection = getattr(event, 'selection', {})
+        rows = getattr(selection, 'rows', None) if not isinstance(selection, dict) else selection.get('rows')
+        if rows:
+            selected_index = rows[-1]
+            if isinstance(selected_index, int) and 0 <= selected_index < len(pivot):
+                selected = pivot.iloc[selected_index]
+                narrowed = frame
+                for column in group_columns:
+                    value = selected[column]
+                    narrowed = narrowed[narrowed[column].fillna('').astype(str).eq(str(value))]
+                st.caption(f"Pivot selection: {int(selected[count_label]):,} matching records")
+                return narrowed.copy()
+    except TypeError:
+        st.dataframe(pivot, use_container_width=True, hide_index=True, height=210)
+    return frame
 
 def render_overall_issue_raw_page(data, query):
-    st.markdown("## Issue detail records")
-    ops_raw, pay_raw = get_overall_issue_frames(data)
-    cpk_raw = get_overall_cpk_frame(data)
-    default_start, default_end = get_overall_issue_date_bounds(ops_raw, pay_raw, cpk_raw)
+    """Show focused issue details with summaries, filters and one formatted workbook."""
+    st.markdown('## Issue detail records')
+    st.caption('Focused raw data with a compact pivot summary. Select a summary row to narrow the records, or download all three detail sheets.')
+    ops_all, pay_all = get_overall_issue_frames(data)
+    cpk_all = get_overall_cpk_frame(data)
+    default_start, default_end = get_overall_issue_date_bounds(ops_all, pay_all, cpk_all)
     try:
         start_date = datetime.date.fromisoformat(query.get('issues_start', ''))
         end_date = datetime.date.fromisoformat(query.get('issues_end', ''))
@@ -3203,134 +3284,392 @@ def render_overall_issue_raw_page(data, query):
     if start_date > end_date:
         start_date, end_date = end_date, start_date
     zone = query.get('issues_zone', 'ALL ZONES') or 'ALL ZONES'
-    issue_type = query.get('issues_type', 'Late departures') or 'Late departures'
+    issue_type = query.get('issues_type', 'Ontime Dep, Ontime Arr') or 'Ontime Dep, Ontime Arr'
     valid_types = [
-        'Late departures', 'Late arrivals', 'Draft bills', 'Pending bills',
-        'Payment pending / paid', 'Finance pending / hold', 'Other bills',
-        'National underutilized routes', 'National efficiently utilized routes',
-        'Zonal underutilized routes', 'Zonal efficiently utilized routes'
+        'Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr', 'Late Dep, Late Arr', 'Late Dep, Ontime Arr',
+        'Draft bills', 'Pending bills', 'Payment pending / paid', 'Finance pending / hold', 'Other bills',
+        'Underutilized routes', 'Efficiently utilized routes'
     ]
     if issue_type not in valid_types:
-        issue_type = 'Late departures'
-    ro = _clean_ro_series(pd.Series([query.get('issues_ro', '')])).iloc[0]
-    ops_view, pay_view = filter_overall_issue_frames(ops_raw, pay_raw, start_date, end_date, zone)
-    cpk_view = filter_overall_utilization_frame(cpk_raw, start_date, end_date, zone)
-    raw = get_overall_issue_raw_records(ops_view, pay_view, ro, issue_type, cpk_view)
-    if raw.empty:
-        st.info(f"No {issue_type.lower()} records for {ro} in {zone}, {start_date:%d %b}–{end_date:%d %b %Y}.")
-        return
-    st.caption(f"{issue_type} · {ro} · {zone} · {start_date:%d %b %Y} to {end_date:%d %b %Y} · {len(raw):,} focused records")
-    st.dataframe(raw, use_container_width=True, hide_index=True, height=560)
-    safe_ro = re.sub(r'[^A-Za-z0-9_-]+', '_', ro).strip('_') or 'RO'
-    safe_issue = re.sub(r'[^A-Za-z0-9_-]+', '_', issue_type).strip('_')
-    raw_bytes = build_formatted_excel_bytes(
-        raw, 'Raw Records', f"{safe_issue} · {ro} · {zone}",
-        width_overrides={'Route Path': 34, 'Legs': 24, 'Vendor Name': 28, 'Revert Remarks': 38}
+        issue_type = 'Ontime Dep, Ontime Arr'
+    ops_base, pay_base = filter_overall_issue_frames(ops_all, pay_all, start_date, end_date, zone)
+    cpk_base = filter_overall_utilization_frame(cpk_all, start_date, end_date, zone)
+    all_ro = {'ALL ROS'}
+    for frame, candidates in [
+        (ops_base, ['Origin RO', 'RO Name', 'RO']),
+        (pay_base, ['RO Name', 'Origin RO', 'RO']),
+        (cpk_base, ['RO_Clean', 'VendorRO', 'RO'])
+    ]:
+        col = get_col(frame, candidates)
+        if col:
+            all_ro.update(_clean_ro_series(frame[col]).tolist())
+    ro_options = ['ALL ROS'] + sorted(x for x in all_ro if x != 'ALL ROS')
+    requested_ro = query.get('issues_ro', 'ALL ROS') or 'ALL ROS'
+    if requested_ro not in ro_options:
+        requested_ro = 'ALL ROS'
+    route_options = {'ALL ROUTES'}
+    for frame, candidates in [
+        (ops_base, ['Route Path', 'Route']),
+        (cpk_base, ['Final_Route', 'Route (UP/DOWN)', 'Route'])
+    ]:
+        col = get_col(frame, candidates)
+        if col:
+            route_options.update(frame[col].dropna().astype(str).str.strip().tolist())
+    route_options = ['ALL ROUTES'] + sorted(x for x in route_options if x and x != 'ALL ROUTES')
+    requested_route = query.get('issues_route', 'ALL ROUTES') or 'ALL ROUTES'
+    if requested_route not in route_options:
+        requested_route = 'ALL ROUTES'
+    filter_ro_col, filter_route_col = st.columns(2)
+    selected_ro = filter_ro_col.selectbox('Filter by RO', ro_options, index=ro_options.index(requested_ro), key='overall_issues_raw_ro')
+    selected_route = filter_route_col.selectbox('Filter by route', route_options, index=route_options.index(requested_route), key='overall_issues_raw_route')
+
+    def ro_filter(frame, candidates):
+        col = get_col(frame, candidates)
+        if selected_ro == 'ALL ROS':
+            return frame.copy()
+        return frame[_clean_ro_series(frame[col]).eq(selected_ro)].copy() if col else frame.iloc[0:0].copy()
+
+    operations, payments, cpk = (
+        ro_filter(ops_base, ['Origin RO', 'RO Name', 'RO']),
+        ro_filter(pay_base, ['RO Name', 'Origin RO', 'RO']),
+        ro_filter(cpk_base, ['RO_Clean', 'VendorRO', 'RO'])
     )
+    route_applies_to_payment = issue_type.lower() in [
+        'draft bills', 'pending bills', 'payment pending / paid', 'finance pending / hold', 'other bills'
+    ]
+    if selected_route != 'ALL ROUTES':
+        ops_route_col = get_col(operations, ['Route Path', 'Route'])
+        cpk_route_col = get_col(cpk, ['Final_Route', 'Route (UP/DOWN)', 'Route'])
+        if ops_route_col:
+            operations = operations[operations[ops_route_col].fillna('').astype(str).str.strip().eq(selected_route)].copy()
+        if cpk_route_col:
+            cpk = cpk[cpk[cpk_route_col].fillna('').astype(str).str.strip().eq(selected_route)].copy()
+    if route_applies_to_payment and selected_route != 'ALL ROUTES':
+        st.info('Payment records do not contain a route field, so the route filter is ignored for this payment issue.')
+
+    summary = build_overall_issues_summary(operations, payments, cpk)
+    payments, operations, utilization = build_overall_issue_export_frames(operations, payments, cpk, 'ALL ROS')
+    operations_issues = [
+        'Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr', 'Late Dep, Late Arr', 'Late Dep, Ontime Arr'
+    ]
+    payment_groups = {
+        'Draft bills': 'Draft', 'Pending bills': 'Pending',
+        'Payment pending / paid': 'Payment Pending / Paid',
+        'Finance pending / hold': 'Finance Pending / Hold', 'Other bills': 'Other'
+    }
+    if issue_type in operations_issues:
+        focused = operations[operations.get('Operations Outcome', pd.Series('', index=operations.index)).eq(issue_type)].copy()
+        denominator = len(operations)
+    elif issue_type in payment_groups:
+        focused = payments[payments.get('Payment Group', pd.Series('', index=payments.index)).eq(payment_groups[issue_type])].copy()
+        denominator = len(payments)
+    else:
+        class_col = get_col(utilization, ['Utilization Class'])
+        is_under = issue_type == 'Underutilized routes'
+        wanted = 'Underutilized' if is_under else 'Efficiently'
+        focused = utilization[utilization[class_col].astype(str).str.contains(wanted, case=False, na=False)].copy() if class_col else utilization.iloc[0:0].copy()
+        denominator = len(utilization)
+    issue_count = len(focused)
+    issue_pct = issue_count / denominator * 100 if denominator else 0
+    pivot_suffix = f"_{start_date:%Y%m%d}_{end_date:%Y%m%d}_{selected_ro}_{selected_route}"
+    st.caption(f"{issue_type} · {selected_ro} · {zone} · {start_date:%d %b %Y} to {end_date:%d %b %Y} · {selected_route}")
+    m1, m2, m3 = st.columns(3)
+    m1.metric('Selected issue rate', f'{issue_pct:.1f}%')
+    m2.metric('Matching records', f'{issue_count:,}')
+    m3.metric('Selected denominator', f'{denominator:,}')
+
+    tabs = st.tabs(['Payment', 'Operations Performance', 'Utilization'])
+    with tabs[0]:
+        pivot_detail = _overall_issue_pivot_selection(payments, ['RO Name', 'Payment Group'], 'Bills', f'overall_issues_payment_pivot{pivot_suffix}')
+        payment_group = payment_groups.get(issue_type)
+        view = payments[payments['Payment Group'].eq(payment_group)].copy() if payment_group and 'Payment Group' in payments else payments.copy()
+        if not pivot_detail.equals(payments):
+            view = pivot_detail
+        st.markdown('#### Payment records')
+        st.dataframe(view, use_container_width=True, hide_index=True, height=330)
+    with tabs[1]:
+        pivot_detail = _overall_issue_pivot_selection(operations, ['Origin RO', 'Route Path', 'Operations Outcome'], 'Trips', f'overall_issues_ops_pivot{pivot_suffix}')
+        view = operations[operations['Operations Outcome'].eq(issue_type)].copy() if issue_type in operations_issues and 'Operations Outcome' in operations else operations.copy()
+        if not pivot_detail.equals(operations):
+            view = pivot_detail
+        st.markdown('#### Operations performance records')
+        st.dataframe(view, use_container_width=True, hide_index=True, height=330)
+    with tabs[2]:
+        util_ro_col = get_col(utilization, ['RO'])
+        util_route_col = get_col(utilization, ['Route'])
+        util_type_col = get_col(utilization, ['Route Type'])
+        util_class_col = get_col(utilization, ['Utilization Class'])
+        util_group_cols = [c for c in [util_ro_col, util_route_col, util_type_col, util_class_col] if c]
+        pivot_detail = _overall_issue_pivot_selection(utilization, util_group_cols, 'Routes', f'overall_issues_util_pivot{pivot_suffix}') if util_group_cols else utilization
+        view = focused if issue_type in ['Underutilized routes', 'Efficiently utilized routes'] else utilization
+        if not pivot_detail.equals(utilization):
+            view = pivot_detail
+        st.markdown('#### Utilization records')
+        st.dataframe(view, use_container_width=True, hide_index=True, height=330)
+
+    title = f"Overall Issues · {selected_ro} · {zone} · {start_date:%d %b %Y} to {end_date:%d %b %Y}"
+    excel_bytes = build_overall_issues_excel_bytes(summary, payments, operations, utilization, title)
+    safe_ro = re.sub(r'[^A-Za-z0-9_-]+', '_', selected_ro).strip('_') or 'ALL_ROS'
     st.download_button(
-        "📥 Download focused raw records (formatted Excel)",
-        data=raw_bytes,
-        file_name=f"{safe_ro}_{safe_issue}_{start_date:%Y%m%d}_{end_date:%Y%m%d}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary"
+        '📥 Download Summary + Payment + Operations + Utilization (formatted Excel)',
+        data=excel_bytes,
+        file_name=f"Overall_Issues_{safe_ro}_{start_date:%Y%m%d}_{end_date:%Y%m%d}.xlsx",
+        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        type='primary', key='overall_issues_raw_excel'
     )
 
+def _overall_issue_link_markup(issue_type, ro, zone, start_date, end_date, route='ALL ROUTES'):
+    params = {
+        'issues_raw': '1',
+        'issues_auth': create_overall_issue_access_token(st.session_state.get('username', '')),
+        'issues_ro': str(ro), 'issues_route': str(route), 'issues_zone': str(zone),
+        'issues_type': str(issue_type), 'issues_start': start_date.isoformat(),
+        'issues_end': end_date.isoformat()
+    }
+    params_json = json.dumps(params, ensure_ascii=True).replace('</', '<\\/')
+    base_url_json = json.dumps(get_overall_issue_query_url(), ensure_ascii=True).replace('</', '<\\/')
+    return params_json, base_url_json
+
+def render_overall_issues_metric_cards(metric_specs, zone=None, start_date=None, end_date=None,
+                                       ro='ALL ROS', route='ALL ROUTES'):
+    issue_lookup = {
+        'Ontime Dep, Ontime Arr': 'Ontime Dep, Ontime Arr',
+        'Ontime Dep, Late Arr': 'Ontime Dep, Late Arr',
+        'Late Dep, Late Arr': 'Late Dep, Late Arr',
+        'Late Dep, Ontime Arr': 'Late Dep, Ontime Arr',
+        'Draft Bills': 'Draft bills', 'Pending': 'Pending bills',
+        'Payment Pending / Paid': 'Payment pending / paid',
+        'Finance Pending / Hold': 'Finance pending / hold', 'Other': 'Other bills',
+        'Underutilized Routes': 'Underutilized routes',
+        'Efficiently Utilized Routes': 'Efficiently utilized routes'
+    }
+    cards = []
+    for label, count, total, unit in metric_specs:
+        issue = issue_lookup.get(label)
+        if not issue:
+            continue
+        pct = (count / total * 100) if total else 0
+        params_json, base_url_json = _overall_issue_link_markup(issue, ro, zone or 'ALL ZONES', start_date, end_date, route)
+        cards.append(
+            f'<a class="card" href="#" data-params="{html_module.escape(params_json, quote=True)}" '
+            f'data-base="{html_module.escape(base_url_json, quote=True)}"><span>{html_module.escape(label)} · {pct:.1f}%</span>'
+            f'<strong>{count:,}</strong><small>{count:,} of {total:,} {html_module.escape(unit)}</small></a>'
+        )
+    markup = '''<!doctype html><html><head><meta charset="utf-8"><style>
+    * { box-sizing:border-box; } body { margin:0; font:12px/1.35 Arial,sans-serif; background:#091521; color:#e5eef9; }
+    .grid { display:grid; grid-template-columns:repeat(5,minmax(145px,1fr)); gap:10px; }
+    .card { display:flex; flex-direction:column; gap:4px; min-height:82px; padding:11px 13px; border:1px solid #31475e; border-radius:12px; background:linear-gradient(135deg,#122b40,#101d30); color:#eaf5ff; text-decoration:none; }
+    .card:hover { border-color:#67e8f9; transform:translateY(-1px); box-shadow:0 8px 22px rgba(8,145,178,.16); }
+    .card span { color:#a9bfd4; font-weight:700; } .card strong { color:#9cc8ff; font-size:23px; line-height:1.05; }
+    .card small { color:#8299ae; } @media(max-width:900px) { .grid { grid-template-columns:repeat(2,minmax(140px,1fr)); } }
+    </style></head><body><div class="grid">CARD_HTML</div><script>
+    document.querySelectorAll('.card').forEach((link) => link.addEventListener('click', (event) => {
+      event.preventDefault();
+      try { const base = JSON.parse(link.dataset.base) || document.referrer; const target = new URL(base);
+        Object.entries(JSON.parse(link.dataset.params)).forEach(([key,value]) => target.searchParams.set(key,value));
+        window.open(target.toString(), '_blank', 'noopener,noreferrer');
+      } catch (error) { window.alert('Could not open issue details. Please open the dashboard in a browser tab and try again.'); }
+    }));
+    </script></body></html>'''.replace('CARD_HTML', ''.join(cards))
+    st.components.v1.html(markup, height=190, scrolling=False)
+
+def render_overall_issues_clickable_table(summary, start_date=None, end_date=None,
+                                           zone='ALL ZONES', route='ALL ROUTES'):
+    """Render rate/count cells as focused, signed new-tab drill-down links."""
+    issue_lookup = {
+        'Ontime Dep, Ontime Arr': 'Ontime Dep, Ontime Arr',
+        'Ontime Dep, Late Arr': 'Ontime Dep, Late Arr',
+        'Late Dep, Late Arr': 'Late Dep, Late Arr',
+        'Late Dep, Ontime Arr': 'Late Dep, Ontime Arr',
+        'Draft Bills': 'Draft bills', 'Pending': 'Pending bills',
+        'Payment Pending / Paid': 'Payment pending / paid',
+        'Finance Pending / Hold': 'Finance pending / hold', 'Other': 'Other bills',
+        'Underutilized Routes': 'Underutilized routes',
+        'Efficiently Utilized Routes': 'Efficiently utilized routes'
+    }
+    columns = [c for c in summary.columns if c not in []]
+    header_html = ''.join(f'<th>{html_module.escape(str(col))}</th>' for col in columns)
+    rows_html = []
+    for _, row in summary.iterrows():
+        cells = []
+        for col in columns:
+            value = html_module.escape(str(row.get(col, '')))
+            if col in issue_lookup:
+                pct = parse_pct_from_str(str(row.get(col, '')))
+                tone = 'high' if pct is not None and pct >= 50 else 'low'
+                params_json, base_url_json = _overall_issue_link_markup(
+                    issue_lookup[col], row.get('RO Name', 'ALL ROS'), zone, start_date, end_date, route
+                )
+                cells.append(f'<td><a class="issue-cell {tone}" href="#" data-params="{html_module.escape(params_json, quote=True)}" '
+                             f'data-base="{html_module.escape(base_url_json, quote=True)}">{value}</a></td>')
+            else:
+                cells.append(f'<td>{value}</td>')
+        rows_html.append('<tr>' + ''.join(cells) + '</tr>')
+    markup = '''<!doctype html><html><head><meta charset="utf-8"><style>
+    * { box-sizing:border-box; } body { margin:0; font:12px/1.35 Arial,sans-serif; color:#e5eef9; background:#091521; }
+    .wrap { height:560px; overflow:auto; border:1px solid #33475b; border-radius:12px; }
+    table { border-collapse:separate; border-spacing:0; width:max-content; min-width:100%; }
+    th { position:sticky; top:0; z-index:2; background:#182b40; color:#bdd1e5; text-align:left; white-space:nowrap; padding:10px 11px; border-bottom:1px solid #3b4c60; }
+    td { white-space:nowrap; padding:8px 11px; border-bottom:1px solid rgba(148,163,184,.13); }
+    tr:nth-child(even) td { background:rgba(30,49,69,.44); }
+    .issue-cell { display:block; margin:-8px -11px; padding:8px 11px; color:inherit; text-decoration:none; font-weight:700; }
+    .issue-cell.low { background:rgba(52,211,153,.15); color:#a7f3d0; } .issue-cell.high { background:rgba(248,113,113,.22); color:#fecaca; }
+    .issue-cell:hover { outline:2px solid #67e8f9; outline-offset:-2px; filter:brightness(1.18); }
+    </style></head><body><div class="wrap"><table><thead><tr>HEADER_HTML</tr></thead><tbody>ROWS_HTML</tbody></table></div><script>
+    document.querySelectorAll('.issue-cell').forEach((link) => link.addEventListener('click', (event) => {
+      event.preventDefault();
+      try { const base = JSON.parse(link.dataset.base) || document.referrer; const target = new URL(base);
+        Object.entries(JSON.parse(link.dataset.params)).forEach(([key,value]) => target.searchParams.set(key,value));
+        window.open(target.toString(), '_blank', 'noopener,noreferrer');
+      } catch (error) { window.alert('Could not open issue details. Please open the dashboard in a browser tab and try again.'); }
+    }));
+    </script></body></html>'''.replace('HEADER_HTML', header_html).replace('ROWS_HTML', ''.join(rows_html))
+    st.components.v1.html(markup, height=580, scrolling=False)
+
 def render_overall_issues(data):
-    st.markdown("## ⚠️ Overall Issues")
-    st.caption("RO/zone performance by period · rates with counts · click through to focused raw data")
+    st.markdown('## ⚠️ Overall Issues')
+    if overall_issue_raw_view:
+        render_overall_issue_raw_page(data, issue_query)
+        return
+    st.caption('Combined operations outcomes, payment exceptions, and route utilization · click a rate/count cell to inspect focused records.')
     ops_all, pay_all = get_overall_issue_frames(data)
     cpk_all = get_overall_cpk_frame(data)
     if ops_all.empty and pay_all.empty and cpk_all.empty:
-        st.info("No operations or payment records are available yet. Upload the relevant files and process the data first.")
+        st.info('No operations, payment, or utilization records are available yet. Upload the relevant files and process the data first.')
         return
-
+    try:
+        source_signature = file_version(FILE_MAP['FINAL_OUTPUT']) if os.path.exists(FILE_MAP['FINAL_OUTPUT']) else None
+        payment_signature = file_version(FILE_MAP['PAYMENT']) if os.path.exists(FILE_MAP.get('PAYMENT', '')) else None
+        branch_signature = file_version(FILE_MAP['BRANCH_MASTER']) if os.path.exists(FILE_MAP.get('BRANCH_MASTER', '')) else None
+    except Exception:
+        source_signature, payment_signature, branch_signature = None, None, None
+    source_key = (source_signature, payment_signature, branch_signature,
+                  st.session_state.get('username'), st.session_state.get('all_vendors', True))
     today = get_ist_now().date()
-    all_start, all_end = get_overall_issue_date_bounds(ops_all, pay_all, cpk_all)
-    date_state_key = 'overall_issues_date_range'
-    if date_state_key not in st.session_state:
-        st.session_state[date_state_key] = (all_start, all_end)
-    st.markdown("### Select a reporting window")
-    quick_previous, quick_current, quick_all = st.columns([1, 1, 1.4])
-    if quick_previous.button("◀ Previous 7 Days", use_container_width=True, help="Seven days before the current seven-day window"):
-        st.session_state[date_state_key] = (today - datetime.timedelta(days=13), today - datetime.timedelta(days=7))
+    filter_options_cache = st.session_state.get('_overall_issues_filter_options_cache')
+    if filter_options_cache and filter_options_cache[0] == source_key:
+        all_start, all_end = filter_options_cache[1], filter_options_cache[2]
+        zones = list(filter_options_cache[3])
+    else:
+        all_start, all_end = get_overall_issue_date_bounds(ops_all, pay_all, cpk_all)
+        zones = set()
+        for frame in [ops_all, pay_all, cpk_all]:
+            zone_name_col = get_col(frame, ['Zone'])
+            if zone_name_col:
+                zones.update(frame[zone_name_col].dropna().astype(str).str.strip().str.upper().tolist())
+        zones = sorted(z for z in zones if z and z not in ('NAN', 'NONE'))
+        st.session_state['_overall_issues_filter_options_cache'] = (source_key, all_start, all_end, tuple(zones))
+    date_key = 'overall_issues_date_range'
+    if date_key not in st.session_state:
+        st.session_state[date_key] = (all_start, all_end)
+    prev_col, current_col, all_col = st.columns([1, 1, 1.4])
+    if prev_col.button('◀ Previous 7 Days', use_container_width=True, help='The seven days immediately before the current seven-day window'):
+        st.session_state[date_key] = (today - datetime.timedelta(days=13), today - datetime.timedelta(days=7))
         st.rerun()
-    if quick_current.button("Current 7 Days ▶", use_container_width=True, help="Today and the previous six calendar days"):
-        st.session_state[date_state_key] = (today - datetime.timedelta(days=6), today)
+    if current_col.button('Current 7 Days ▶', use_container_width=True, help='Today plus the previous six calendar days'):
+        st.session_state[date_key] = (today - datetime.timedelta(days=6), today)
         st.rerun()
-    if quick_all.button("All Available Days", use_container_width=True):
-        st.session_state[date_state_key] = (all_start, all_end)
+    if all_col.button('All Available Days', use_container_width=True):
+        st.session_state[date_key] = (all_start, all_end)
         st.rerun()
-
-    all_zones = set()
-    for frame in [ops_all, pay_all, cpk_all]:
-        zone_col = get_col(frame, ['Zone'])
-        if zone_col:
-            all_zones.update(frame[zone_col].dropna().astype(str).str.strip().str.upper().tolist())
-    zone_options = ['ALL ZONES'] + sorted(z for z in all_zones if z and z not in ('NAN', 'NONE'))
-    filter_zone_col, filter_date_col = st.columns([1, 2])
-    selected_zone = filter_zone_col.selectbox('Zone', zone_options, key='overall_issues_zone')
-    selected_dates = filter_date_col.date_input(
-        'Duration', value=st.session_state[date_state_key], key=date_state_key,
-        help='Operations use MCD start date, payment bills use Base Date, and utilization uses trip date.'
-    )
+    zone_options = ['ALL ZONES'] + zones
+    zone_col, date_col = st.columns([1, 2])
+    selected_zone = zone_col.selectbox('Zone', zone_options, key='overall_issues_zone')
+    selected_dates = date_col.date_input('Duration', value=st.session_state[date_key], key=date_key,
+        help='Operations use MCD start date, payments use Base Date, utilization uses trip date.')
     if isinstance(selected_dates, (list, tuple)) and len(selected_dates) == 2:
         start_date, end_date = selected_dates
     else:
         start_date = end_date = selected_dates
     if start_date > end_date:
         start_date, end_date = end_date, start_date
-    if st.session_state.get(date_state_key) != (start_date, end_date):
-        st.session_state[date_state_key] = (start_date, end_date)
-    st.caption(f"Showing {start_date:%d %b %Y} to {end_date:%d %b %Y}. Operations use MCD start date, payments use Base Date, and utilization uses trip date.")
+    st.caption(f"Showing {start_date:%d %b %Y} to {end_date:%d %b %Y}. Operations use MCD start date; payments use Base Date; utilization uses trip date.")
+    filtered_key = (source_key, selected_zone, start_date, end_date)
+    filtered_cache = st.session_state.get('_overall_issues_filtered_cache')
+    if filtered_cache and filtered_cache[0] == filtered_key:
+        ops_base, pay_base, cpk_base = filtered_cache[1:]
+    else:
+        ops_base, pay_base = filter_overall_issue_frames(ops_all, pay_all, start_date, end_date, selected_zone)
+        cpk_base = filter_overall_utilization_frame(cpk_all, start_date, end_date, selected_zone)
+        st.session_state['_overall_issues_filtered_cache'] = (filtered_key, ops_base, pay_base, cpk_base)
 
-    ops_view, pay_view = filter_overall_issue_frames(ops_all, pay_all, start_date, end_date, selected_zone)
-    cpk_view = filter_overall_utilization_frame(cpk_all, start_date, end_date, selected_zone)
-    summary = build_overall_issues_summary(ops_view, pay_view, cpk_view)
+    ro_options = {'ALL ROS'}
+    for frame, candidates in [
+        (ops_base, ['Origin RO', 'RO Name', 'RO']),
+        (pay_base, ['RO Name', 'Origin RO', 'RO']),
+        (cpk_base, ['RO_Clean', 'VendorRO', 'RO'])
+    ]:
+        ro_col = get_col(frame, candidates)
+        if ro_col:
+            ro_options.update(_clean_ro_series(frame[ro_col]).tolist())
+    ro_options = ['ALL ROS'] + sorted(x for x in ro_options if x != 'ALL ROS')
+    ro_filter_col, route_filter_col = st.columns(2)
+    selected_ro = ro_filter_col.selectbox('RO', ro_options, key='overall_issues_main_ro')
+
+    def filter_frame_ro(frame, candidates):
+        result = frame
+        col = get_col(result, candidates)
+        if selected_ro != 'ALL ROS':
+            result = result[_clean_ro_series(result[col]).eq(selected_ro)].copy() if col else result.iloc[0:0].copy()
+        return result
+
+    ops_ro_view = filter_frame_ro(ops_base, ['Origin RO', 'RO Name', 'RO'])
+    pay_view = filter_frame_ro(pay_base, ['RO Name', 'Origin RO', 'RO'])
+    cpk_ro_view = filter_frame_ro(cpk_base, ['RO_Clean', 'VendorRO', 'RO'])
+    route_options = {'ALL ROUTES'}
+    ops_route_col = get_col(ops_ro_view, ['Route Path', 'Route'])
+    if ops_route_col:
+        route_options.update(ops_ro_view[ops_route_col].dropna().astype(str).str.strip().tolist())
+    cpk_route_col = get_col(cpk_ro_view, ['Final_Route', 'Route (UP/DOWN)', 'Route'])
+    if cpk_route_col:
+        route_options.update(cpk_ro_view[cpk_route_col].dropna().astype(str).str.strip().tolist())
+    route_options = ['ALL ROUTES'] + sorted(x for x in route_options if x and x != 'ALL ROUTES')
+    selected_route = route_filter_col.selectbox('Route', route_options, key='overall_issues_main_route')
+    ops_view = ops_ro_view
+    cpk_view = cpk_ro_view
+    if selected_route != 'ALL ROUTES':
+        if ops_route_col:
+            ops_view = ops_view[ops_view[ops_route_col].fillna('').astype(str).str.strip().eq(selected_route)].copy()
+        if cpk_route_col:
+            cpk_view = cpk_view[cpk_view[cpk_route_col].fillna('').astype(str).str.strip().eq(selected_route)].copy()
+
+    summary_key = (source_key, selected_zone, start_date, end_date, selected_ro, selected_route)
+    summary_cache = st.session_state.get('_overall_issues_summary_cache')
+    if summary_cache and summary_cache[0] == summary_key:
+        summary = summary_cache[1].copy()
+    else:
+        summary = build_overall_issues_summary(ops_view, pay_view, cpk_view)
+        st.session_state['_overall_issues_summary_cache'] = (summary_key, summary.copy())
     if summary.empty:
-        st.info("No records match this zone and duration.")
+        st.info('No records match this zone and duration.')
         return
-
-    def status_count(frame, status_candidates, remark_phrase):
-        status_col = get_col(frame, status_candidates)
-        remark_col = get_col(frame, ['Remark'])
-        source = frame[status_col].fillna('').astype(str) if status_col else (frame[remark_col].fillna('').astype(str) if remark_col else pd.Series('', index=frame.index))
-        return int(source.str.contains(remark_phrase, case=False, na=False).sum())
-
-    trips = len(ops_view)
-    bills = len(pay_view)
-    late_dep_count = status_count(ops_view, ['Dep_Status'], 'Late Dep')
-    late_arr_count = status_count(ops_view, ['Arr_Status'], 'Late Arr')
-    payment_masks = get_overall_payment_status_masks(pay_view)
+    trips = int(summary['Total Trips'].sum()) if 'Total Trips' in summary else len(ops_view)
+    bills = int(summary['Total Bills'].sum()) if 'Total Bills' in summary else len(pay_view)
+    outcome_labels = ['Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr', 'Late Dep, Late Arr', 'Late Dep, Ontime Arr']
     metric_specs = [
-        ('Late Departures', late_dep_count, trips, 'trips'),
-        ('Late Arrivals', late_arr_count, trips, 'trips'),
-        ('Draft Bills', int(payment_masks['Draft bills'].sum()), bills, 'bills'),
-        ('Pending', int(payment_masks['Pending bills'].sum()), bills, 'bills'),
-        ('Payment Pending / Paid', int(payment_masks['Payment pending / paid'].sum()), bills, 'bills'),
-        ('Finance Pending / Hold', int(payment_masks['Finance pending / hold'].sum()), bills, 'bills'),
-        ('Other', int(payment_masks['Other bills'].sum()), bills, 'bills')
+        (label, sum(_overall_count_from_cell(v) for v in summary.get(label, pd.Series(dtype=object))), trips, 'trips')
+        for label in outcome_labels
     ]
-    render_overall_issues_metric_cards(metric_specs, selected_zone, start_date, end_date)
-
-    st.markdown("### RO-wise exception rates")
-    st.caption("Click any percentage/count cell to open only its matching raw records in a new tab. Red is 50% or higher; green is below 50%. Route utilization below 60% is classified as underutilized.")
-    pct_cols = [col for col in summary.columns if col in {
-        'Late Departures', 'Late Arrivals', 'Draft Bills', 'Pending', 'Payment Pending / Paid',
-        'Finance Pending / Hold', 'Other', 'National Underutilized Routes',
-        'National Efficiently Utilized Routes', 'Zonal Underutilized Routes',
-        'Zonal Efficiently Utilized Routes'
-    }]
-    render_overall_issues_clickable_table(summary, start_date, end_date)
-    summary_bytes = build_formatted_excel_bytes(
-        summary, 'Issue Summary', f"Overall Issues · {selected_zone} · {start_date:%d %b %Y} to {end_date:%d %b %Y}",
+    metric_specs += [
+        (label, sum(_overall_count_from_cell(v) for v in summary.get(label, pd.Series(dtype=object))), bills, 'bills')
+        for label in ['Draft Bills', 'Pending', 'Payment Pending / Paid', 'Finance Pending / Hold', 'Other']
+    ]
+    render_overall_issues_metric_cards(
+        metric_specs, selected_zone, start_date, end_date, selected_ro, selected_route
+    )
+    st.markdown('### RO-wise performance and exception rates')
+    st.caption('Click any percentage/count cell to open a focused detail tab. Red is 50% or higher; green is below 50%. Route utilization is underutilized below 60%.')
+    render_overall_issues_clickable_table(summary, start_date, end_date, selected_zone, selected_route)
+    pct_cols = [c for c in summary.columns if c not in ['RO Name', 'Zone', 'Total Trips', 'Total Bills']]
+    excel_bytes = build_formatted_excel_bytes(
+        summary, 'Summary', f"Overall Issues · {selected_zone} · {start_date:%d %b %Y} to {end_date:%d %b %Y}",
         percent_columns=pct_cols,
         width_overrides={'RO Name': 17, 'Zone': 16, 'Total Trips': 14, 'Total Bills': 14}
     )
     st.download_button(
-        "📊 Download Formatted RO Summary (Excel)",
-        data=summary_bytes,
-        file_name=f"Overall_Issues_{start_date:%Y%m%d}_{end_date:%Y%m%d}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        '📊 Download Formatted RO Summary (Excel)', data=excel_bytes,
+        file_name=f"Overall_Issues_Summary_{start_date:%Y%m%d}_{end_date:%Y%m%d}.xlsx",
+        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', key='overall_issues_summary_excel'
     )
 
 # -------------------------------------------------------------
@@ -3339,10 +3678,7 @@ def render_overall_issues(data):
 if choice == "🧭 Scheduled Route Master":
     render_scheduled_route_master(data)
 elif choice == "⚠️ Overall Issues":
-    if overall_issue_raw_view:
-        render_overall_issue_raw_page(data, overall_issue_query)
-    else:
-        render_overall_issues(data)
+    render_overall_issues(data)
 elif choice == "📊 Operations Summary":
     st.markdown("<h2>Operations Exception Summary</h2>", unsafe_allow_html=True)
     
