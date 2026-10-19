@@ -12,6 +12,7 @@ import tempfile
 import logging
 import io
 import re
+import html as html_module
 
 # Disable SettingWithCopyWarning for Pandas
 warnings.filterwarnings('ignore')
@@ -30,50 +31,82 @@ st.set_page_config(
 # VIP Custom CSS for Enterprise Look
 st.markdown("""
     <style>
-    /* Global App Background */
+    :root {
+        --navy-950: #07111f;
+        --navy-900: #0b1728;
+        --navy-800: #10233a;
+        --line: rgba(148, 163, 184, .18);
+        --cyan: #55d6d2;
+        --blue: #60a5fa;
+        --text: #e8f0fb;
+        --muted: #9fb1c8;
+    }
     .stApp {
-        background-color: #0B1120; /* Deep rich navy blue */
+        background:
+            radial-gradient(ellipse at 8% 0%, rgba(37, 99, 235, .15), transparent 34%),
+            radial-gradient(ellipse at 92% 8%, rgba(20, 184, 166, .10), transparent 30%),
+            linear-gradient(145deg, var(--navy-950) 0%, #0b1422 52%, #0c1c2e 100%);
+        color: var(--text);
     }
-    
-    /* Sleek metric cards */
-    div[data-testid="metric-container"] {
-        background: linear-gradient(135deg, #1E293B 0%, #0F172A 100%);
-        border: 1px solid #334155;
-        padding: 5% 5% 5% 10%;
-        border-radius: 12px;
-        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -2px rgba(0, 0, 0, 0.25);
+    [data-testid="stHeader"] { background: rgba(7, 17, 31, .78); }
+    [data-testid="stAppViewContainer"] { background: transparent; }
+    [data-testid="stMainBlockContainer"], .block-container {
+        padding-top: 2.1rem;
+        padding-bottom: 3rem;
+        max-width: 1600px;
     }
-    
-    /* DataFrame Headers */
-    th {
-        background-color: #1D4ED8 !important; /* Rich blue for table headers */
-        color: white !important;
-        font-weight: 600 !important;
-        font-size: 14px !important;
-    }
-    
-    /* Main Titles */
-    h1, h2, h3 {
-        color: #F8FAFC !important;
-        font-weight: 700 !important;
-    }
-    
-    /* Sidebar Styling */
     [data-testid="stSidebar"] {
-        background-color: #111827;
-        border-right: 1px solid #1F2937;
+        background: linear-gradient(180deg, #0c1a2c 0%, #081321 100%);
+        border-right: 1px solid var(--line);
     }
-    
-    /* Button Styling */
-    .stButton>button {
-        border-radius: 8px;
-        font-weight: 600;
-        transition: all 0.3s ease;
+    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p { color: #c1d0e2; }
+    h1, h2, h3, h4 {
+        color: #f5f9ff !important;
+        letter-spacing: -.025em;
+        font-weight: 740 !important;
     }
-    .stButton>button:hover {
+    h1 { font-size: clamp(2rem, 3vw, 2.8rem) !important; }
+    h2 { margin-top: .4rem !important; }
+    p, label, [data-testid="stCaptionContainer"] { color: #c2d1e3; }
+    [data-testid="metric-container"] {
+        background: linear-gradient(145deg, rgba(24, 45, 70, .92), rgba(12, 28, 47, .92));
+        border: 1px solid rgba(96, 165, 250, .22);
+        border-radius: 16px;
+        padding: 1.1rem 1.2rem;
+        box-shadow: 0 14px 36px rgba(0, 0, 0, .20);
+        transition: transform .18s ease, border-color .18s ease;
+    }
+    [data-testid="metric-container"]:hover {
         transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        border-color: rgba(85, 214, 210, .48);
     }
+    [data-testid="stMetricLabel"] { color: #aabbd0 !important; }
+    [data-testid="stMetricValue"] { color: #f4f8ff !important; }
+    [data-testid="stDataFrame"], [data-testid="stDataEditor"] {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        overflow: hidden;
+        background: rgba(12, 26, 43, .72);
+    }
+    th { background-color: #153657 !important; color: #f7fbff !important; font-weight: 650 !important; }
+    .stButton > button, .stDownloadButton > button {
+        border: 1px solid rgba(96, 165, 250, .34);
+        border-radius: 10px;
+        font-weight: 650;
+        color: #edf6ff;
+        background: linear-gradient(120deg, rgba(30, 64, 105, .92), rgba(18, 51, 72, .94));
+        transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
+    }
+    .stButton > button:hover, .stDownloadButton > button:hover {
+        transform: translateY(-1px);
+        border-color: rgba(85, 214, 210, .72);
+        box-shadow: 0 8px 22px rgba(0, 0, 0, .22);
+        color: white;
+    }
+    [data-baseweb="tab"] { color: #aebfd2; }
+    [aria-selected="true"][data-baseweb="tab"] { color: #78e0da !important; }
+    [data-testid="stAlert"] { border-radius: 12px; }
+    hr { border-color: rgba(148, 163, 184, .16); }
     </style>
 """, unsafe_allow_html=True)
 
@@ -98,6 +131,271 @@ FILE_MAP = {
     "USERS_DB": os.path.join(DATA_DIR, "users_master.json")
 }
 
+SCHEDULED_ROUTE_MASTER_TSV = r"""Route Path	Legwise	Legs	Scheduled Departure Time	Scheduled Arrival Time	Given Driving Hours	Scheduled Halting	Scheduled TAT Till Destination
+BKLH-JPRBPH-DELAP	Leg1	BKLH to JPRBPH	01-09-2026 01:00	01-09-2026 16:00	15:00	Origin	23:01
+BKLH-JPRBPH-DELAP	Leg2	JPRBPH to DELAP	01-09-2026 17:00	02-09-2026 00:01	7:01	1:00 at JPRBPH	23:01
+BKLH-JPRH-DELAP	Leg1	BKLH to JPRH	12-09-2026 01:00	12-09-2026 16:00	15:00	Origin	23:01
+BKLH-JPRH-DELAP	Leg2	JPRH to DELAP	12-09-2026 17:00	13-09-2026 00:01	7:01	1:00 at JPRH	23:01
+DELAP-BKLH	Leg1	DELAP to BKLH	03-09-2026 15:00	04-09-2026 16:00	25:00	Origin	25:00
+DELAP-JPRBPH-BKLH	Leg1	DELAP to JPRBPH	01-09-2026 15:00	01-09-2026 23:30	8:30	Origin	39:30
+DELAP-JPRBPH-BKLH	Leg2	JPRBPH to BKLH	01-09-2026 01:30	02-09-2026 17:00	39:30	-22:00 at JPRBPH	39:30
+DELAP-JPRH-BKLH	Leg1	DELAP to JPRH	10-09-2026 15:00	10-09-2026 23:30	8:30	Origin	39:30
+DELAP-JPRH-BKLH	Leg2	JPRH to BKLH	10-09-2026 01:30	11-09-2026 17:00	39:30	-22:00 at JPRH	39:30
+BLRSH-HYDH-NGPLAVA-DELAP	Leg1	BLRSH to HYDH	02-09-2026 08:00	02-09-2026 23:00	15:00	Origin	54:30
+BLRSH-HYDH-NGPLAVA-DELAP	Leg2	HYDH to NGPLAVA	02-09-2026 23:59	03-09-2026 12:30	12:31	0:59 at HYDH	54:30
+BLRSH-HYDH-NGPLAVA-DELAP	Leg3	NGPLAVA to DELAP	03-09-2026 13:30	04-09-2026 14:30	25:00	1:00 at NGPLAVA	54:30
+DELAP-BLRSH	Leg1	DELAP to BLRSH	03-09-2026 05:00	05-09-2026 13:00	56:00	Origin	56:00
+DELAP-NGPLAVA-HYDH-BLRSH	Leg1	DELAP to NGPLAVA	01-09-2026 05:00	02-09-2026 06:00	25:00	Origin	56:00
+DELAP-NGPLAVA-HYDH-BLRSH	Leg2	NGPLAVA to HYDH	02-09-2026 07:30	02-09-2026 23:30	16:00	1:30 at NGPLAVA	56:00
+DELAP-NGPLAVA-HYDH-BLRSH	Leg3	HYDH to BLRSH	02-09-2026 23:59	03-09-2026 13:00	13:01	0:29 at HYDH	56:00
+BWNDLH-PNQHWH-BLRSH-HOSURH-CHIH	Leg1	BWNDLH to PNQHWH	01-09-2026 08:00	01-09-2026 13:00	5:00	Origin	46:00
+BWNDLH-PNQHWH-BLRSH-HOSURH-CHIH	Leg2	PNQHWH to BLRSH	01-09-2026 14:30	02-09-2026 11:00	20:30	1:30 at PNQHWH	46:00
+BWNDLH-PNQHWH-BLRSH-HOSURH-CHIH	Leg3	BLRSH to HOSURH	02-09-2026 20:30	02-09-2026 22:00	1:30	9:30 at BLRSH	46:00
+BWNDLH-PNQHWH-BLRSH-HOSURH-CHIH	Leg4	HOSURH to CHIH	03-09-2026 22:30	04-09-2026 06:00	7:30	0:30 at HOSURH	46:00
+CHIH-HOSURH-BLRSH-PNQHWH-BWNDLH	Leg1	CHIH to HOSURH	01-09-2026 04:30	01-09-2026 11:00	6:30	Origin	40:00
+CHIH-HOSURH-BLRSH-PNQHWH-BWNDLH	Leg2	HOSURH to BLRSH	01-09-2026 11:30	01-09-2026 13:30	2:00	0:30 at HOSURH	40:00
+CHIH-HOSURH-BLRSH-PNQHWH-BWNDLH	Leg3	BLRSH to PNQHWH	01-09-2026 15:30	02-09-2026 12:30	21:00	2:00 at BLRSH	40:00
+CHIH-HOSURH-BLRSH-PNQHWH-BWNDLH	Leg4	PNQHWH to BWNDLH	12-09-2026 15:00	12-09-2026 20:30	5:30	2:30 at PNQHWH	40:00
+BWNDLH-DELAP	Leg1	BWNDLH to DELAP	01-09-2026 10:30	03-09-2026 01:00	38:30	Origin	38:30
+DELAP-BKLH-BWNDLH	Leg1	DELAP to BKLH	01-09-2026 05:00	02-09-2026 03:00	22:00	Origin	39:00
+DELAP-BKLH-BWNDLH	Leg2	BKLH to BWNDLH	02-09-2026 05:00	02-09-2026 20:00	15:00	2:00 at BKLH	39:00
+DELAP-BWNDLH	Leg1	DELAP to BWNDLH	02-09-2026 05:00	03-09-2026 20:00	39:00	Origin	39:00
+BWNDLH-NGPLAVA-RAIH-HOWDG	Leg1	BWNDLH to NGPLAVA	01-09-2026 12:00	02-09-2026 04:00	16:00	Origin	50:00
+BWNDLH-NGPLAVA-RAIH-HOWDG	Leg2	NGPLAVA to RAIH	02-09-2026 05:00	02-09-2026 17:00	12:00	1:00 at NGPLAVA	50:00
+BWNDLH-NGPLAVA-RAIH-HOWDG	Leg3	RAIH to HOWDG	02-09-2026 18:00	03-09-2026 14:00	20:00	1:00 at RAIH	50:00
+HOWDG-RAIH-NGPLAVA-BWNDLH	Leg1	HOWDG to RAIH	01-09-2026 13:00	02-09-2026 09:00	20:00	Origin	50:00
+HOWDG-RAIH-NGPLAVA-BWNDLH	Leg2	RAIH to NGPLAVA	02-09-2026 10:00	02-09-2026 22:00	12:00	1:00 at RAIH	50:00
+HOWDG-RAIH-NGPLAVA-BWNDLH	Leg3	NGPLAVA to BWNDLH	02-09-2026 23:00	03-09-2026 15:00	16:00	1:00 at NGPLAVA	50:00
+BWNDLH-PNQHWH-HYDH	Leg1	BWNDLH to PNQHWH	01-09-2026 07:00	01-09-2026 13:00	6:00	Origin	19:00
+BWNDLH-PNQHWH-HYDH	Leg2	PNQHWH to HYDH	01-09-2026 14:00	02-09-2026 02:00	12:00	1:00 at PNQHWH	19:00
+HYDH-PNQHWH-BWNDLH	Leg1	HYDH to PNQHWH	01-09-2026 02:00	01-09-2026 15:00	13:00	Origin	25:00
+HYDH-PNQHWH-BWNDLH	Leg2	PNQHWH to BWNDLH	01-09-2026 22:30	02-09-2026 03:00	4:30	7:30 at PNQHWH	25:00
+CCUH-HOWDG-PATH-DELAP	Leg1	CCUH to HOWDG	01-09-2026 01:00	01-09-2026 02:00	1:00	Origin	46:30
+CCUH-HOWDG-PATH-DELAP	Leg2	HOWDG to PATH	01-09-2026 03:00	01-09-2026 18:00	15:00	1:00 at HOWDG	46:30
+CCUH-HOWDG-PATH-DELAP	Leg3	PATH to DELAP	02-09-2026 19:00	03-09-2026 23:30	28:30	1:00 at PATH	46:30
+DELAP-PATH-CCUH	Leg1	DELAP to PATH	01-09-2026 03:00	02-09-2026 05:00	26:00	Origin	43:00
+DELAP-PATH-CCUH	Leg2	PATH to CCUH	02-09-2026 06:00	02-09-2026 22:00	16:00	1:00 at PATH	43:00
+DELAP-BHOH-INDH	Leg1	DELAP to BHOH	01-09-2026 04:30	02-09-2026 01:00	20:30	Origin	28:30
+DELAP-BHOH-INDH	Leg2	BHOH to INDH	02-09-2026 04:00	02-09-2026 09:00	5:00	3:00 at BHOH	28:30
+INDH-BHOH-GWLH-DELAP	Leg1	INDH to BHOH	01-09-2026 23:30	02-09-2026 04:30	5:00	Origin	27:30
+INDH-BHOH-GWLH-DELAP	Leg2	BHOH to GWLH	02-09-2026 05:30	02-09-2026 16:30	11:00	1:00 at BHOH	27:30
+INDH-BHOH-GWLH-DELAP	Leg3	GWLH to DELAP	02-09-2026 17:00	03-09-2026 03:00	10:00	0:30 at GWLH	27:30
+PATH-VNS1	Leg1	PATH to VNS1	01-09-2026 23:30	02-09-2026 08:30	9:00	Origin	9:00
+VNS1-PATH	Leg1	VNS1 to PATH	01-09-2026 23:30	02-09-2026 08:30	9:00	Origin	9:00
+AGR1-MTHB-DELAP	Leg1	AGR1 to MTHB	01-09-2026 23:00	02-09-2026 01:00	2:00	Origin	6:00
+AGR1-MTHB-DELAP	Leg2	MTHB to DELAP	02-09-2026 01:30	02-09-2026 05:00	3:30	0:30 at MTHB	6:00
+DELAP-MTHB-AGR1	Leg1	DELAP to MTHB	01-09-2026 03:30	01-09-2026 07:00	3:30	Origin	9:00
+DELAP-MTHB-AGR1	Leg2	MTHB to AGR1	01-09-2026 07:30	01-09-2026 09:00	1:30	0:30 at MTHB	9:00
+ALGH-GZBH-DELAP	Leg1	ALGH to GZBH	01-09-2026 23:30	02-09-2026 02:00	2:30	Origin	4:30
+ALGH-GZBH-DELAP	Leg2	GZBH to DELAP	02-09-2026 02:30	02-09-2026 04:00	1:30	0:30 at GZBH	4:30
+DELAP-ALGH	Leg1	DELAP to ALGH	01-09-2026 04:30	01-09-2026 07:30	3:00	Origin	7:30
+DELAP-GZBH-ALGH	Leg1	DELAP to GZBH	02-09-2026 05:00	02-09-2026 07:00	2:00	Origin	9:00
+DELAP-GZBH-ALGH	Leg2	GZBH to ALGH	02-09-2026 07:30	02-09-2026 09:00	1:30	0:30 at GZBH	9:00
+AMBH-DELAP	Leg1	AMBH to DELAP	01-09-2026 02:15	01-09-2026 06:45	4:30	Origin	6:45
+DELAP-AMBH	Leg1	DELAP to AMBH	02-09-2026 00:00	02-09-2026 05:00	5:00	Origin	5:00
+AMBH-PKLH-IXCH	Leg1	AMBH to PKLH	01-09-2026 07:30	01-09-2026 08:30	1:00	Origin	9:30
+AMBH-PKLH-IXCH	Leg2	PKLH to IXCH	01-09-2026 09:00	01-09-2026 09:30	0:30	0:30 at PKLH	9:30
+IXCH-AMBH	Leg1	IXCH to AMBH	01-09-2026 01:30	01-09-2026 02:30	1:00	Origin	2:30
+AMBH-RJPH-LDHH-JLRH	Leg1	AMBH to RJPH	01-09-2026 06:30	01-09-2026 07:30	1:00	Origin	12:00
+AMBH-RJPH-LDHH-JLRH	Leg2	RJPH to LDHH	01-09-2026 08:00	01-09-2026 10:00	2:00	0:30 at RJPH	12:00
+AMBH-RJPH-LDHH-JLRH	Leg3	LDHH to JLRH	06-09-2026 10:30	06-09-2026 12:00	1:30	0:30 at LDHH	12:00
+JLRH-LDHH-AMBH	Leg1	JLRH to LDHH	01-09-2026 22:30	02-09-2026 00:01	1:31	Origin	4:30
+JLRH-LDHH-AMBH	Leg2	LDHH to AMBH	02-09-2026 01:00	02-09-2026 03:00	2:00	0:59 at LDHH	4:30
+AMBH-KLKH	Leg1	AMBH to KLKH	01-09-2026 07:00	01-09-2026 08:30	1:30	Origin	8:30
+KLKH-AMBH	Leg1	KLKH to AMBH	02-09-2026 01:00	02-09-2026 03:00	2:00	Origin	3:00
+AMDH-AMDKKH-MUMH	Leg1	AMDH to AMDKKH	01-09-2026 22:00	01-09-2026 22:30	0:30	Origin	10:00
+AMDH-AMDKKH-MUMH	Leg2	AMDKKH to MUMH	01-09-2026 23:00	02-09-2026 08:00	9:00	0:30 at AMDKKH	10:00
+MUMH-VASAOH-AMDH	Leg1	MUMH to VASAOH	01-09-2026 23:00	02-09-2026 00:30	1:30	Origin	10:30
+MUMH-VASAOH-AMDH	Leg2	VASAOH to AMDH	02-09-2026 00:40	02-09-2026 09:30	8:50	0:10 at VASAOH	10:30
+ASRH-JLRH-DELAP	Leg1	ASRH to JLRH	01-09-2026 20:00	01-09-2026 22:00	2:00	Origin	11:00
+ASRH-JLRH-DELAP	Leg2	JLRH to DELAP	01-09-2026 22:30	02-09-2026 07:00	8:30	0:30 at JLRH	11:00
+DELAP-JLRH-ASRH	Leg1	DELAP to JLRH	02-09-2026 00:01	02-09-2026 08:30	8:29	Origin	11:00
+DELAP-JLRH-ASRH	Leg2	JLRH to ASRH	02-09-2026 09:00	02-09-2026 11:00	2:00	0:30 at JLRH	11:00
+BBSH-CTKH-JJPRH-BLSRB-HOWDG-CCUH	Leg1	BBSH to CTKH	01-09-2026 21:00	01-09-2026 22:30	1:30	Origin	16:00
+BBSH-CTKH-JJPRH-BLSRB-HOWDG-CCUH	Leg2	CTKH to JJPRH	01-09-2026 23:00	02-09-2026 01:15	2:15	0:30 at CTKH	16:00
+BBSH-CTKH-JJPRH-BLSRB-HOWDG-CCUH	Leg3	JJPRH to BLSRB	02-09-2026 01:45	02-09-2026 06:00	4:15	0:30 at JJPRH	16:00
+BBSH-CTKH-JJPRH-BLSRB-HOWDG-CCUH	Leg4	BLSRB to HOWDG	02-09-2026 06:30	02-09-2026 11:30	5:00	0:30 at BLSRB	16:00
+CCUH-HOWDG-BLSRB-JJPRH-CTKH-BBSH	Leg1	CCUH to HOWDG	01-09-2026 22:30	01-09-2026 23:30	1:00	Origin	14:00
+CCUH-HOWDG-BLSRB-JJPRH-CTKH-BBSH	Leg2	HOWDG to BLSRB	01-09-2026 23:59	02-09-2026 05:30	5:31	0:29 at HOWDG	14:00
+CCUH-HOWDG-BLSRB-JJPRH-CTKH-BBSH	Leg3	BLSRB to JJPRH	02-09-2026 06:00	02-09-2026 08:30	2:30	0:30 at BLSRB	14:00
+CCUH-HOWDG-BLSRB-JJPRH-CTKH-BBSH	Leg4	JJPRH to CTKH	07-09-2026 09:00	07-09-2026 11:00	2:00	0:30 at JJPRH	14:00
+CCUH-HOWDG-BLSRB-JJPRH-CTKH-BBSH	Leg5	CTKH to BBSH	15-09-2026 11:30	15-09-2026 12:30	1:00	0:30 at CTKH	14:00
+BDQH-ANKH-SRTKDH-MUMH	Leg1	BDQH to ANKH	01-09-2026 22:00	01-09-2026 23:30	1:30	Origin	10:00
+BDQH-ANKH-SRTKDH-MUMH	Leg2	ANKH to SRTKDH	01-09-2026 23:45	02-09-2026 02:00	2:15	0:15 at ANKH	10:00
+BDQH-ANKH-SRTKDH-MUMH	Leg3	SRTKDH to MUMH	02-09-2026 02:30	02-09-2026 08:00	5:30	0:30 at SRTKDH	10:00
+MUMH-VASAOH-SRTKDH-ANKH-BDQH	Leg1	MUMH to VASAOH	01-09-2026 23:30	02-09-2026 01:00	1:30	Origin	10:30
+MUMH-VASAOH-SRTKDH-ANKH-BDQH	Leg2	VASAOH to SRTKDH	02-09-2026 01:10	02-09-2026 06:00	4:50	0:10 at VASAOH	10:30
+BGHB-DELAP	Leg1	BGHB to DELAP	01-09-2026 23:00	02-09-2026 03:00	4:00	Origin	4:00
+DELAP-BGHB	Leg1	DELAP to BGHB	01-09-2026 06:00	01-09-2026 07:30	1:30	Origin	7:30
+BKLH-BDQH-ANKH-SRTKDH-MUMH	Leg1	BKLH to BDQH	01-09-2026 01:00	01-09-2026 03:00	2:00	Origin	14:00
+BKLH-BDQH-ANKH-SRTKDH-MUMH	Leg2	BDQH to ANKH	01-09-2026 03:45	01-09-2026 05:30	1:45	0:45 at BDQH	14:00
+BKLH-BDQH-ANKH-SRTKDH-MUMH	Leg3	ANKH to SRTKDH	01-09-2026 06:00	01-09-2026 08:30	2:30	0:30 at ANKH	14:00
+BKLH-BDQH-ANKH-SRTKDH-MUMH	Leg4	SRTKDH to MUMH	15-09-2026 09:00	15-09-2026 14:00	5:00	0:30 at SRTKDH	14:00
+MUMH-SRTKDH-BDQH-BKLH	Leg1	MUMH to SRTKDH	01-09-2026 04:00	01-09-2026 11:00	7:00	Origin	17:00
+MUMH-SRTKDH-BDQH-BKLH	Leg2	SRTKDH to BDQH	01-09-2026 11:15	01-09-2026 14:15	3:00	0:15 at SRTKDH	17:00
+BLRSH-HOSURH-SLMH-CJBH-COKAP	Leg1	BLRSH to HOSURH	01-09-2026 23:00	02-09-2026 00:30	1:30	Origin	14:00
+BLRSH-HOSURH-SLMH-CJBH-COKAP	Leg2	HOSURH to SLMH	02-09-2026 01:00	02-09-2026 05:00	4:00	0:30 at HOSURH	14:00
+BLRSH-HOSURH-SLMH-CJBH-COKAP	Leg3	SLMH to CJBH	02-09-2026 05:30	02-09-2026 09:00	3:30	0:30 at SLMH	14:00
+BLRSH-HOSURH-SLMH-CJBH-COKAP	Leg4	CJBH to COKAP	16-09-2026 09:30	16-09-2026 13:00	3:30	0:30 at CJBH	14:00
+COKAP-CJBH-SLMH-HOSURH-BLRSH	Leg1	COKAP to CJBH	01-09-2026 19:00	01-09-2026 23:00	4:00	Origin	15:30
+COKAP-CJBH-SLMH-HOSURH-BLRSH	Leg2	CJBH to SLMH	01-09-2026 23:59	02-09-2026 03:30	3:31	0:59 at CJBH	15:30
+COKAP-CJBH-SLMH-HOSURH-BLRSH	Leg3	SLMH to HOSURH	02-09-2026 04:00	02-09-2026 08:00	4:00	0:30 at SLMH	15:30
+BLYH-DELAP	Leg1	BLYH to DELAP	09-09-2026 21:00	10-09-2026 06:30	9:30	Origin	9:30
+BLYH-MBDH-DELAP	Leg1	BLYH to MBDH	01-09-2026 21:00	02-09-2026 00:30	3:30	Origin	9:30
+BLYH-MBDH-DELAP	Leg2	MBDH to DELAP	02-09-2026 01:00	02-09-2026 06:30	5:30	0:30 at MBDH	9:30
+DELAP-GZBH-MBDH-BLYH	Leg1	DELAP to GZBH	01-09-2026 02:00	01-09-2026 03:30	1:30	Origin	10:00
+DELAP-GZBH-MBDH-BLYH	Leg2	GZBH to MBDH	01-09-2026 04:00	01-09-2026 07:00	3:00	0:30 at GZBH	10:00
+DELAP-MBDH-BLYH	Leg1	DELAP to MBDH	03-09-2026 02:00	03-09-2026 08:00	6:00	Origin	11:45
+DELAP-MBDH-BLYH	Leg2	MBDH to BLYH	03-09-2026 08:30	03-09-2026 11:45	3:15	0:30 at MBDH	11:45
+BWNDH-BWNDLH-PNQHWH-PNQH	Leg1	BWNDH to BWNDLH	01-09-2026 22:30	01-09-2026 23:00	0:30	Origin	7:00
+BWNDH-BWNDLH-PNQHWH-PNQH	Leg2	BWNDLH to PNQHWH	01-09-2026 23:15	02-09-2026 03:15	4:00	0:15 at BWNDLH	7:00
+BWNDH-BWNDLH-PNQHWH-PNQH	Leg3	PNQHWH to PNQH	02-09-2026 04:15	02-09-2026 05:30	1:15	1:00 at PNQHWH	7:00
+PNQH-PNQHWH-BWNDLH	Leg1	PNQH to PNQHWH	02-09-2026 00:01	02-09-2026 01:00	0:59	Origin	6:30
+PNQH-PNQHWH-BWNDLH	Leg2	PNQHWH to BWNDLH	02-09-2026 03:30	02-09-2026 06:30	3:00	2:30 at PNQHWH	6:30
+BWNDLH-PNQHWH	Leg1	BWNDLH to PNQHWH	15-09-2026 05:00	15-09-2026 10:00	5:00	Origin	10:00
+CCUH-HOWDG-KGPRH-JSRH-RNC1	Leg1	CCUH to HOWDG	01-09-2026 23:00	02-09-2026 00:00	1:00	Origin	13:00
+CCUH-HOWDG-KGPRH-JSRH-RNC1	Leg2	HOWDG to KGPRH	02-09-2026 00:30	02-09-2026 03:30	3:00	0:30 at HOWDG	13:00
+CCUH-HOWDG-KGPRH-JSRH-RNC1	Leg3	KGPRH to JSRH	03-09-2026 04:00	03-09-2026 08:00	4:00	0:30 at KGPRH	13:00
+CCUH-HOWDG-KGPRH-JSRH-RNC1	Leg4	JSRH to RNC1	05-09-2026 08:30	05-09-2026 12:00	3:30	0:30 at JSRH	13:00
+RNC1-JSRH-KGPRH-HOWDG-CCUH	Leg1	RNC1 to JSRH	01-09-2026 22:00	02-09-2026 01:30	3:30	Origin	12:00
+RNC1-JSRH-KGPRH-HOWDG-CCUH	Leg2	JSRH to KGPRH	02-09-2026 02:00	02-09-2026 05:30	3:30	0:30 at JSRH	12:00
+RNC1-JSRH-KGPRH-HOWDG-CCUH	Leg3	KGPRH to HOWDG	02-09-2026 06:00	02-09-2026 08:00	2:00	0:30 at KGPRH	12:00
+RNC1-JSRH-KGPRH-HOWDG-CCUH	Leg4	HOWDG to CCUH	05-09-2026 08:30	05-09-2026 10:00	1:30	0:30 at HOWDG	12:00
+CHIH-SLMH-COKAP	Leg1	CHIH to SLMH	12-09-2026 23:30	13-09-2026 05:30	6:00	Origin	13:30
+CHIH-SLMH-COKAP	Leg2	SLMH to COKAP	13-09-2026 06:30	13-09-2026 13:00	6:30	1:00 at SLMH	13:30
+CHIH-VPMH-SLMH-PKDH-COKAP	Leg1	CHIH to VPMH	01-09-2026 23:30	02-09-2026 05:30	6:00	Origin	15:30
+CHIH-VPMH-SLMH-PKDH-COKAP	Leg2	VPMH to SLMH	02-09-2026 06:30	02-09-2026 10:00	3:30	1:00 at VPMH	15:30
+CHIH-VPMH-SLMH-PKDH-COKAP	Leg3	SLMH to PKDH	06-09-2026 10:30	06-09-2026 11:30	1:00	0:30 at SLMH	15:30
+COKAP-SLMH-CHIH	Leg1	COKAP to SLMH	01-09-2026 19:00	02-09-2026 01:00	6:00	Origin	12:30
+COKAP-SLMH-CHIH	Leg2	SLMH to CHIH	02-09-2026 01:30	02-09-2026 07:30	6:00	0:30 at SLMH	12:30
+COKH-THRH-CJBH-TRPH1-ERDH	Leg1	COKH to THRH	01-09-2026 04:15	01-09-2026 05:15	1:00	Origin	11:00
+COKH-THRH-CJBH-TRPH1-ERDH	Leg2	THRH to CJBH	01-09-2026 06:15	01-09-2026 08:45	2:30	1:00 at THRH	11:00
+COKH-THRH-CJBH-TRPH1-ERDH	Leg3	CJBH to TRPH1	01-09-2026 09:00	01-09-2026 09:45	0:45	0:15 at CJBH	11:00
+ERDH-TRPH1-CJBH-COKAP-COKH	Leg1	ERDH to TRPH1	01-09-2026 21:00	01-09-2026 22:00	1:00	Origin	6:45
+ERDH-TRPH1-CJBH-COKAP-COKH	Leg2	TRPH1 to CJBH	01-09-2026 22:30	01-09-2026 23:15	0:45	0:30 at TRPH1	6:45
+ERDH-TRPH1-CJBH-COKAP-COKH	Leg3	CJBH to COKAP	01-09-2026 23:45	02-09-2026 03:00	3:15	0:30 at CJBH	6:45
+ERDH-TRPH1-CJBH-COKAP-COKH	Leg4	COKAP to COKH	02-09-2026 03:15	02-09-2026 03:45	0:30	0:15 at COKAP	6:45
+DDNS-RRKH-GZBH-DELAP	Leg1	DDNS to RRKH	01-09-2026 23:00	02-09-2026 00:30	1:30	Origin	7:00
+DDNS-RRKH-GZBH-DELAP	Leg2	RRKH to GZBH	02-09-2026 01:00	02-09-2026 04:00	3:00	0:30 at RRKH	7:00
+DDNS-RRKH-GZBH-DELAP	Leg3	GZBH to DELAP	04-09-2026 04:15	04-09-2026 06:00	1:45	0:15 at GZBH	7:00
+DELAP-GZBH-RRKH-DDNS	Leg1	DELAP to GZBH	01-09-2026 02:00	01-09-2026 03:30	1:30	Origin	10:00
+DELAP-GZBH-RRKH-DDNS	Leg2	GZBH to RRKH	01-09-2026 04:00	01-09-2026 07:30	3:30	0:30 at GZBH	10:00
+DELAP-GZBH-RRKH-DDNS	Leg3	RRKH to DDNS	01-09-2026 08:00	01-09-2026 10:00	2:00	0:30 at RRKH	10:00
+DELAP-GZBH	Leg1	DELAP to GZBH	01-09-2026 05:00	01-09-2026 08:00	3:00	Origin	8:00
+DELAP-SBDH-GZBH	Leg1	DELAP to SBDH	N/A	N/A		Origin	
+DELAP-SBDH-GZBH	Leg2	SBDH to GZBH	N/A	N/A		0:00 at SBDH	
+GZBH-DELAP	Leg1	GZBH to DELAP	01-09-2026 23:30	02-09-2026 01:00	1:30	Origin	1:30
+GZBH-SBDH-DELAP	Leg1	GZBH to SBDH	01-09-2026 21:32	01-09-2026 22:15	0:43	Origin	23:45
+GZBH-SBDH-DELAP	Leg2	SBDH to DELAP	01-09-2026 22:30	01-09-2026 23:45	1:15	0:15 at SBDH	23:45
+DELAP-GZBH-MBDH-RUDH-HALDH	Leg1	DELAP to GZBH	01-09-2026 02:00	01-09-2026 03:30	1:30	Origin	11:00
+DELAP-GZBH-MBDH-RUDH-HALDH	Leg2	GZBH to MBDH	01-09-2026 04:00	01-09-2026 07:00	3:00	0:30 at GZBH	11:00
+DELAP-GZBH-MBDH-RUDH-HALDH	Leg3	MBDH to RUDH	16-09-2026 07:30	16-09-2026 09:30	2:00	0:30 at MBDH	11:00
+DELAP-MBDH-RUDH-HALDH	Leg1	DELAP to MBDH	03-09-2026 01:30	03-09-2026 05:30	4:00	Origin	12:00
+DELAP-MBDH-RUDH-HALDH	Leg2	MBDH to RUDH	03-09-2026 06:00	03-09-2026 08:30	2:30	0:30 at MBDH	12:00
+DELAP-MBDH-RUDH-HALDH	Leg3	RUDH to HALDH	03-09-2026 09:00	03-09-2026 12:00	3:00	0:30 at RUDH	12:00
+HALDH-RUDH-MBDH-GZBH-DELAP	Leg1	HALDH to RUDH	01-09-2026 20:30	01-09-2026 22:00	1:30	Origin	9:45
+HALDH-RUDH-MBDH-GZBH-DELAP	Leg2	RUDH to MBDH	01-09-2026 23:00	02-09-2026 01:00	2:00	1:00 at RUDH	9:45
+HALDH-RUDH-MBDH-GZBH-DELAP	Leg3	MBDH to GZBH	03-09-2026 01:30	03-09-2026 04:15	2:45	0:30 at MBDH	9:45
+DELAP-RRKH-HRDH	Leg1	DELAP to RRKH	08-09-2026 02:00	08-09-2026 07:00	5:00	Origin	8:59
+HRDH-RRKH-DELAP	Leg1	HRDH to RRKH	01-09-2026 23:00	02-09-2026 00:00	1:00	Origin	6:30
+HRDH-RRKH-DELAP	Leg2	RRKH to DELAP	02-09-2026 00:30	02-09-2026 05:30	5:00	0:30 at RRKH	6:30
+DELAP-RTQH-HSRH	Leg1	DELAP to RTQH	01-09-2026 04:30	01-09-2026 06:30	2:00	Origin	9:00
+DELAP-RTQH-HSRH	Leg2	RTQH to HSRH	01-09-2026 07:00	01-09-2026 09:00	2:00	0:30 at RTQH	9:00
+HSRH-RTQH-DELAP	Leg1	HSRH to RTQH	01-09-2026 21:00	02-09-2026 22:00	25:00	Origin	26:30
+HSRH-RTQH-DELAP	Leg2	RTQH to DELAP	02-09-2026 22:30	02-09-2026 23:30	1:00	0:30 at RTQH	26:30
+DELAP-AMBH-IXCH	Leg1	DELAP to AMBH	01-09-2026 03:30	01-09-2026 08:30	5:00	Origin	9:30
+DELAP-AMBH-IXCH	Leg2	AMBH to IXCH	01-09-2026 09:00	01-09-2026 09:30	0:30	0:30 at AMBH	9:30
+DELAP-IXCH	Leg1	DELAP to IXCH	01-09-2026 03:00	01-09-2026 08:30	5:30	Origin	8:30
+IXCH-DELAP	Leg1	IXCH to DELAP	01-09-2026 00:30	01-09-2026 06:30	6:00	Origin	6:30
+IXCH-PKLH-DELAP	Leg1	IXCH to PKLH	01-09-2026 20:30	01-09-2026 21:00	0:30	Origin	9:00
+IXCH-PKLH-DELAP	Leg2	PKLH to DELAP	01-09-2026 23:30	02-09-2026 05:30	6:00	2:30 at PKLH	9:00
+DELAP-LDHH-JLRH	Leg1	DELAP to LDHH	06-09-2026 00:30	06-09-2026 08:30	8:00	Origin	11:00
+DELAP-LDHH-JLRH	Leg2	LDHH to JLRH	06-09-2026 09:30	06-09-2026 11:00	1:30	1:00 at LDHH	11:00
+JPRBPH-JPRH-BEHH-DELAP	Leg1	JPRBPH to JPRH	03-09-2026 22:00	03-09-2026 22:30	0:30	Origin	7:30
+JPRBPH-JPRH-BEHH-DELAP	Leg2	JPRH to BEHH	03-09-2026 23:00	04-09-2026 02:00	3:00	0:30 at JPRH	7:30
+JPRBPH-JPRH-BEHH-DELAP	Leg3	BEHH to DELAP	04-09-2026 02:30	04-09-2026 05:30	3:00	0:30 at BEHH	7:30
+DELAP-BEHH-JPRH	Leg1	DELAP to BEHH	01-09-2026 03:00	01-09-2026 06:30	3:30	Origin	9:00
+DELAP-BEHH-JPRH	Leg2	BEHH to JPRH	01-09-2026 07:00	01-09-2026 09:00	2:00	0:30 at BEHH	9:00
+DELAP-JPRH	Leg1	DELAP to JPRH	02-09-2026 00:00	02-09-2026 06:00	6:00	Origin	6:00
+JPRH-BEHH-DELAP	Leg1	JPRH to BEHH	01-09-2026 22:00	02-09-2026 00:30	2:30	Origin	5:30
+JPRH-BEHH-DELAP	Leg2	BEHH to DELAP	02-09-2026 00:45	02-09-2026 03:30	2:45	0:15 at BEHH	5:30
+JPRH-DELAP	Leg1	JPRH to DELAP	01-09-2026 00:00	02-09-2026 06:00	30:00	Origin	30:00
+JPRH-JPRBPH-DELAP	Leg1	JPRH to JPRBPH	04-09-2026 23:30	05-09-2026 00:01	0:31	Origin	7:00
+JPRH-JPRBPH-DELAP	Leg2	JPRBPH to DELAP	05-09-2026 00:30	05-09-2026 06:30	6:00	0:29 at JPRBPH	7:00
+DELAP-PKLH-KLKH	Leg1	DELAP to PKLH	01-09-2026 01:00	01-09-2026 07:00	6:00	Origin	9:30
+DELAP-PKLH-KLKH	Leg2	PKLH to KLKH	01-09-2026 08:15	01-09-2026 09:30	1:15	1:15 at PKLH	9:30
+KLKH-PKLH-DELAP	Leg1	KLKH to PKLH	01-09-2026 00:30	02-09-2026 01:30	25:00	Origin	30:00
+KLKH-PKLH-DELAP	Leg2	PKLH to DELAP	04-09-2026 02:00	04-09-2026 06:30	4:30	0:30 at PKLH	30:00
+DELAP-PNPH-KNLH	Leg1	DELAP to PNPH	01-09-2026 04:30	01-09-2026 07:00	2:30	Origin	9:00
+DELAP-PNPH-KNLH	Leg2	PNPH to KNLH	01-09-2026 08:00	01-09-2026 09:00	1:00	1:00 at PNPH	9:00
+KNLH-PNPH-DELAP	Leg1	KNLH to PNPH	01-09-2026 21:30	01-09-2026 23:30	2:00	Origin	5:30
+KNLH-PNPH-DELAP	Leg2	PNPH to DELAP	01-09-2026 23:59	02-09-2026 03:00	3:01	0:29 at PNPH	5:30
+DELAP-LDHH	Leg1	DELAP to LDHH	01-09-2026 00:30	01-09-2026 08:30	8:00	Origin	8:30
+LDHH-DELAP	Leg1	LDHH to DELAP	01-09-2026 23:30	02-09-2026 07:00	7:30	Origin	7:30
+DELAP-LKOH	Leg1	DELAP to LKOH	01-09-2026 23:59	02-09-2026 09:30	9:31	Origin	9:31
+LKOH-DELAP	Leg1	LKOH to DELAP	01-09-2026 01:00	02-09-2026 12:00	35:00	Origin	35:00
+DELAP-KNPKNB-LKOTP1	Leg1	DELAP to KNPKNB	01-09-2026 05:00	01-09-2026 16:00	11:00	Origin	19:00
+DELAP-KNPKNB-LKOTP1	Leg2	KNPKNB to LKOTP1	01-09-2026 17:00	01-09-2026 19:00	2:00	1:00 at KNPKNB	19:00
+DELAP-LKOTP1	Leg1	DELAP to LKOTP1	02-09-2026 03:00	03-09-2026 12:00	33:00	Origin	33:00
+LKOTP1-DELAP	Leg1	LKOTP1 to DELAP	03-09-2026 16:00	04-09-2026 03:00	11:00	Origin	11:00
+LKOTP1-KNPKNB-DELAP	Leg1	LKOTP1 to KNPKNB	01-09-2026 02:00	01-09-2026 04:30	2:30	Origin	16:00
+LKOTP1-KNPKNB-DELAP	Leg2	KNPKNB to DELAP	01-09-2026 05:30	01-09-2026 16:00	10:30	1:00 at KNPKNB	16:00
+DELAP-GZBH-MRTH	Leg1	DELAP to GZBH	01-09-2026 05:00	01-09-2026 06:30	1:30	Origin	8:30
+DELAP-GZBH-MRTH	Leg2	GZBH to MRTH	01-09-2026 07:00	01-09-2026 08:30	1:30	0:30 at GZBH	8:30
+MRTH-GZBH-DELAP	Leg1	MRTH to GZBH	01-09-2026 23:55	02-09-2026 01:00	1:05	Origin	3:35
+MRTH-GZBH-DELAP	Leg2	GZBH to DELAP	02-09-2026 01:30	02-09-2026 03:30	2:00	0:30 at GZBH	3:35
+DELAP-RRKH-HRDH-RKSH	Leg1	DELAP to RRKH	01-09-2026 03:00	02-09-2026 06:00	27:00	Origin	30:00
+DELAP-RRKH-HRDH-RKSH	Leg2	RRKH to HRDH	06-09-2026 06:30	05-09-2026 08:30	-22:00	0:30 at RRKH	30:00
+DELAP-SBDH	Leg1	DELAP to SBDH	N/A	N/A		Origin	
+SBDH-DELAP	Leg1	SBDH to DELAP	N/A	N/A		Origin	
+DELAP-SNP2-SNPH	Leg1	DELAP to SNP2	01-09-2026 05:00	01-09-2026 06:30	1:30	Origin	8:00
+DELAP-SNP2-SNPH	Leg2	SNP2 to SNPH	01-09-2026 07:30	01-09-2026 08:00	0:30	1:00 at SNP2	8:00
+SNPH-SNP2-DELAP	Leg1	SNPH to SNP2	01-09-2026 22:00	01-09-2026 23:00	1:00	Origin	3:30
+SNPH-SNP2-DELAP	Leg2	SNP2 to DELAP	01-09-2026 23:30	02-09-2026 01:30	2:00	0:30 at SNP2	3:30
+DELAP-MZNH-SREH	Leg1	DELAP to MZNH	01-09-2026 04:30	01-09-2026 08:30	4:00	Origin	10:00
+DELAP-MZNH-SREH	Leg2	MZNH to SREH	01-09-2026 09:00	01-09-2026 10:00	1:00	0:30 at MZNH	10:00
+SREH-MZNH-DELAP	Leg1	SREH to MZNH	01-09-2026 22:30	01-09-2026 23:55	1:25	Origin	27:20
+SREH-MZNH-DELAP	Leg2	MZNH to DELAP	01-09-2026 00:10	02-09-2026 03:30	27:20	-23:45 at MZNH	27:20
+DELAP-KNPKNB-IXD1-VNSTPT-VNS1	Leg1	DELAP to KNPKNB	04-09-2026 03:00	05-09-2026 14:00	35:00	Origin	45:20
+DELAP-KNPKNB-IXD1-VNSTPT-VNS1	Leg2	KNPKNB to IXD1	05-09-2026 15:00	05-09-2026 20:00	5:00	1:00 at KNPKNB	45:20
+DELAP-KNPKNB-IXD1-VNSTPT-VNS1	Leg3	IXD1 to VNSTPT	05-09-2026 21:00	06-09-2026 00:00	3:00	1:00 at IXD1	45:20
+DELAP-KNPKNB-IXD1-VNSTPT-VNS1	Leg4	VNSTPT to VNS1	06-09-2026 00:15	06-09-2026 00:20	0:05	0:15 at VNSTPT	45:20
+VNS1-VNSTPT-IXD1-KNPKNB-DELAP	Leg1	VNS1 to VNSTPT	01-09-2026 23:00	01-09-2026 23:30	0:30	Origin	47:59
+VNS1-VNSTPT-IXD1-KNPKNB-DELAP	Leg2	VNSTPT to IXD1	01-09-2026 00:00	02-09-2026 02:30	26:30	-23:30 at VNSTPT	47:59
+VNS1-VNSTPT-IXD1-KNPKNB-DELAP	Leg3	IXD1 to KNPKNB	04-09-2026 03:00	04-09-2026 07:00	4:00	0:30 at IXD1	47:59
+DELAP-IXD1-VNSTPT	Leg1	DELAP to IXD1	04-09-2026 11:00	05-09-2026 23:00	36:00	Origin	36:00
+DELAP-IXD1-VNSTPT	Leg2	IXD1 to VNSTPT	05-09-2026 01:00	05-09-2026 07:00	6:00	-22:00 at IXD1	36:00
+DELAP-KNPKNB-IXD1-VNSTPT	Leg1	DELAP to KNPKNB	02-09-2026 11:00	03-09-2026 22:00	35:00	Origin	35:00
+DELAP-KNPKNB-IXD1-VNSTPT	Leg2	KNPKNB to IXD1	03-09-2026 22:30	03-09-2026 03:00	-19:30	0:30 at KNPKNB	35:00
+DELAP-KNPKNB-IXD1-VNSTPT	Leg3	IXD1 to VNSTPT	07-09-2026 03:30	07-09-2026 07:00	3:30	0:30 at IXD1	35:00
+GZBH-MBDH-BLYH-LKOTP1	Leg1	GZBH to MBDH	02-09-2026 23:00	03-09-2026 02:30	3:30	Origin	13:30
+GZBH-MBDH-BLYH-LKOTP1	Leg2	MBDH to BLYH	03-09-2026 03:00	03-09-2026 05:00	2:00	0:30 at MBDH	13:30
+GZBH-MBDH-BLYH-LKOTP1	Leg3	BLYH to LKOTP1	03-09-2026 05:30	03-09-2026 12:30	7:00	0:30 at BLYH	13:30
+LKOTP1-BLYH-MBDH-GZBH	Leg1	LKOTP1 to BLYH	01-09-2026 00:30	02-09-2026 06:30	30:00	Origin	37:30
+LKOTP1-BLYH-MBDH-GZBH	Leg2	BLYH to MBDH	11-09-2026 07:00	11-09-2026 10:00	3:00	0:30 at BLYH	37:30
+GZBH-NDAH-NDAPH2	Leg1	GZBH to NDAH	N/A	N/A		Origin	
+GZBH-NDAH-NDAPH2	Leg2	NDAH to NDAPH2	N/A	N/A		0:00 at NDAH	
+NDAPH2-NDAH-GZBH	Leg1	NDAPH2 to NDAH	N/A	N/A		Origin	
+NDAPH2-NDAH-GZBH	Leg2	NDAH to GZBH	N/A	N/A		0:00 at NDAH	
+MUMDAH-MUMTCS-MUMGTK-MUMSPD-PNQHWH	Leg1	MUMDAH to MUMTCS	01-09-2026 21:00	01-09-2026 22:15	1:15	Origin	6:30
+MUMDAH-MUMTCS-MUMGTK-MUMSPD-PNQHWH	Leg2	MUMTCS to MUMGTK	01-09-2026 22:30	01-09-2026 23:00	0:30	0:15 at MUMTCS	6:30
+MUMDAH-MUMTCS-MUMGTK-MUMSPD-PNQHWH	Leg3	MUMGTK to MUMSPD	01-09-2026 23:15	02-09-2026 00:01	0:46	0:15 at MUMGTK	6:30
+MUMDAH-MUMTCS-MUMGTK-MUMSPD-PNQHWH	Leg4	MUMSPD to PNQHWH	02-09-2026 00:30	02-09-2026 03:30	3:00	0:29 at MUMSPD	6:30
+MUMFORT -MUMLWP-MUMH-PNQHWH	Leg1	MUMFORT  to MUMLWP	01-09-2026 21:15	01-09-2026 21:50	0:35	Origin	5:15
+MUMFORT -MUMLWP-MUMH-PNQHWH	Leg2	MUMLWP to MUMH	01-09-2026 22:00	01-09-2026 22:45	0:45	0:10 at MUMLWP	5:15
+MUMFORT -MUMLWP-MUMH-PNQHWH	Leg3	MUMH to PNQHWH	02-09-2026 23:15	03-09-2026 02:30	3:15	0:30 at MUMH	5:15
+MUMH-NSKH	Leg1	MUMH to NSKH	01-09-2026 05:00	01-09-2026 09:00	4:00	Origin	9:00
+NSKH-MUMH	Leg1	NSKH to MUMH	01-09-2026 22:30	02-09-2026 03:00	4:30	Origin	4:30
+MUMH-KHPH-PNQLH-PNQHWH-PNQH	Leg1	MUMH to KHPH	01-09-2026 02:30	01-09-2026 03:45	1:15	Origin	9:00
+MUMH-KHPH-PNQLH-PNQHWH-PNQH	Leg2	KHPH to PNQLH	01-09-2026 04:00	01-09-2026 04:15	0:15	0:15 at KHPH	9:00
+MUMH-KHPH-PNQLH-PNQHWH-PNQH	Leg3	PNQLH to PNQHWH	01-09-2026 04:45	01-09-2026 05:45	1:00	0:30 at PNQLH	9:00
+PNQH-PNQBH-PNQPB-PNQLH-KHPH-MUMH	Leg1	PNQH to PNQBH	01-09-2026 22:30	01-09-2026 23:00	0:30	Origin	5:30
+PNQH-PNQBH-PNQPB-PNQLH-KHPH-MUMH	Leg2	PNQBH to PNQPB	08-09-2026 23:10	08-09-2026 23:25	0:15	0:10 at PNQBH	5:30
+PNQHWH-MUMH	Leg1	PNQHWH to MUMH	01-09-2026 03:00	01-09-2026 06:15	3:15	Origin	6:15
+MUMH-VPIH	Leg1	MUMH to VPIH	01-09-2026 05:30	02-09-2026 09:00	27:30	Origin	27:30
+VPIH-MUMH	Leg1	VPIH to MUMH	01-09-2026 23:00	02-09-2026 03:30	4:30	Origin	4:30
+PNQHWH-MUMSPD	Leg1	PNQHWH to MUMSPD	01-09-2026 05:00	01-09-2026 09:00	4:00	Origin	9:00"""
+
 ALL_PORTAL_MODULES = [
     "📊 Operations Summary",
     "🚚 Vendor Performance",
@@ -105,6 +403,8 @@ ALL_PORTAL_MODULES = [
     "📱 Communication Hub",
     "💰 Network Utilization",
     "📝 Today's Call Action Plan",
+    "🧭 Scheduled Route Master",
+    "⚠️ Overall Issues",
     "🔐 User & Access Control"
 ]
 
@@ -234,6 +534,17 @@ def load_users_db():
                 if field_k not in db[u_k]:
                     db[u_k][field_k] = field_v
                     changed = True
+
+    # Give the seeded standard accounts access to the newly added default modules
+    # when they still have the original standard-module set. Custom permissions stay intact.
+    legacy_standard_modules = [
+        "📊 Operations Summary", "🚚 Vendor Performance", "💳 Payment Dashboard",
+        "📱 Communication Hub", "💰 Network Utilization", "📝 Today's Call Action Plan"
+    ]
+    for seeded_id in ("admin2", "user"):
+        if seeded_id in db and set(db[seeded_id].get("modules", [])) == set(legacy_standard_modules):
+            db[seeded_id]["modules"] = STANDARD_MODULES
+            changed = True
 
     # Always guarantee master 'admin' has full access
     db["admin"]["role"] = "Admin"
@@ -520,6 +831,132 @@ def load_action_plans():
 def save_action_plans(data):
     with open(FILE_MAP["ACTION_PLANS"], 'w') as f:
         json.dump(data, f)
+
+@st.cache_data(show_spinner=False)
+def get_scheduled_route_master():
+    """Load the supplied National/Zonal schedule table and keep only meeting fields."""
+    output_cols = [
+        'Route Path', 'Legwise', 'Legs', 'From Branch', 'To Branch',
+        'Scheduled Departure from Any Branch',
+        'Scheduled Arrival in Any Branch', 'Scheduled Halting',
+        'Scheduled TAT Till Destination'
+    ]
+    try:
+        df = pd.read_csv(
+            io.StringIO(SCHEDULED_ROUTE_MASTER_TSV),
+            sep='\t', dtype=str, keep_default_na=False
+        )
+        df.columns = df.columns.astype(str).str.strip()
+        for col in df.columns:
+            df[col] = df[col].astype(str).str.replace('\u00a0', ' ', regex=False).str.strip()
+        required = [
+            'Route Path', 'Legwise', 'Legs', 'Scheduled Departure Time',
+            'Given Driving Hours', 'Scheduled Halting',
+            'Scheduled TAT Till Destination'
+        ]
+        for col in required:
+            if col not in df.columns:
+                df[col] = ''
+        branch_parts = df['Legs'].str.split(r'\s+to\s+', n=1, expand=True)
+        df['From Branch'] = branch_parts[0].fillna('').str.strip().str.upper()
+        df['To Branch'] = branch_parts[1].fillna('').str.strip().str.upper() if branch_parts.shape[1] > 1 else ''
+        df['Scheduled Departure from Any Branch'] = df['Scheduled Departure Time'].replace('', '-')
+        # The requested branch-arrival column displays the supplied driving hours.
+        df['Scheduled Arrival in Any Branch'] = df['Given Driving Hours'].replace('', '-')
+        df['Scheduled Halting'] = df['Scheduled Halting'].replace('', '-')
+        df['Scheduled TAT Till Destination'] = df['Scheduled TAT Till Destination'].replace('', '-')
+        return df.reindex(columns=output_cols).fillna('')
+    except Exception as exc:
+        logging.exception("Could not load scheduled route master")
+        return pd.DataFrame(columns=output_cols)
+
+def build_print_ready_schedule_html(df, branch_label):
+    """Build a self-contained A4 landscape sheet that can be printed or saved as PDF."""
+    title = f"National & Zonal Scheduled Route Master — {branch_label}"
+    table_html = df.to_html(index=False, escape=True, border=0, classes='schedule-table')
+    safe_title = html_module.escape(title)
+    return f'''<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{safe_title}</title>
+<style>
+@page {{ size: A4 landscape; margin: 11mm; }}
+* {{ box-sizing: border-box; }}
+body {{ margin: 0; padding: 20px; color: #172638; font: 12px/1.35 Arial, sans-serif; }}
+.toolbar {{ display: flex; justify-content: space-between; align-items: center; gap: 16px; margin: 0 0 16px; }}
+.toolbar button {{ border: 0; border-radius: 7px; background: #155e75; color: white; padding: 10px 16px; font-size: 13px; font-weight: 700; cursor: pointer; }}
+h1 {{ margin: 0 0 4px; font-size: 22px; }}
+.subtitle {{ margin: 0; color: #52657a; }}
+.schedule-table {{ width: 100%; border-collapse: collapse; font-size: 10px; }}
+.schedule-table th {{ background: #153b5b; color: #fff; text-align: left; padding: 7px 6px; }}
+.schedule-table td {{ border-bottom: 1px solid #d7e0e9; padding: 6px; vertical-align: top; }}
+.schedule-table tr:nth-child(even) td {{ background: #f2f7fb; }}
+thead {{ display: table-header-group; }}
+tr {{ break-inside: avoid; page-break-inside: avoid; }}
+@media print {{ body {{ padding: 0; }} .toolbar button {{ display: none; }} }}
+</style></head><body>
+<div class="toolbar"><div><h1>{safe_title}</h1><p class="subtitle">Arrival-in-branch is shown as Given Driving Hours. Schedule and halt values are displayed as supplied.</p></div>
+<button onclick="window.print()">Print / Save as PDF</button></div>
+{table_html}
+</body></html>'''
+
+def _clean_ro_series(series):
+    return series.fillna('RO NOT MAPPED').astype(str).str.strip().str.upper().replace({'': 'RO NOT MAPPED', 'NAN': 'RO NOT MAPPED', 'NONE': 'RO NOT MAPPED'})
+
+def build_overall_issues_summary(ops_raw, pay_raw):
+    """Create RO-wise issue counts and short meeting-ready narratives."""
+    ops = ops_raw.copy() if isinstance(ops_raw, pd.DataFrame) else pd.DataFrame()
+    pay = pay_raw.copy() if isinstance(pay_raw, pd.DataFrame) else pd.DataFrame()
+    ops_ro_col = get_col(ops, ['Origin RO', 'RO Name', 'RO'])
+    pay_ro_col = get_col(pay, ['RO Name', 'Origin RO', 'RO'])
+    ops_ro = _clean_ro_series(ops[ops_ro_col]) if ops_ro_col else pd.Series(dtype=str)
+    pay_ro = _clean_ro_series(pay[pay_ro_col]) if pay_ro_col else pd.Series(dtype=str)
+
+    if ops_ro_col:
+        dep_col = get_col(ops, ['Dep_Status'])
+        arr_col = get_col(ops, ['Arr_Status'])
+        remark_col = get_col(ops, ['Remark'])
+        dep_status = ops[dep_col].fillna('').astype(str) if dep_col else (ops[remark_col].fillna('').astype(str) if remark_col else pd.Series('', index=ops.index))
+        arr_status = ops[arr_col].fillna('').astype(str) if arr_col else (ops[remark_col].fillna('').astype(str) if remark_col else pd.Series('', index=ops.index))
+        late_dep = dep_status.str.contains('Late Dep', case=False, na=False)
+        late_arr = arr_status.str.contains('Late Arr', case=False, na=False)
+        late_dep_counts = ops_ro[late_dep].value_counts().to_dict()
+        late_arr_counts = ops_ro[late_arr].value_counts().to_dict()
+    else:
+        late_dep_counts, late_arr_counts = {}, {}
+
+    if pay_ro_col:
+        bucket_col = get_col(pay, ['Department Bucket'])
+        bucket = pay[bucket_col].fillna('').astype(str).str.upper() if bucket_col else pd.Series('', index=pay.index)
+        draft_mask = bucket.str.contains('DRAFT|USER', regex=True, na=False)
+        finance_mask = bucket.str.contains('FINANCE', regex=False, na=False)
+        other_pending_mask = bucket.ne('') & ~draft_mask & ~finance_mask
+        draft_counts = pay_ro[draft_mask].value_counts().to_dict()
+        finance_counts = pay_ro[finance_mask].value_counts().to_dict()
+        pending_counts = pay_ro[other_pending_mask].value_counts().to_dict()
+    else:
+        draft_counts, finance_counts, pending_counts = {}, {}, {}
+
+    all_ros = sorted(set(ops_ro.tolist()) | set(pay_ro.tolist()))
+    rows = []
+    for ro in all_ros:
+        ld = int(late_dep_counts.get(ro, 0))
+        la = int(late_arr_counts.get(ro, 0))
+        draft = int(draft_counts.get(ro, 0))
+        finance = int(finance_counts.get(ro, 0))
+        pending = int(pending_counts.get(ro, 0))
+        narrative = (
+            f"{ro}: {ld} late departures, {la} late arrivals, {draft} draft bills, "
+            f"{finance} finance pending, and {pending} other pending bills."
+        )
+        rows.append({
+            'RO Name': ro, 'Late Departures': ld, 'Late Arrivals': la,
+            'Draft Bills': draft, 'Finance Pending': finance,
+            'Other Pending': pending, 'Meeting Summary': narrative
+        })
+    return pd.DataFrame(rows, columns=[
+        'RO Name', 'Late Departures', 'Late Arrivals', 'Draft Bills',
+        'Finance Pending', 'Other Pending', 'Meeting Summary'
+    ])
 
 # ==========================================
 # 3B. DYNAMIC SUMMARY CALCULATORS (With Vendor Grouping)
@@ -1691,6 +2128,8 @@ MENU_SHEETS = {
         'CPK_National_Zonal_Master', 'CPK_National_Zonal_UpDown',
         'CPK_Feeder_Regional', 'CPK_Coloader', 'CPK_Raw_Data'
     ),
+    "🧭 Scheduled Route Master": (),
+    "⚠️ Overall Issues": ('Legwise_Processed_Data', 'Master_Database'),
     "📝 Today's Call Action Plan": (
         'Legwise_Route_Summary', 'Vendor_Perf_Summary',
         'CPK_National_Zonal_Master', 'CPK_Feeder_Regional', 'CPK_Coloader'
@@ -1715,9 +2154,11 @@ def file_version(path):
     return (stat.st_mtime_ns, stat.st_size)
 
 def load_dashboard_data(page):
+    if page == "🧭 Scheduled Route Master":
+        return {'Scheduled_Route_Master': get_scheduled_route_master()}
     path = FILE_MAP["FINAL_OUTPUT"]
     if not os.path.exists(path):
-        if page in ["📝 Today's Call Action Plan", "🔐 User & Access Control"]:
+        if page in ["📝 Today's Call Action Plan", "🔐 User & Access Control", "⚠️ Overall Issues"]:
             return {"dummy": pd.DataFrame()}
         return {}
     cache_key = (file_version(path), page)
@@ -1743,7 +2184,7 @@ def load_dashboard_data(page):
         if 'Legwise_Processed_Data' in data and not data['Legwise_Processed_Data'].empty and 'VendorName' in data['Legwise_Processed_Data'].columns:
             data['Legwise_Processed_Data']['VendorName'] = data['Legwise_Processed_Data']['VendorName'].apply(normalize_vendor_name)
 
-        if page in ["📝 Today's Call Action Plan", "🔐 User & Access Control"] and not data:
+        if page in ["📝 Today's Call Action Plan", "🔐 User & Access Control", "⚠️ Overall Issues"] and not data:
             data = {"dummy": pd.DataFrame()}
         st.session_state['_dashboard_cache'] = (cache_key, data)
         return data
@@ -1780,7 +2221,7 @@ if st.session_state.get('all_vendors', True) and os.path.exists(FILE_MAP["FINAL_
     st.sidebar.caption(f"📊 Dashboard Refreshed: {dt} (IST)")
 
 data = load_dashboard_data(choice)
-if not data and choice != "🔐 User & Access Control":
+if not data and choice not in ["🔐 User & Access Control", "🧭 Scheduled Route Master", "⚠️ Overall Issues"]:
     st.warning("No processed data for this page. Admin must upload the relevant files and process data.")
     st.stop()
 
@@ -1820,11 +2261,182 @@ def render_duration_selector(df_raw, date_col_name, key_prefix):
     dur_label = f"{start_d.strftime('%d %b %Y')} to {end_d.strftime('%d %b %Y')} ({days_cnt} Days)"
     return filtered_df, is_custom, dur_label
 
+def render_scheduled_route_master(data):
+    st.markdown("## 🧭 Scheduled Route Master")
+    st.caption("National and zonal linehaul schedules · Branchwise view · Print-ready for meetings")
+    df_master = data.get('Scheduled_Route_Master', pd.DataFrame()).copy()
+    if df_master.empty:
+        st.warning("The supplied scheduled route table could not be loaded.")
+        return
+
+    branch_values = sorted(set(df_master['From Branch'].dropna().astype(str)) | set(df_master['To Branch'].dropna().astype(str)))
+    filter_col, search_col = st.columns([1, 2])
+    selected_branch = filter_col.selectbox("Branch", ["ALL BRANCHES"] + branch_values, key="schedule_branch_filter")
+    search_route = search_col.text_input("Find a route", placeholder="Type a route path or branch code", key="schedule_route_search")
+
+    visible = df_master.copy()
+    if selected_branch != "ALL BRANCHES":
+        visible = visible[
+            visible['From Branch'].eq(selected_branch) | visible['To Branch'].eq(selected_branch)
+        ].copy()
+    if search_route.strip():
+        q = search_route.strip()
+        visible = visible[visible.astype(str).apply(
+            lambda col: col.str.contains(q, case=False, regex=False, na=False)
+        ).any(axis=1)].copy()
+
+    display_cols = [
+        'Route Path', 'Legwise', 'Legs', 'Scheduled Departure from Any Branch',
+        'Scheduled Arrival in Any Branch', 'Scheduled Halting',
+        'Scheduled TAT Till Destination'
+    ]
+    visible = visible.reindex(columns=display_cols).fillna('')
+    st.info("In the ‘Scheduled Arrival in Any Branch’ column, the value is Given Driving Hours, as requested.")
+    st.dataframe(visible, use_container_width=True, hide_index=True, height=440)
+
+    branch_label = selected_branch if selected_branch != "ALL BRANCHES" else "All Branches"
+    printable_html = build_print_ready_schedule_html(visible, branch_label)
+    safe_branch = re.sub(r'[^A-Za-z0-9_-]+', '_', branch_label).strip('_') or 'all_branches'
+    download_col, csv_col = st.columns(2)
+    download_col.download_button(
+        "🖨️ Download Print Sheet (Open → Print / Save as PDF)",
+        data=printable_html.encode('utf-8'),
+        file_name=f"Scheduled_Route_Master_{safe_branch}.html",
+        mime="text/html",
+        use_container_width=True,
+        type="primary"
+    )
+    csv_col.download_button(
+        "⬇️ Download Meeting Table (CSV)",
+        data=visible.to_csv(index=False).encode('utf-8-sig'),
+        file_name=f"Scheduled_Route_Master_{safe_branch}.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+    with st.expander("Print preview", expanded=False):
+        st.components.v1.html(printable_html, height=780, scrolling=True)
+    st.caption("The print sheet is formatted for A4 landscape. Open the downloaded HTML file, then choose Print → Save as PDF.")
+
+def render_overall_issues(data):
+    st.markdown("## ⚠️ Overall Issues")
+    st.caption("RO-wise operational and payment exceptions, with meeting-ready summaries and focused raw records")
+    ops_raw = data.get('Legwise_Processed_Data', pd.DataFrame()).copy()
+    pay_raw = data.get('Master_Database', pd.DataFrame()).copy()
+    if not st.session_state.get('all_vendors', True):
+        ops_vendor_col = get_col(ops_raw, ['VendorName', 'Vendor Name'])
+        pay_vendor_col = get_col(pay_raw, ['Vendor Name', 'VendorName'])
+        ops_raw = filter_df_by_user_vendors(ops_raw, ops_vendor_col) if ops_vendor_col else ops_raw.iloc[0:0].copy()
+        pay_raw = filter_df_by_user_vendors(pay_raw, pay_vendor_col) if pay_vendor_col else pay_raw.iloc[0:0].copy()
+
+    if ops_raw.empty and pay_raw.empty:
+        st.info("No operations or payment records are available yet. Upload the relevant files and process the data first.")
+        return
+
+    summary = build_overall_issues_summary(ops_raw, pay_raw)
+    if summary.empty:
+        st.info("No RO-wise issue rows are available in the processed data.")
+        return
+
+    totals = {
+        col: int(summary[col].sum())
+        for col in ['Late Departures', 'Late Arrivals', 'Draft Bills', 'Finance Pending', 'Other Pending']
+    }
+    metric_cols = st.columns(5)
+    for metric_col, label in zip(metric_cols, totals):
+        metric_col.metric(label, f"{totals[label]:,}")
+
+    st.markdown("### Meeting summary by RO")
+    st.caption("Select ‘Open Raw’ on an RO row to see only the records behind its issue counts.")
+    summary_view = summary.copy()
+    summary_view.insert(0, 'Open Raw', False)
+    edited_summary = st.data_editor(
+        summary_view,
+        column_config={
+            'Open Raw': st.column_config.CheckboxColumn('Open Raw', help='Show this RO’s raw issue records'),
+            'Meeting Summary': st.column_config.TextColumn('Meeting Summary', width='large')
+        },
+        disabled=[c for c in summary_view.columns if c != 'Open Raw'],
+        hide_index=True,
+        use_container_width=True,
+        key='overall_issues_editor'
+    )
+    selected_rows = edited_summary[edited_summary['Open Raw'] == True].index.tolist()
+    if not selected_rows:
+        return
+
+    selected_idx = selected_rows[0]
+    selected_ro = str(summary.loc[selected_idx, 'RO Name'])
+    st.markdown(f"### Raw records · {selected_ro}")
+    st.info(summary.loc[selected_idx, 'Meeting Summary'])
+    issue_type = st.radio(
+        "Choose an issue to open its raw data",
+        ['Late departures', 'Late arrivals', 'Draft bills', 'Finance pending', 'Other pending bills'],
+        horizontal=True,
+        key='overall_issues_type'
+    )
+
+    if issue_type in ['Late departures', 'Late arrivals']:
+        ro_col = get_col(ops_raw, ['Origin RO', 'RO Name', 'RO'])
+        status_candidates = ['Dep_Status'] if issue_type == 'Late departures' else ['Arr_Status']
+        status_col = get_col(ops_raw, status_candidates)
+        remark_col = get_col(ops_raw, ['Remark'])
+        if ro_col:
+            raw = ops_raw[_clean_ro_series(ops_raw[ro_col]).eq(selected_ro)].copy()
+        else:
+            raw = pd.DataFrame()
+        status_source = raw[status_col].fillna('').astype(str) if status_col and status_col in raw.columns else (raw[remark_col].fillna('').astype(str) if remark_col and remark_col in raw.columns else pd.Series('', index=raw.index))
+        phrase = 'Late Dep' if issue_type == 'Late departures' else 'Late Arr'
+        raw = raw[status_source.str.contains(phrase, case=False, na=False)].copy()
+        preferred = [
+            'MCD_StartDate', 'Origin RO', 'Zone', 'Route Path', 'Legwise', 'Legs',
+            'Scheduled Departure Time', 'Actual Departure Time', 'Dep_Status',
+            'Scheduled Arrival Time', 'Actual Arrival Time', 'Arr_Status'
+        ]
+    else:
+        ro_col = get_col(pay_raw, ['RO Name', 'Origin RO', 'RO'])
+        bucket_col = get_col(pay_raw, ['Department Bucket'])
+        if ro_col:
+            raw = pay_raw[_clean_ro_series(pay_raw[ro_col]).eq(selected_ro)].copy()
+        else:
+            raw = pd.DataFrame()
+        bucket = raw[bucket_col].fillna('').astype(str).str.upper() if bucket_col and bucket_col in raw.columns else pd.Series('', index=raw.index)
+        draft_mask = bucket.str.contains('DRAFT|USER', regex=True, na=False)
+        finance_mask = bucket.str.contains('FINANCE', regex=False, na=False)
+        if issue_type == 'Draft bills':
+            raw = raw[draft_mask].copy()
+        elif issue_type == 'Finance pending':
+            raw = raw[finance_mask].copy()
+        else:
+            raw = raw[bucket.ne('') & ~draft_mask & ~finance_mask].copy()
+        preferred = [
+            'Invoice Id', 'RO Name', 'Vendor Name', 'Amount', 'Department Bucket',
+            'Status', 'Pending With', 'Days Pending', 'Aging Bucket', 'Revert Remarks'
+        ]
+
+    raw_cols = [c for c in preferred if c in raw.columns]
+    raw = raw[raw_cols].fillna('')
+    if raw.empty:
+        st.info(f"No {issue_type.lower()} records were found for {selected_ro}.")
+        return
+    st.dataframe(raw, use_container_width=True, hide_index=True, height=380)
+    filename_ro = re.sub(r'[^A-Za-z0-9_-]+', '_', selected_ro).strip('_') or 'RO'
+    st.download_button(
+        "⬇️ Download these focused raw records (CSV)",
+        data=raw.to_csv(index=False).encode('utf-8-sig'),
+        file_name=f"{filename_ro}_{re.sub(r'[^A-Za-z0-9]+', '_', issue_type)}.csv",
+        mime='text/csv',
+        key='overall_issues_raw_download'
+    )
+
 
 # -------------------------------------------------------------
 # A. DAILY STANDUP (Operations Summary)
 # -------------------------------------------------------------
-if choice == "📊 Operations Summary":
+if choice == "🧭 Scheduled Route Master":
+    render_scheduled_route_master(data)
+elif choice == "⚠️ Overall Issues":
+    render_overall_issues(data)
+elif choice == "📊 Operations Summary":
     st.markdown("<h2>Operations Exception Summary</h2>", unsafe_allow_html=True)
     
     if 'Legwise_Route_Summary' in data and 'Legwise_Processed_Data' in data:
@@ -3086,3 +3698,4 @@ elif choice == "🔐 User & Access Control":
             "- **Vendor Access:** Jab tu kisi vendor ke liye ID banaye, toh `Grant ALL VENDORS Access` ko **Uncheck** rakhna aur niche dropdown se uska naam select kar lena.\n"
             "- **Team Member Access:** Agar kisi RO ya Ops executive ko 2-3 modules aur kuch specific vendors dene hain, toh `Select Modules` mein wo modules chunn le aur `Select Allowed Vendor(s)` mein unke vendors chunn le!"
         )
+
