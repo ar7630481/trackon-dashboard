@@ -180,6 +180,17 @@ theme_css = """
     .gauge-label { min-height:2.35rem; color:var(--text); font-size:.82rem; font-weight:700; display:flex; justify-content:center; align-items:center; }
     .gauge-card svg { display:block; width:min(100%,170px); height:auto; margin:.2rem auto -.15rem; overflow:visible; }
     .gauge-caption { color:var(--muted); font-size:.72rem; font-weight:550; }
+    .outcome-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(185px,1fr)); gap:10px; margin:.5rem 0 1rem; }
+    .outcome-card { border:1px solid #e2e8f0; border-radius:13px; padding:.72rem .85rem; background:#fff; box-shadow:0 5px 16px rgba(15,23,42,.045); }
+    .outcome-label { font-size:.76rem; font-weight:700; line-height:1.25; min-height:2.1em; }
+    .outcome-value { font-size:1.25rem; font-weight:800; margin:.25rem 0 .1rem; }
+    .outcome-share { font-size:.72rem; opacity:.82; }
+    .outcome-green { background:#f0fdf4; border-color:#bbf7d0; color:#166534; }
+    .outcome-soft-red { background:#fff1f2; border-color:#fecdd3; color:#9f1239; }
+    .outcome-red { background:#fef2f2; border-color:#fecaca; color:#991b1b; }
+    .outcome-yellow { background:#fffbeb; border-color:#fde68a; color:#92400e; }
+    .outcome-purple { background:#faf5ff; border-color:#e9d5ff; color:#6b21a8; }
+    .outcome-muted { background:#f8fafc; border-color:#e2e8f0; color:#475569; }
     [data-testid="stDataEditor"], [data-testid="stDataFrame"] {
         --gdg-bg-cell: #ffffff;
         --gdg-bg-cell-medium: #f8fafc;
@@ -323,8 +334,6 @@ FILE_MAP = {
     "PAYMENT": os.path.join(DATA_DIR, "payment_data.xlsx"),
     "LEGWISE": os.path.join(DATA_DIR, "legwise_data.xlsx"),
     "ROUTE_MASTER": os.path.join(DATA_DIR, "route_master.xlsx"),
-    "SCHEDULED_NATIONAL": os.path.join(DATA_DIR, "scheduled_route_master_national.xlsx"),
-    "SCHEDULED_ZONAL": os.path.join(DATA_DIR, "scheduled_route_master_zonal.xlsx"),
     "BRANCH_MASTER": os.path.join(DATA_DIR, "branch_master.xlsx"),
     "MCD_VENDOR": os.path.join(DATA_DIR, "mcd_vendor.xlsx"),
     "CPK_UTIL": os.path.join(DATA_DIR, "cpk_util.xlsx"),
@@ -1164,7 +1173,7 @@ def get_route_excel_sources():
     """Return uploaded Excel workbooks in lookup-first order, including extra uploaded files."""
     sources = []
     seen_paths = set()
-    preferred_keys = ['BRANCH_MASTER', 'LEGWISE', 'MCD_VENDOR', 'SCHEDULED_NATIONAL', 'SCHEDULED_ZONAL', 'ROUTE_MASTER', 'PAYMENT', 'CPK_UTIL', 'ROUTE_LOOKUP']
+    preferred_keys = ['BRANCH_MASTER', 'LEGWISE', 'MCD_VENDOR', 'ROUTE_MASTER', 'PAYMENT', 'CPK_UTIL', 'ROUTE_LOOKUP']
     for key in preferred_keys:
         path = FILE_MAP.get(key)
         if path and os.path.exists(path) and path.lower().endswith(('.xlsx', '.xlsm', '.xls')):
@@ -1297,197 +1306,147 @@ def get_route_branch_lookup_data(file_signature):
 
 @st.cache_data(show_spinner=False)
 def get_scheduled_route_master(file_signature=()):
-    """Load the latest uploaded National/Zonal schedule, then map its branch and RO labels."""
+    """Build the route-leg view from the same RoutePathReportModel used by processing."""
     output_cols = [
-        'Schedule Type', 'RO', 'Origin', 'Origin Branch', 'Destination', 'Destination Branch', 'Destination RO',
-        'Route Path', 'Legwise', 'Legs', 'From Branch', 'To Branch',
-        'Scheduled Departure Time', 'Scheduled Arrival Time', 'Scheduled Driving Hours',
+        'Route Code', 'RO', 'Origin', 'Origin Branch', 'Destination',
+        'Destination Branch', 'Destination RO', 'Route Path', 'Legwise', 'Legs',
+        'From Branch', 'To Branch', 'Departure Route Day', 'Scheduled Departure Time',
+        'Arrival Route Day', 'Scheduled Arrival Time', 'Scheduled Driving Hours',
         'Scheduled Halting', 'Scheduled TAT Till Destination'
     ]
     try:
-        df = pd.DataFrame()
-        schedule_source = ''
-        dedicated_schedule_inputs = [
-            (schedule_type, FILE_MAP.get(file_key, ''))
-            for file_key, schedule_type in [
-                ('SCHEDULED_NATIONAL', 'National'),
-                ('SCHEDULED_ZONAL', 'Zonal')
-            ]
-            if FILE_MAP.get(file_key) and os.path.exists(FILE_MAP[file_key])
-        ]
-        # Dedicated National/Zonal uploads take priority. The combined legacy
-        # workbook remains supported for existing installations.
-        schedule_inputs = dedicated_schedule_inputs or [
-            ('', FILE_MAP.get('ROUTE_MASTER', ''))
-        ]
-        schedule_aliases = {
-            'Route Path': ['Route Path', 'RoutePath', 'Route', 'Route Name', 'Route Path Name', 'RoutePathName'],
-            'Legwise': ['Legwise', 'Leg', 'Leg No', 'Leg Number', 'Leg Name', 'Leg No.'],
-            'Legs': ['Legs', 'Leg Path', 'Leg Route', 'Leg Description', 'Leg Details'],
-            'Scheduled Departure Time': ['Scheduled Departure Time', 'Schedule Departure Time', 'Scheduled Dep Time', 'Schedule Dep Time', 'Dep Schedule Time', 'Dep Time', 'Departure Time', 'Scheduled Departure'],
-            'Scheduled Arrival Time': ['Scheduled Arrival Time', 'Schedule Arrival Time', 'Scheduled Arr Time', 'Schedule Arr Time', 'Arrival Schedule Time', 'Arr Time', 'Arrival Time', 'Scheduled Arrival'],
-            'Given Driving Hours': ['Given Driving Hours', 'Scheduled Driving Hours', 'Scheduled Arrival Hours', 'Driving Hours', 'Arrival Hours'],
-            'Scheduled Halting': ['Scheduled Halting', 'Scheduled Halt', 'Halting', 'Halt Time', 'Halt'],
-            'Scheduled TAT Till Destination': ['Scheduled TAT Till Destination', 'Scheduled TAT', 'TAT Till Destination', 'TAT'],
-            'Origin': ['Origin', 'Origin Branch', 'From Branch', 'From Branch Code', 'From'],
-            'Destination': ['Destination', 'Destination Branch', 'To Branch', 'To Branch Code', 'To'],
-            'Schedule Type': ['Schedule Type', 'Route Type', 'LH Type', 'Type']
-        }
-
-        def find_schedule_col(frame, aliases):
-            normalized = {_lookup_key(col): col for col in frame.columns}
-            return next((normalized[_lookup_key(alias)] for alias in aliases if _lookup_key(alias) in normalized), None)
-
-        schedule_frames = []
-        used_schedule_sources = []
-        for default_type, schedule_path in schedule_inputs:
-            if not schedule_path or not os.path.exists(schedule_path):
-                continue
-            try:
-                with pd.ExcelFile(schedule_path, engine='openpyxl') as workbook:
-                    for sheet_name in workbook.sheet_names:
-                        # Detect a header row even when the workbook has a title above its table.
-                        preview = workbook.parse(sheet_name, header=None, nrows=10, dtype=str)
-                        header_row = 0
-                        route_alias_keys = {_lookup_key(v) for v in schedule_aliases['Route Path']}
-                        leg_alias_keys = {_lookup_key(v) for v in (schedule_aliases['Legwise'] + schedule_aliases['Legs'])}
-                        origin_alias_keys = {_lookup_key(v) for v in schedule_aliases['Origin']}
-                        destination_alias_keys = {_lookup_key(v) for v in schedule_aliases['Destination']}
-                        for row_no, values in preview.iterrows():
-                            header_keys = {_lookup_key(v) for v in values.tolist() if pd.notna(v)}
-                            has_leg_headers = bool(header_keys & leg_alias_keys) or bool(
-                                header_keys & origin_alias_keys and header_keys & destination_alias_keys
-                            )
-                            if header_keys & route_alias_keys and has_leg_headers:
-                                header_row = int(row_no)
-                                break
-                        source = workbook.parse(sheet_name, header=header_row, dtype=str)
-                        source.columns = source.columns.astype(str).str.replace('\u00a0', ' ', regex=False).str.strip()
-
-                        source_columns = {target: find_schedule_col(source, aliases) for target, aliases in schedule_aliases.items()}
-                        route_col = source_columns['Route Path']
-                        legwise_col = source_columns['Legwise']
-                        legs_col = source_columns['Legs']
-                        has_leg_identity = bool(legwise_col or legs_col or (source_columns['Origin'] and source_columns['Destination']))
-                        has_schedule_values = any(source_columns[k] for k in [
-                            'Scheduled Departure Time', 'Scheduled Arrival Time', 'Given Driving Hours',
-                            'Scheduled Halting', 'Scheduled TAT Till Destination'
-                        ])
-                        if not route_col or not has_leg_identity or not has_schedule_values:
-                            continue
-
-                        mapped = pd.DataFrame(index=source.index)
-                        for target in [
-                            'Route Path', 'Legwise', 'Legs', 'Scheduled Departure Time', 'Scheduled Arrival Time',
-                            'Given Driving Hours', 'Scheduled Halting', 'Scheduled TAT Till Destination'
-                        ]:
-                            col = source_columns[target]
-                            mapped[target] = source[col] if col else ''
-                        if not source_columns['Legs'] and source_columns['Origin'] and source_columns['Destination']:
-                            origin_values = source[source_columns['Origin']].fillna('').astype(str).str.strip()
-                            destination_values = source[source_columns['Destination']].fillna('').astype(str).str.strip()
-                            mapped['Legs'] = np.where(
-                                origin_values.ne('') & destination_values.ne(''),
-                                origin_values + ' to ' + destination_values,
-                                ''
-                            )
-                        explicit_type_col = source_columns['Schedule Type']
-                        if explicit_type_col:
-                            mapped['Schedule Type'] = source[explicit_type_col].fillna('').astype(str).str.strip()
-                            if default_type:
-                                mapped['Schedule Type'] = mapped['Schedule Type'].replace('', default_type)
-                        else:
-                            sheet_upper = _lookup_key(sheet_name)
-                            inferred_type = 'National' if 'NATIONAL' in sheet_upper else ('Zonal' if 'ZONAL' in sheet_upper else default_type)
-                            mapped['Schedule Type'] = inferred_type
-                        for col in mapped.columns:
-                            mapped[col] = mapped[col].fillna('').astype(str).str.replace('\u00a0', ' ', regex=False).str.strip()
-                        mapped = mapped[
-                            mapped['Route Path'].ne('') & (mapped['Legwise'].ne('') | mapped['Legs'].ne(''))
-                        ].copy()
-                        if not mapped.empty:
-                            schedule_frames.append(mapped)
-                            used_schedule_sources.append(os.path.basename(schedule_path))
-            except Exception as exc:
-                logging.warning(f"Uploaded scheduled route workbook could not be read: {exc}")
-
-        if schedule_frames:
-            df = pd.concat(schedule_frames, ignore_index=True)
-            schedule_source = f"{', '.join(dict.fromkeys(used_schedule_sources))} · {len(schedule_frames)} schedule sheet(s)"
-
-        if df.empty:
-            # Preserve the original bundled schedule as a visible fallback for older uploads.
+        schedule_path = FILE_MAP.get('ROUTE_MASTER', '')
+        if not schedule_path or not os.path.exists(schedule_path):
             df = pd.read_csv(io.StringIO(SCHEDULED_ROUTE_MASTER_TSV), sep='\t', dtype=str, keep_default_na=False)
             df.columns = df.columns.astype(str).str.strip()
-            df['Schedule Type'] = ''
-            schedule_source = 'Bundled fallback schedule (uploaded workbook has no recognized schedule sheet)'
-        for col in df.columns:
-            df[col] = df[col].astype(str).str.replace('\u00a0', ' ', regex=False).str.strip()
-        for col in ['Route Path', 'Legwise', 'Legs', 'Scheduled Departure Time', 'Scheduled Arrival Time',
-                    'Given Driving Hours', 'Scheduled Halting', 'Scheduled TAT Till Destination', 'Schedule Type']:
+            df['Route Code'] = ''
+            df['Departure Route Day'] = ''
+            df['Arrival Route Day'] = ''
+            endpoints = df['Legs'].astype(str).str.split(r'\s+to\s+', n=1, expand=True)
+            df['From Branch'] = endpoints[0].fillna('').str.strip()
+            df['To Branch'] = endpoints[1].fillna('').str.strip() if 1 in endpoints.columns else ''
+            df['Scheduled Driving Hours'] = df.get('Given Driving Hours', pd.Series('', index=df.index)).replace('', '-')
+            schedule_source = 'Bundled fallback schedule (upload the current National and Zonal workbook)'
+        else:
+            with pd.ExcelFile(schedule_path, engine='openpyxl') as workbook:
+                sheet_name = next(
+                    (name for name in workbook.sheet_names if _lookup_key(name) == 'ROUTEPATHREPORTMODEL'),
+                    workbook.sheet_names[0]
+                )
+                source = workbook.parse(sheet_name, dtype=str)
+            source.columns = source.columns.astype(str).str.replace('\u00a0', ' ', regex=False).str.strip()
+
+            column_map = {
+                'Route Code': get_col(source, ['Route Code']),
+                'Route Path': get_col(source, ['Route Path']),
+                'Route No': get_col(source, ['Route No', 'Route Number']),
+                'Route Branch Code': get_col(source, ['Route Branch Code', 'Branch Code']),
+                'Route Day': get_col(source, ['Route Day']),
+                'Schedule Departure Time': get_col(source, ['Schedule Departure Time', 'Scheduled Departure Time']),
+                'Schedule Arrival Time': get_col(source, ['Schedule Arrival Time', 'Scheduled Arrival Time'])
+            }
+            missing_columns = [name for name, col in column_map.items() if col is None]
+            if missing_columns:
+                raise ValueError(f"RoutePathReportModel is missing required columns: {', '.join(missing_columns)}")
+
+            route_rows = pd.DataFrame({
+                name: source[col].fillna('').astype(str).str.replace('\u00a0', ' ', regex=False).str.strip()
+                for name, col in column_map.items()
+            })
+            route_rows['_row_order'] = np.arange(len(route_rows))
+            route_rows['_route_no_num'] = pd.to_numeric(route_rows['Route No'], errors='coerce')
+            route_rows['_route_day_num'] = pd.to_numeric(route_rows['Route Day'], errors='coerce')
+            route_rows['_dep_hours'] = route_rows['Schedule Departure Time'].map(time_to_hrs)
+            route_rows['_arr_hours'] = route_rows['Schedule Arrival Time'].map(time_to_hrs)
+            route_rows['_dep_abs'] = route_rows['_route_day_num'].map(get_day_offset) + route_rows['_dep_hours']
+            route_rows['_arr_abs'] = route_rows['_route_day_num'].map(get_day_offset) + route_rows['_arr_hours']
+
+            # Match the existing Vendor Performance TAT calculation exactly:
+            # max scheduled arrival minus min scheduled departure per Route Code.
+            route_tat = route_rows.groupby('Route Code').agg(
+                _min_dep=('_dep_abs', 'min'), _max_arr=('_arr_abs', 'max')
+            )
+            route_tat['_tat'] = route_tat['_max_arr'] - route_tat['_min_dep']
+            tat_by_route = route_tat['_tat'].map(format_hrs_safe).to_dict()
+
+            def clock_label(value):
+                text = str(value).strip()
+                if not text or text.lower() in ('nan', 'nat', 'none'):
+                    return '-'
+                match = re.match(r'^(-?\d+):(\d{1,2})', text)
+                if match:
+                    return f"{int(match.group(1)):02d}:{int(match.group(2)):02d}"
+                hours = time_to_hrs(value)
+                return format_hrs_safe(hours) if not pd.isna(hours) else text
+
+            def route_day_label(value):
+                day = pd.to_numeric(value, errors='coerce')
+                return f"Day {int(day)}" if not pd.isna(day) else '-'
+
+            schedule_rows = []
+            route_groups = route_rows[route_rows['Route Code'].ne('')].groupby('Route Code', sort=False)
+            for route_code, group in route_groups:
+                group = group.sort_values(['_route_no_num', '_row_order'], kind='mergesort', na_position='last').reset_index(drop=True)
+                if len(group) < 2:
+                    continue
+                for leg_index in range(len(group) - 1):
+                    origin_row = group.iloc[leg_index]
+                    destination_row = group.iloc[leg_index + 1]
+                    origin_code = origin_row['Route Branch Code']
+                    destination_code = destination_row['Route Branch Code']
+                    if not origin_code or not destination_code:
+                        continue
+                    driving_hours = destination_row['_arr_abs'] - origin_row['_dep_abs']
+                    if leg_index == 0:
+                        halting = 'Origin'
+                    else:
+                        halt_hours = origin_row['_dep_hours'] - origin_row['_arr_hours']
+                        halting = f"{format_hrs_safe(halt_hours)} at {origin_code}" if not pd.isna(halt_hours) else '-'
+                    schedule_rows.append({
+                        'Route Code': route_code,
+                        'Route Path': origin_row['Route Path'],
+                        'Legwise': f"Leg{leg_index + 1}",
+                        'Legs': f"{origin_code} to {destination_code}",
+                        'From Branch': origin_code,
+                        'To Branch': destination_code,
+                        'Departure Route Day': route_day_label(origin_row['_route_day_num']),
+                        'Scheduled Departure Time': clock_label(origin_row['Schedule Departure Time']),
+                        'Arrival Route Day': route_day_label(destination_row['_route_day_num']),
+                        'Scheduled Arrival Time': clock_label(destination_row['Schedule Arrival Time']),
+                        'Scheduled Driving Hours': format_hrs_safe(driving_hours),
+                        'Scheduled Halting': halting,
+                        'Scheduled TAT Till Destination': tat_by_route.get(route_code, '-') or '-'
+                    })
+            df = pd.DataFrame(schedule_rows)
+            schedule_source = f"{os.path.basename(schedule_path)} · {sheet_name} · {len(df):,} derived route legs"
+
+        for col in output_cols:
             if col not in df.columns:
                 df[col] = ''
+        df['Origin'] = df['From Branch'].fillna('').astype(str).str.strip()
+        df['Destination'] = df['To Branch'].fillna('').astype(str).str.strip()
 
-        branch_by_code, branch_by_name, ondemand_by_route, ondemand_by_pair, branch_source, ondemand_source = get_route_branch_lookup_data(file_signature)
+        file_signature = file_signature or get_route_lookup_signature()
+        branch_by_code, branch_by_name, _, _, branch_source, _ = get_route_branch_lookup_data(file_signature)
 
         def branch_record(value):
             key = _lookup_key(value)
             return branch_by_code.get(key) or branch_by_name.get(key) or {}
 
-        origin_codes, destination_codes = [], []
-        for _, row in df.iterrows():
-            route = str(row.get('Route Path', '')).strip()
-            route_nodes = [part.strip() for part in route.split('-') if part.strip()]
-            leg_text = str(row.get('Legs', '')).strip()
-            leg_parts = re.split(r'\s+to\s+', leg_text, maxsplit=1, flags=re.IGNORECASE)
-            origin = leg_parts[0].strip() if len(leg_parts) == 2 else ''
-            destination = leg_parts[1].strip() if len(leg_parts) == 2 else ''
-
-            # The Legs column is authoritative: each row represents one leg, not the full route.
-            if not origin or not destination:
-                leg_match = re.search(r'(\d+)', str(row.get('Legwise', '')))
-                leg_index = max(int(leg_match.group(1)) - 1, 0) if leg_match else 0
-                if leg_index + 1 < len(route_nodes):
-                    origin, destination = route_nodes[leg_index], route_nodes[leg_index + 1]
-                elif len(route_nodes) >= 2:
-                    origin, destination = route_nodes[0], route_nodes[-1]
-
-            route_key = _lookup_key(route)
-            leg_key = _lookup_key(row.get('Legwise', ''))
-            leg_path_key = _lookup_key(leg_text)
-            leg_lookup = (
-                ondemand_by_route.get(route_key + leg_key)
-                or ondemand_by_route.get(route_key + leg_path_key)
-                or ondemand_by_pair.get((_lookup_key(origin), _lookup_key(destination)))
-            )
-            if not leg_lookup and len(route_nodes) <= 2:
-                leg_lookup = ondemand_by_route.get(route_key)
-            if leg_lookup:
-                origin, destination = leg_lookup
-            origin_codes.append(origin)
-            destination_codes.append(destination)
-        df['Origin'] = origin_codes
-        df['Destination'] = destination_codes
-        origin_records = [branch_record(value) for value in origin_codes]
-        destination_records = [branch_record(value) for value in destination_codes]
+        origin_records = [branch_record(value) for value in df['Origin']]
+        destination_records = [branch_record(value) for value in df['Destination']]
         df['RO'] = [record.get('ro', '') or 'RO NOT MAPPED' for record in origin_records]
         df['Destination RO'] = [record.get('ro', '') or 'RO NOT MAPPED' for record in destination_records]
-        df['Origin Branch'] = [record.get('name', '') or record.get('code', '') or str(value) for record, value in zip(origin_records, origin_codes)]
-        df['Destination Branch'] = [record.get('name', '') or record.get('code', '') or str(value) for record, value in zip(destination_records, destination_codes)]
-        df['From Branch'] = pd.Series(origin_codes, index=df.index).fillna('').str.strip().str.upper()
-        df['To Branch'] = pd.Series(destination_codes, index=df.index).fillna('').str.strip().str.upper()
-        df['Scheduled Departure Time'] = df['Scheduled Departure Time'].replace('', '-')
-        df['Scheduled Arrival Time'] = df['Scheduled Arrival Time'].replace('', '-')
-        df['Scheduled Driving Hours'] = df['Given Driving Hours'].replace('', '-')
-        df['Scheduled Halting'] = df['Scheduled Halting'].replace('', '-')
-        df['Scheduled TAT Till Destination'] = df['Scheduled TAT Till Destination'].replace('', '-')
+        df['Origin Branch'] = [record.get('name', '') or record.get('code', '') or str(value) for record, value in zip(origin_records, df['Origin'])]
+        df['Destination Branch'] = [record.get('name', '') or record.get('code', '') or str(value) for record, value in zip(destination_records, df['Destination'])]
         result = df.reindex(columns=output_cols).fillna('')
         result.attrs['branch_source'] = branch_source
-        result.attrs['ondemand_source'] = ondemand_source
+        result.attrs['ondemand_source'] = ''
         result.attrs['schedule_source'] = schedule_source
         return result
     except Exception as exc:
-        logging.exception("Could not load scheduled route master")
+        logging.exception("Could not load scheduled route master from the shared route workbook")
+        st.warning(f"Could not read the uploaded Scheduled Route Master workbook: {exc}")
         return pd.DataFrame(columns=output_cols)
 
 def build_print_ready_schedule_html(df, branch_label):
@@ -1514,7 +1473,7 @@ thead {{ display: table-header-group; }}
 tr {{ break-inside: avoid; page-break-inside: avoid; }}
 @media print {{ body {{ padding: 0; }} .toolbar button {{ display: none; }} }}
 </style></head><body>
-<div class="toolbar"><div><h1>{safe_title}</h1><p class="subtitle">Arrival-in-branch is shown as Given Driving Hours. Schedule and halt values are displayed as supplied.</p></div>
+<div class="toolbar"><div><h1>{safe_title}</h1><p class="subtitle">Leg order follows Route No. Route TAT uses the same calculation as Vendor Performance; halt is scheduled departure minus arrival at the branch.</p></div>
 <button onclick="window.print()">Print / Save as PDF</button></div>
 {table_html}
 </body></html>'''
@@ -1781,10 +1740,11 @@ def build_ops_summary_from_raw(df_group):
         df_valid['LH Type'] = 'National LH'
 
     trip_col = 'Total_Trips'
-    df_valid['OO_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Ontime Dep, Ontime Arr' in str(x) else 0)
-    df_valid['LL_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Late Dep, Late Arr' in str(x) else 0)
-    df_valid['LO_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Late Dep, Ontime Arr' in str(x) else 0)
-    df_valid['OL_Cnt'] = df_valid['Remark'].apply(lambda x: 1 if 'Ontime Dep, Late Arr' in str(x) else 0)
+    remark_text = df_valid.get('Remark', pd.Series('', index=df_valid.index)).fillna('').astype(str)
+    df_valid['OO_Cnt'] = remark_text.str.contains('Ontime Dep, Ontime Arr', case=False, regex=False).astype('int8')
+    df_valid['LL_Cnt'] = remark_text.str.contains('Late Dep, Late Arr', case=False, regex=False).astype('int8')
+    df_valid['LO_Cnt'] = remark_text.str.contains('Late Dep, Ontime Arr', case=False, regex=False).astype('int8')
+    df_valid['OL_Cnt'] = remark_text.str.contains('Ontime Dep, Late Arr', case=False, regex=False).astype('int8')
     
     group_cols = ['Zone', 'LH Type', 'E2E_Pair', 'Origin RO', 'Route Path', 'Origin', 'Destination', 'Leg_Num', 'Legwise', 'Legs']
     existing_gcols = [c for c in group_cols if c in df_valid.columns]
@@ -1804,6 +1764,52 @@ def build_ops_summary_from_raw(df_group):
     summary['Late Dep, Ontime Arr %'] = summary.apply(lambda r: format_pct_cnt(r['LO_Cnt'], r[trip_col]), axis=1)
     summary['Ontime Dep, Late Arr %'] = summary.apply(lambda r: format_pct_cnt(r['OL_Cnt'], r[trip_col]), axis=1)
     return sort_by_route_and_leg(summary)
+
+def summarize_ops_remark_outcomes(df_raw):
+    """Count each selected operations trip once using its stored Remark outcome."""
+    labels = [
+        ('Ontime Dep, Ontime Arr', 'green', '🟢'),
+        ('Ontime Dep, Late Arr', 'soft_red', '🌸'),
+        ('Late Dep, Late Arr', 'red', '🔴'),
+        ('Late Dep, In-Transit', 'yellow', '🟡'),
+        ('Late Dep, Ontime Arr', 'purple', '🟣'),
+        ('Ontime Dep, In-Transit', 'yellow', '🟡'),
+        ('No Departure', 'red', '🔴'),
+        ('Missing Schedule', 'yellow', '🟡'),
+        ('In-Transit', 'yellow', '🟡'),
+        ('Other', 'muted', '⚪')
+    ]
+    if not isinstance(df_raw, pd.DataFrame) or df_raw.empty:
+        return {label: 0 for label, _, _ in labels}, 0, labels
+
+    remark_col = get_col(df_raw, ['Remark'])
+    dep_col = get_col(df_raw, ['Dep_Status'])
+    arr_col = get_col(df_raw, ['Arr_Status'])
+    remark = df_raw[remark_col].fillna('').astype(str) if remark_col else pd.Series('', index=df_raw.index)
+    dep = df_raw[dep_col].fillna('').astype(str) if dep_col else pd.Series('', index=df_raw.index)
+    arr = df_raw[arr_col].fillna('').astype(str) if arr_col else pd.Series('', index=df_raw.index)
+    outcome = remark.where(remark.str.strip().ne(''), dep + ', ' + arr)
+    outcome = outcome.str.casefold().str.replace(r'\s+', ' ', regex=True).str.strip()
+
+    patterns = [
+        ('Missing Schedule', r'missing\s+(?:sch|schedule)'),
+        ('No Departure', r'no\s+dep(?:arture)?'),
+        ('Late Dep, Late Arr', r'late\s+(?:dep|departure)\s*,\s*late\s+(?:arr|arrival)'),
+        ('Ontime Dep, Late Arr', r'ontime\s+(?:dep|departure)\s*,\s*late\s+(?:arr|arrival)'),
+        ('Late Dep, In-Transit', r'late\s+(?:dep|departure)\s*,\s*in-transit'),
+        ('Ontime Dep, Ontime Arr', r'ontime\s+(?:dep|departure)\s*,\s*ontime\s+(?:arr|arrival)'),
+        ('Late Dep, Ontime Arr', r'late\s+(?:dep|departure)\s*,\s*ontime\s+(?:arr|arrival)'),
+        ('Ontime Dep, In-Transit', r'ontime\s+(?:dep|departure)\s*,\s*in-transit'),
+        ('In-Transit', r'in-transit')
+    ]
+    buckets = pd.Series('Other', index=df_raw.index, dtype=object)
+    unassigned = pd.Series(True, index=df_raw.index)
+    for label, pattern in patterns:
+        matched = unassigned & outcome.str.contains(pattern, regex=True, na=False)
+        buckets.loc[matched] = label
+        unassigned.loc[matched] = False
+    counts = buckets.value_counts().to_dict()
+    return {label: int(counts.get(label, 0)) for label, _, _ in labels}, len(df_raw), labels
 
 @st.cache_data(show_spinner=False, max_entries=8)
 def build_vendor_summary_from_raw(df_vperf_raw):
@@ -2079,13 +2085,13 @@ def style_ui_dataframe(df_in):
         if selected_theme_name == '🤍 Bright Executive':
             palette = {
                 'green': ('#dcfce7', '#166534'), 'red': ('#fee2e2', '#991b1b'),
-                'yellow': ('#fef3c7', '#92400e'), 'purple': ('#f3e8ff', '#6b21a8'),
+                'soft_red': ('#fff1f2', '#9f1239'), 'yellow': ('#fef3c7', '#92400e'), 'purple': ('#f3e8ff', '#6b21a8'),
                 'muted': ('#f1f5f9', '#64748b')
             }
         else:
             palette = {
                 'green': ('rgba(56, 142, 60, 0.25)', '#b9f6ca'), 'red': ('rgba(211, 47, 47, 0.25)', '#ff8a80'),
-                'yellow': ('rgba(245, 127, 23, 0.25)', '#ffe57f'), 'purple': ('rgba(123, 31, 162, 0.25)', '#ea80fc'),
+                'soft_red': ('rgba(244, 63, 94, 0.18)', '#fda4af'), 'yellow': ('rgba(245, 127, 23, 0.25)', '#ffe57f'), 'purple': ('rgba(123, 31, 162, 0.25)', '#ea80fc'),
                 'muted': ('transparent', '#78909C')
             }
         bg, fg = palette[tone]
@@ -2103,27 +2109,51 @@ def style_ui_dataframe(df_in):
         if not s_lower or s_lower in ('-', 'nan', 'none'):
             return ''
 
-        # Color the four paired schedule outcomes consistently in every module.
+        # Schedule outcomes follow the Remark pair first, before generic arrival/departure rules.
+        if 'late dep, in-transit' in c_lower:
+            return tone_css('yellow' if pct is None or pct > 0 else 'muted')
+        if 'ontime dep, late arr' in c_lower:
+            return tone_css('soft_red' if pct is None or pct > 0 else 'muted')
         if 'late dep, ontime arr' in c_lower:
-            return tone_css('purple' if pct is None or pct > 0 else 'green')
-        if 'ontime dep, late arr' in c_lower or 'in-transit' in c_lower:
-            return tone_css('yellow' if pct is None or pct > 0 else 'green')
-        if 'no departure' in c_lower or 'missing schedule' in c_lower:
-            return tone_css('red' if pct is None or pct > 0 else 'green')
-        if 'late dep, late arr' in c_lower or any(k in c_lower for k in ['late arrival', 'late departure', 'late dep', 'late arr']):
-            return tone_css('red' if pct is None or pct > 0 else 'green')
-        if any(k in c_lower for k in ['ontime dep, ontime arr', 'ontime arrival', 'ontime departure', 'on-time']):
+            return tone_css('purple' if pct is None or pct > 0 else 'muted')
+        if 'late dep, late arr' in c_lower:
+            return tone_css('red' if pct is None or pct > 0 else 'muted')
+        if 'ontime dep, ontime arr' in c_lower:
+            return tone_css('green' if pct is None or pct > 0 else 'muted')
+        if 'in-transit' in c_lower:
+            return tone_css('yellow' if pct is None or pct > 0 else 'muted')
+        if 'missing schedule' in c_lower:
+            return tone_css('yellow' if pct is None or pct > 0 else 'muted')
+        if 'no departure' in c_lower:
+            return tone_css('red' if pct is None or pct > 0 else 'muted')
+        if 'late arrival' in c_lower or 'late departure' in c_lower or 'late dep' in c_lower or 'late arr' in c_lower:
+            return tone_css('red' if pct is None or pct > 0 else 'muted')
+        if 'ontime arrival' in c_lower:
+            return tone_css('green' if pct is None or pct > 0 else 'muted')
+        if 'on-time' in c_lower and 'departure' not in c_lower and any(period in c_lower for period in ['previous 7 days', 'current 7 days', 'all available']):
+            return tone_css('green' if pct is not None and pct > 0 else 'muted')
+        if 'ontime departure' in c_lower or ('on-time' in c_lower and 'departure' in c_lower):
             if pct is not None:
                 return tone_css('green' if pct >= 95 else ('yellow' if pct >= 80 else 'red'))
 
         # Status text rules also cover raw-trip and payment tables.
+        if 'late dep, late arr' in s_lower:
+            return tone_css('red')
+        if 'ontime dep, late arr' in s_lower:
+            return tone_css('soft_red')
+        if 'late dep, in-transit' in s_lower:
+            return tone_css('yellow')
+        if 'ontime dep, ontime arr' in s_lower:
+            return tone_css('green')
         if 'late dep, ontime arr' in s_lower:
             return tone_css('purple')
-        if 'ontime dep, late arr' in s_lower or 'in-transit' in s_lower or 'finance pending' in s_lower or 'finance hold' in s_lower or 'cost control pending' in s_lower or 'pending' in s_lower:
+        if 'missing sch' in s_lower or 'missing schedule' in s_lower:
             return tone_css('yellow')
-        if any(k in s_lower for k in ['late dep, late arr', 'late arrival', 'late departure', 'no dep', 'no arrival', 'missing', 'other', 'draft', 'disabled', 'underutilized']):
+        if 'ontime dep, in-transit' in s_lower or 'in-transit' in s_lower or 'finance pending' in s_lower or 'finance hold' in s_lower or 'cost control pending' in s_lower or 'pending' in s_lower:
+            return tone_css('yellow')
+        if any(k in s_lower for k in ['late arrival', 'late departure', 'no dep', 'no arrival', 'other', 'draft', 'disabled', 'underutilized']):
             return tone_css('red')
-        if 'ontime dep, ontime arr' in s_lower or 'ontime arrival' in s_lower or 'ontime departure' in s_lower or s_lower == 'paid' or 'paid achievement' in s_lower or 'active' in s_lower or 'efficiently utilized' in s_lower:
+        if 'ontime arrival' in s_lower or 'ontime departure' in s_lower or s_lower == 'paid' or 'paid achievement' in s_lower or 'active' in s_lower or 'efficiently utilized' in s_lower:
             return tone_css('green')
         if 'payment pending / paid' in s_lower:
             return tone_css('yellow')
@@ -2151,6 +2181,11 @@ def style_ui_dataframe(df_in):
                 except:
                     pass
             return tone_css('green')
+
+        if pct is not None and 'late' in c_lower:
+            return tone_css('red' if pct > 0 else 'muted')
+        if pct is not None and ('previous 7 days' in c_lower or 'current 7 days' in c_lower or 'all available' in c_lower) and 'on-time' in c_lower:
+            return tone_css('green' if pct > 0 else 'muted')
 
         if '%' in c_lower and pct is not None:
             if pct == 0:
@@ -2182,7 +2217,7 @@ def style_ui_dataframe(df_in):
             styled = styled.map(lambda x, c=col: ui_cell_color(x, c), subset=[col])
         else:
             styled = styled.applymap(lambda x, c=col: ui_cell_color(x, c), subset=[col])
-    status_cols = [col for col in ['Payment Group', 'Operations Outcome', 'Remark with 15 min waiver', 'Remark'] if col in df_in.columns]
+    status_cols = [col for col in ['Payment Group', 'Operations Outcome', 'Remark with 15 min waiver', 'Remark', 'Dep_Status', 'Arr_Status'] if col in df_in.columns]
     status_text = df_in[status_cols].fillna('').astype(str).apply(lambda col: col.str.lower()) if status_cols else pd.DataFrame(index=df_in.index)
     def contains_status(pattern):
         if status_text.empty:
@@ -2191,18 +2226,20 @@ def style_ui_dataframe(df_in):
     row_tones = pd.Series('', index=df_in.index, dtype=object)
     payment_good = contains_status(r'^paid$|paid achievement|payment completed')
     row_tones.loc[payment_good] = 'green'
-    row_tones.loc[contains_status(r'payment pending|finance pending|finance hold|cost control pending|ontime dep, late arr|in-transit')] = 'yellow'
+    row_tones.loc[contains_status(r'payment pending|finance pending|finance hold|cost control pending|in-transit')] = 'yellow'
     row_tones.loc[contains_status(r'late dep, ontime arr')] = 'purple'
     row_tones.loc[contains_status(r'ontime dep, ontime arr|ontime arrival')] = 'green'
-    # Apply the highest-severity state last, so a missing/late trip stays red
-    # even when another status in the same row is only a warning.
-    row_tones.loc[contains_status(r'^other$|^draft$|late dep, late arr|late arrival|late departure|no dep|no arrival|missing')] = 'red'
+    row_tones.loc[contains_status(r'ontime dep, late arr')] = 'soft_red'
+    # Apply exact paired Remark outcomes last, so a mixed row follows its actual trip result.
+    row_tones.loc[contains_status(r'late dep, in-transit')] = 'yellow'
+    row_tones.loc[contains_status(r'late dep, late arr|^other$|^draft$|late arrival|late departure|no dep|no arrival')] = 'red'
+    row_tones.loc[contains_status(r'missing sch|missing schedule')] = 'yellow'
     if 'Utilization Class' in df_in.columns:
         util_class = df_in['Utilization Class'].fillna('').astype(str).str.lower()
         row_tones.loc[util_class.str.contains('efficiently', na=False)] = 'green'
         row_tones.loc[util_class.str.contains('underutilized', na=False)] = 'red'
     row_style = pd.DataFrame('', index=df_in.index, columns=df_in.columns)
-    for tone in ['green', 'red', 'yellow', 'purple']:
+    for tone in ['green', 'soft_red', 'red', 'yellow', 'purple']:
         row_style.loc[row_tones.eq(tone), :] = tone_css(tone)
     styled = styled.apply(lambda col: row_style[col.name], axis=0)
     return styled
@@ -2229,6 +2266,10 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic")
         'border': 1, 'bg_color': '#F8D7DA', 'font_color': '#721C24',
         'bold': True, 'align': 'center', 'valign': 'vcenter'
     })
+    soft_red_fmt = workbook.add_format({
+        'border': 1, 'bg_color': '#FFF1F2', 'font_color': '#9F1239',
+        'bold': True, 'align': 'center', 'valign': 'vcenter'
+    })
     yellow_fmt = workbook.add_format({
         'border': 1, 'bg_color': '#FFF3CD', 'font_color': '#856404',
         'bold': True, 'align': 'center', 'valign': 'vcenter'
@@ -2247,6 +2288,7 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic")
     })
     row_green_fmt = workbook.add_format({'border': 1, 'bg_color': '#E2F0D9', 'font_color': '#1F4E2B', 'valign': 'vcenter'})
     row_red_fmt = workbook.add_format({'border': 1, 'bg_color': '#FCE4D6', 'font_color': '#7F1D1D', 'valign': 'vcenter'})
+    row_soft_red_fmt = workbook.add_format({'border': 1, 'bg_color': '#FFF1F2', 'font_color': '#9F1239', 'valign': 'vcenter'})
     row_yellow_fmt = workbook.add_format({'border': 1, 'bg_color': '#FFF2CC', 'font_color': '#7F6000', 'valign': 'vcenter'})
     row_purple_fmt = workbook.add_format({'border': 1, 'bg_color': '#E4DFEC', 'font_color': '#4C2A69', 'valign': 'vcenter'})
 
@@ -2261,11 +2303,17 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic")
     for row_idx, (_, row) in enumerate(df.iterrows(), start=1):
         is_total_row = any(str(row.get(k, '')).upper() in ['TOTAL', 'GRAND TOTAL'] for k in ['VendorRO', 'RO Name', 'Route Path', 'Origin RO'])
         row_labels = ' '.join(str(row.get(col, '')).strip().lower() for col in ['Payment Group', 'Operations Outcome', 'Remark with 15 min waiver', 'Remark', 'Status'] if col in row.index)
-        if 'payment pending / paid' in row_labels or 'paid' in row_labels or 'ontime arrival' in row_labels or 'ontime dep, ontime arr' in row_labels:
-            row_status_fmt = row_green_fmt
-        elif 'other' in row_labels or 'draft' in row_labels or 'late arrival' in row_labels or 'late dep, late arr' in row_labels or 'missing' in row_labels:
+        if 'late dep, late arr' in row_labels or 'late arrival' in row_labels or 'no dep' in row_labels:
             row_status_fmt = row_red_fmt
-        elif 'finance pending' in row_labels or 'finance hold' in row_labels or 'cost control pending' in row_labels or 'in-transit' in row_labels or 'ontime dep, late arr' in row_labels:
+        elif 'ontime dep, late arr' in row_labels:
+            row_status_fmt = row_soft_red_fmt
+        elif 'late dep, in-transit' in row_labels or 'ontime dep, in-transit' in row_labels or 'missing sch' in row_labels or 'missing schedule' in row_labels:
+            row_status_fmt = row_yellow_fmt
+        elif 'ontime dep, ontime arr' in row_labels or 'ontime arrival' in row_labels or 'payment pending / paid' in row_labels or 'paid' in row_labels:
+            row_status_fmt = row_green_fmt
+        elif 'other' in row_labels or 'draft' in row_labels or 'late departure' in row_labels or 'missing' in row_labels:
+            row_status_fmt = row_red_fmt
+        elif 'finance pending' in row_labels or 'finance hold' in row_labels or 'cost control pending' in row_labels or 'in-transit' in row_labels:
             row_status_fmt = row_yellow_fmt
         elif 'late dep, ontime arr' in row_labels:
             row_status_fmt = row_purple_fmt
@@ -2293,33 +2341,59 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic")
                     chosen_fmt = red_fmt if (parse_pct_from_str(s_val) or 0) > 0 or (s_val.isdigit() and int(s_val) > 0) else muted_fmt
                 elif 'cost control pending' in c_lower or 'finance pending' in c_lower or 'finance hold' in c_lower:
                     chosen_fmt = yellow_fmt if (parse_pct_from_str(s_val) or 0) > 0 or (s_val.isdigit() and int(s_val) > 0) else muted_fmt
-                elif any(k in c_lower for k in ['ontime dep, ontime arr', 'ontime arrival', 'on-time']):
-                    pct = parse_pct_from_str(s_val)
-                    if pct is not None:
-                        chosen_fmt = green_fmt if pct >= 50 else red_fmt
-                elif any(k in c_lower for k in ['late dep, late arr', 'late arrival', 'late dep, in-transit', ' late']):
-                    pct = parse_pct_from_str(s_val)
-                    if pct is not None:
-                        chosen_fmt = green_fmt if pct < 50 else red_fmt
-                elif 'ontime dep, late arr' in c_lower:
+                elif 'late dep, in-transit' in c_lower:
                     pct = parse_pct_from_str(s_val)
                     if pct is not None:
                         chosen_fmt = yellow_fmt if pct > 0 else muted_fmt
+                elif 'ontime dep, late arr' in c_lower:
+                    pct = parse_pct_from_str(s_val)
+                    if pct is not None:
+                        chosen_fmt = soft_red_fmt if pct > 0 else muted_fmt
                 elif 'late dep, ontime arr' in c_lower:
                     pct = parse_pct_from_str(s_val)
                     if pct is not None:
                         chosen_fmt = purple_fmt if pct > 0 else muted_fmt
+                elif 'late dep, late arr' in c_lower or 'late arrival' in c_lower or 'late departure' in c_lower:
+                    pct = parse_pct_from_str(s_val)
+                    if pct is not None:
+                        chosen_fmt = red_fmt if pct > 0 else muted_fmt
+                elif 'ontime dep, ontime arr' in c_lower or 'ontime arrival' in c_lower:
+                    pct = parse_pct_from_str(s_val)
+                    if pct is not None:
+                        chosen_fmt = green_fmt if pct > 0 else muted_fmt
+                elif 'missing schedule' in c_lower:
+                    pct = parse_pct_from_str(s_val)
+                    if pct is not None:
+                        chosen_fmt = yellow_fmt if pct > 0 else muted_fmt
+                elif 'no departure' in c_lower:
+                    pct = parse_pct_from_str(s_val)
+                    if pct is not None:
+                        chosen_fmt = red_fmt if pct > 0 else muted_fmt
+                elif 'on-time' in c_lower and 'departure' not in c_lower and any(period in c_lower for period in ['previous 7 days', 'current 7 days', 'all available']):
+                    pct = parse_pct_from_str(s_val)
+                    if pct is not None:
+                        chosen_fmt = green_fmt if pct > 0 else muted_fmt
+                elif 'ontime departure' in c_lower or ('on-time' in c_lower and 'departure' in c_lower):
+                    pct = parse_pct_from_str(s_val)
+                    if pct is not None:
+                        chosen_fmt = green_fmt if pct >= 95 else (yellow_fmt if pct >= 80 else red_fmt)
+                elif 'late' in c_lower:
+                    pct = parse_pct_from_str(s_val)
+                    if pct is not None:
+                        chosen_fmt = red_fmt if pct > 0 else muted_fmt
                 elif 'in-transit' in c_lower:
                     pct = parse_pct_from_str(s_val)
                     if pct is not None:
                         chosen_fmt = yellow_fmt if pct > 0 else muted_fmt
                 elif 'remark' in c_lower:
-                    if 'ontime dep, ontime arr' in s_lower or 'ontime arrival' in s_lower:
-                        chosen_fmt = green_fmt
-                    elif 'late dep, late arr' in s_lower or 'late arrival' in s_lower or 'no dep' in s_lower or 'missing' in s_lower:
+                    if 'late dep, late arr' in s_lower or 'late arrival' in s_lower or 'no dep' in s_lower:
                         chosen_fmt = red_fmt
-                    elif 'ontime dep, late arr' in s_lower or 'in-transit' in s_lower:
+                    elif 'ontime dep, late arr' in s_lower:
+                        chosen_fmt = soft_red_fmt
+                    elif 'late dep, in-transit' in s_lower or 'ontime dep, in-transit' in s_lower or 'in-transit' in s_lower or 'missing sch' in s_lower:
                         chosen_fmt = yellow_fmt
+                    elif 'ontime dep, ontime arr' in s_lower or 'ontime arrival' in s_lower:
+                        chosen_fmt = green_fmt
                     elif 'late dep, ontime arr' in s_lower:
                         chosen_fmt = purple_fmt
                 elif c_lower == 'delay hours' and s_val not in ['', '-', '0:00']:
@@ -3086,19 +3160,10 @@ if st.session_state['role'] == 'Admin':
         if save_file(f2, "LEGWISE"): st.success("Saved!")
         st.caption(f"Last updated: {get_file_time('LEGWISE')}")
         
-        f3 = st.file_uploader("3. Scheduled Route Master", type=['xlsx'])
+        f3 = st.file_uploader("3. Scheduled Route Master — National and Zonal (single workbook)", type=['xlsx'])
         if save_file(f3, "ROUTE_MASTER"): st.success("Saved!")
         st.caption(f"Last updated: {get_file_time('ROUTE_MASTER')}")
-        st.caption("This combined workbook remains the source used by Process & Refresh Data and is also supported by the Scheduled Route Master module.")
-
-        f3n = st.file_uploader("Scheduled Route Master — National (optional separate file)", type=['xlsx'], key="scheduled_route_national_upload")
-        if save_file(f3n, "SCHEDULED_NATIONAL"): st.success("National schedule saved!")
-        st.caption(f"National schedule updated: {get_file_time('SCHEDULED_NATIONAL')}")
-
-        f3z = st.file_uploader("Scheduled Route Master — Zonal (optional separate file)", type=['xlsx'], key="scheduled_route_zonal_upload")
-        if save_file(f3z, "SCHEDULED_ZONAL"): st.success("Zonal schedule saved!")
-        st.caption(f"Zonal schedule updated: {get_file_time('SCHEDULED_ZONAL')}")
-        st.caption("Upload both separate files here when National and Zonal schedules are separate. These files update the Scheduled Route Master module; the combined workbook above remains unchanged for data processing.")
+        st.caption("This one workbook feeds Scheduled Route Master, scheduled departure/arrival, TAT, halting, and Vendor Performance. After replacing it, press PROCESS & REFRESH DATA to recalculate the other modules.")
         
         f4 = st.file_uploader("4. RO & Branch List", type=['xlsx'])
         if save_file(f4, "BRANCH_MASTER"): st.success("Saved!")
@@ -3375,6 +3440,12 @@ def read_payment_sheet_cached(path, signature, sheet_name):
         selected_sheet = sheet_name if sheet_name in workbook.sheet_names else workbook.sheet_names[0]
         return workbook.parse(selected_sheet)
 
+@st.cache_data(show_spinner=False, max_entries=2)
+def read_binary_asset_cached(path, signature):
+    """Reuse report bytes across Streamlit reruns until the report file changes."""
+    with open(path, 'rb') as source_file:
+        return source_file.read()
+
 @st.cache_data(show_spinner=False, max_entries=8)
 def read_access_vendor_options_cached(path, signature):
     """Read only vendor-name columns for the access editor, not both full raw sheets."""
@@ -3412,6 +3483,16 @@ def load_dashboard_data(page):
         return {}
     try:
         processed_signature = file_version(path)
+        payment_path = FILE_MAP.get('PAYMENT', '')
+        payment_signature = file_version(payment_path) if payment_path and os.path.exists(payment_path) else None
+        branch_path = FILE_MAP.get('BRANCH_MASTER', '')
+        branch_signature = file_version(branch_path) if branch_path and os.path.exists(branch_path) else None
+        page_cache_key = (page, processed_signature, payment_signature, branch_signature)
+        page_cache = st.session_state.setdefault('_dashboard_page_cache', {})
+        if page_cache_key in page_cache:
+            # Page frames are kept for this session, so module navigation avoids another
+            # workbook deserialize and normalization pass. Renderers work on local copies.
+            return dict(page_cache[page_cache_key])
         if page == "🔐 User & Access Control":
             return {'Vendor_Options': read_access_vendor_options_cached(path, processed_signature)}
         data = read_dashboard_sheets_cached(path, processed_signature, MENU_SHEETS[page])
@@ -3432,6 +3513,11 @@ def load_dashboard_data(page):
 
         if page in ["📝 Today's Call Action Plan", "🔐 User & Access Control", "⚠️ Overall Issues"] and not data:
             data = {"dummy": pd.DataFrame()}
+        page_cache[page_cache_key] = data
+        # Keep a small working set: enough to make normal module switching immediate
+        # without retaining every large raw sheet for the full session.
+        while len(page_cache) > 5:
+            page_cache.pop(next(iter(page_cache)))
         return data
     except Exception as exc:
         logging.exception("Cannot read dashboard workbook")
@@ -3448,15 +3534,16 @@ if st.session_state.get('all_vendors', True) and os.path.exists(FILE_MAP["FINAL_
     st.sidebar.markdown("---")
     st.sidebar.header("📥 Export Reports")
     try:
-        with open(FILE_MAP["EXECUTIVE_REPORT"], "rb") as report_file:
-            st.sidebar.download_button(
-                "📄 Download VIP Executive Report",
-                data=report_file,
-                file_name=f"Trackon_Executive_Master_Report_{get_ist_now():%d_%b_%Y}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                type="primary"
-            )
+        report_path = FILE_MAP["EXECUTIVE_REPORT"]
+        report_bytes = read_binary_asset_cached(report_path, file_version(report_path))
+        st.sidebar.download_button(
+            "📄 Download VIP Executive Report",
+            data=report_bytes,
+            file_name=f"Trackon_Executive_Master_Report_{get_ist_now():%d_%b_%Y}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            type="primary"
+        )
     except Exception as exc:
         st.sidebar.error(f"Could not load download: {exc}")
         
@@ -3525,10 +3612,7 @@ def render_scheduled_route_master(data):
         return
 
     lookup_info = df_master.attrs
-    if lookup_info.get('ondemand_source'):
-        st.caption(f"OnDemand lookup: {lookup_info.get('ondemand_source')} · RO and branch labels: {lookup_info.get('branch_source') or 'Branch list loaded'}")
-    else:
-        st.info("OnDemand tab was not found. Each row still uses the origin and destination from its own Legs entry, with branch/RO labels looked up from the RO & Branch List.")
+    st.caption(f"Route legs, departure/arrival times, TAT, and halting are derived from the uploaded RoutePathReportModel. Branch and RO labels: {lookup_info.get('branch_source') or 'branch list not available'}.")
     schedule_source = lookup_info.get('schedule_source', '')
     if schedule_source:
         if 'Bundled fallback schedule' in schedule_source:
@@ -3568,26 +3652,26 @@ def render_scheduled_route_master(data):
     poster_specs = [
         {
             'key': 'departure', 'tab': '🚚 Departure Poster', 'label': 'Scheduled Departure Poster',
-            'columns': ['Route Path', 'Legwise', 'Legs', 'RO', 'Origin Branch', 'Scheduled Departure Time'],
+            'columns': ['Route Code', 'Route Path', 'Legwise', 'Legs', 'RO', 'Origin Branch', 'Departure Route Day', 'Scheduled Departure Time'],
             'scope_columns': ['Origin', 'Origin Branch', 'From Branch'],
-            'caption': 'Route Path, leg number and leg endpoints, origin branch and RO, and scheduled departure time.',
-            'widths': {'Schedule Type': 14, 'Route Path': 28, 'Legwise': 11, 'Legs': 24, 'Origin RO': 16, 'Origin Branch': 28, 'Scheduled Departure Time': 24},
+            'caption': 'Departure schedule from each route branch. Route Day is the same offset used by Vendor Performance.',
+            'widths': {'Route Code': 12, 'Route Path': 28, 'Legwise': 11, 'Legs': 24, 'Origin RO': 16, 'Origin Branch': 28, 'Departure Route Day': 18, 'Scheduled Departure Time': 24},
             'paper_size': 8, 'landscape': True
         },
         {
             'key': 'arrival', 'tab': '🏁 Arrival Poster', 'label': 'Scheduled Arrival Poster',
-            'columns': ['Route Path', 'Legwise', 'Legs', 'Origin Branch', 'RO', 'Destination Branch', 'Destination RO', 'Scheduled Driving Hours'],
+            'columns': ['Route Code', 'Route Path', 'Legwise', 'Legs', 'Origin Branch', 'RO', 'Destination Branch', 'Destination RO', 'Arrival Route Day', 'Scheduled Arrival Time', 'Scheduled Driving Hours'],
             'scope_columns': ['Destination', 'Destination Branch', 'To Branch'],
-            'caption': 'Route Path, leg number and endpoints, both branches and ROs, and scheduled arrival/driving hours. No departure time or halting fields.',
-            'widths': {'Schedule Type': 14, 'Route Path': 26, 'Legwise': 10, 'Legs': 21, 'Origin Branch': 22, 'Origin RO': 15, 'Destination Branch': 25, 'Destination RO': 18, 'Scheduled Arrival Hours': 21},
+            'caption': 'Arrival schedule at each destination branch, with route day and scheduled leg hours.',
+            'widths': {'Route Code': 12, 'Route Path': 26, 'Legwise': 10, 'Legs': 21, 'Origin Branch': 22, 'Origin RO': 15, 'Destination Branch': 25, 'Destination RO': 18, 'Arrival Route Day': 18, 'Scheduled Arrival Time': 22, 'Scheduled Leg Hours': 20},
             'paper_size': 8, 'landscape': True
         },
         {
             'key': 'halting', 'tab': '⏱️ Halting Poster', 'label': 'Scheduled Halting Poster',
-            'columns': ['Route Path', 'Legwise', 'Legs', 'Origin Branch', 'RO', 'Destination Branch', 'Destination RO', 'Scheduled Driving Hours', 'Scheduled Halting'],
+            'columns': ['Route Code', 'Route Path', 'Legwise', 'Legs', 'Origin Branch', 'RO', 'Departure Route Day', 'Scheduled Departure Time', 'Arrival Route Day', 'Scheduled Arrival Time', 'Scheduled Halting', 'Scheduled TAT Till Destination'],
             'scope_columns': ['Origin', 'Origin Branch', 'From Branch', 'Scheduled Halting'],
-            'caption': 'Route Path, leg number and endpoints, both branches and ROs, scheduled arrival/driving hours, and scheduled halting. Departure time is excluded.',
-            'widths': {'Schedule Type': 14, 'Route Path': 25, 'Legwise': 10, 'Legs': 20, 'Origin Branch': 21, 'Origin RO': 15, 'Destination Branch': 23, 'Destination RO': 17, 'Scheduled Arrival Hours': 20, 'Scheduled Halting': 20},
+            'caption': 'Halting is the scheduled departure minus scheduled arrival at the origin branch; route TAT follows the existing processing calculation.',
+            'widths': {'Route Code': 12, 'Route Path': 25, 'Legwise': 10, 'Legs': 20, 'Origin Branch': 21, 'Origin RO': 15, 'Departure Route Day': 18, 'Scheduled Departure Time': 22, 'Arrival Route Day': 18, 'Scheduled Arrival Time': 22, 'Scheduled Halting': 20, 'Scheduled TAT Till Destination': 24},
             'paper_size': 8, 'landscape': True
         }
     ]
@@ -3604,9 +3688,7 @@ def render_scheduled_route_master(data):
                 poster_source = poster_source[branch_mask].copy()
 
             poster = poster_source.reindex(columns=spec['columns']).fillna('')
-            poster = poster.rename(columns={'RO': 'Origin RO', 'Scheduled Driving Hours': 'Scheduled Arrival Hours'})
-            if df_master['Schedule Type'].fillna('').astype(str).str.strip().ne('').any():
-                poster.insert(0, 'Schedule Type', poster_source['Schedule Type'].reindex(poster.index).fillna('').astype(str).values)
+            poster = poster.rename(columns={'RO': 'Origin RO', 'Scheduled Driving Hours': 'Scheduled Leg Hours'})
             st.caption(spec['caption'])
             if poster.empty:
                 st.info(f"No {spec['label'].lower()} rows for {branch_label} with these filters.")
@@ -3628,8 +3710,9 @@ def render_scheduled_route_master(data):
             )
 
     master_columns = [
-        'Schedule Type', 'RO', 'Origin', 'Origin Branch', 'Destination', 'Destination Branch', 'Destination RO',
-        'Route Path', 'Legwise', 'Legs', 'Scheduled Departure Time', 'Scheduled Arrival Time',
+        'Route Code', 'RO', 'Origin', 'Origin Branch', 'Destination', 'Destination Branch', 'Destination RO',
+        'Route Path', 'Legwise', 'Legs', 'Departure Route Day', 'Scheduled Departure Time',
+        'Arrival Route Day', 'Scheduled Arrival Time',
         'Scheduled Driving Hours', 'Scheduled Halting', 'Scheduled TAT Till Destination'
     ]
     with st.expander("Full leg-wise route master preview", expanded=False):
@@ -4518,6 +4601,29 @@ elif choice == "📊 Operations Summary":
             df_leg_sum = df_leg_sum[df_leg_sum['Origin RO'] == selected_ro]
             df_raw_leg = df_raw_leg[df_raw_leg['Origin RO'] == selected_ro]
 
+        search_q = col3.text_input("🔍 Quick Search:", placeholder="Search Route, Leg...", key="ops_route_search")
+        if search_q.strip():
+            searchable_fields = ['Origin RO', 'Route Path', 'Legwise', 'Legs', 'RouteCode', 'CD_FromBranch', 'CD_ToBranch']
+            def _filter_ops_route_query(frame):
+                search_cols = [col for col in searchable_fields if col in frame.columns]
+                if not search_cols:
+                    return frame
+                match = pd.Series(False, index=frame.index)
+                for search_col in search_cols:
+                    match |= frame[search_col].fillna('').astype(str).str.contains(search_q.strip(), case=False, regex=False, na=False)
+                return frame.loc[match].copy()
+            df_raw_leg = _filter_ops_route_query(df_raw_leg)
+            route_identity = [col for col in ['Origin RO', 'Route Path', 'Legwise'] if col in df_raw_leg.columns and col in df_leg_sum.columns]
+            if route_identity and not df_raw_leg.empty:
+                matched_routes = pd.MultiIndex.from_frame(df_raw_leg[route_identity].fillna('').astype(str).drop_duplicates())
+                summary_routes = pd.MultiIndex.from_frame(df_leg_sum[route_identity].fillna('').astype(str))
+                df_leg_sum = df_leg_sum.loc[summary_routes.isin(matched_routes)].copy()
+            else:
+                df_leg_sum = _filter_ops_route_query(df_leg_sum)
+        if df_leg_sum.empty or df_raw_leg.empty:
+            st.info("No operation trips match the selected date, zone, RO, and route search.")
+            st.stop()
+
         # Preserve the four paired outcomes while also exposing exceptions that
         # those paired buckets do not represent (in-transit, no departure, missing schedule).
         raw_status = df_raw_leg.copy()
@@ -4539,23 +4645,45 @@ elif choice == "📊 Operations Summary":
             dep_status_values = raw_status.get('Dep_Status', pd.Series('', index=raw_status.index)).fillna('').astype(str).str.casefold()
             arr_status_values = raw_status.get('Arr_Status', pd.Series('', index=raw_status.index)).fillna('').astype(str).str.casefold()
             remark_status_values = raw_status.get('Remark', pd.Series('', index=raw_status.index)).fillna('').astype(str).str.casefold()
-            raw_status['_InTransitTrips'] = arr_status_values.eq('in-transit').astype(int)
-            raw_status['_NoDepartureTrips'] = dep_status_values.eq('no dep').astype(int)
+            raw_status['_OnTimeDepartureTrips'] = dep_status_values.str.contains(r'ontime\s+(dep|departure)', regex=True).astype(int)
+            raw_status['_LateDepartureTrips'] = dep_status_values.str.contains(r'late\s+(dep|departure)', regex=True).astype(int)
+            raw_status['_OnTimeArrivalTrips'] = arr_status_values.str.contains(r'ontime\s+(arr|arrival)', regex=True).astype(int)
+            raw_status['_LateArrivalTrips'] = arr_status_values.str.contains(r'late\s+(arr|arrival)', regex=True).astype(int)
+            raw_status['_InTransitTrips'] = (arr_status_values.eq('in-transit') | remark_status_values.str.contains('in-transit', regex=False)).astype(int)
+            raw_status['_LateDepInTransitTrips'] = remark_status_values.str.contains(r'late\s+dep\s*,\s*in-transit', regex=True).astype(int)
+            raw_status['_OntimeDepInTransitTrips'] = remark_status_values.str.contains(r'ontime\s+dep\s*,\s*in-transit', regex=True).astype(int)
+            raw_status['_NoDepartureTrips'] = dep_status_values.str.contains(r'no\s+dep(?:arture)?', regex=True).astype(int)
             raw_status['_MissingScheduleTrips'] = (
-                dep_status_values.str.contains('missing sch', regex=False) |
-                arr_status_values.str.contains('missing sch', regex=False) |
-                remark_status_values.str.contains('missing sch', regex=False)
+                dep_status_values.str.contains(r'missing\s+(sch|schedule)', regex=True) |
+                arr_status_values.str.contains(r'missing\s+(sch|schedule)', regex=True) |
+                remark_status_values.str.contains(r'missing\s+(sch|schedule)', regex=True)
             ).astype(int)
             status_counts = raw_status.groupby(status_group_keys, dropna=False, sort=False)[
-                ['_InTransitTrips', '_NoDepartureTrips', '_MissingScheduleTrips']
+                [
+                    '_OnTimeDepartureTrips', '_LateDepartureTrips', '_OnTimeArrivalTrips', '_LateArrivalTrips',
+                    '_InTransitTrips', '_LateDepInTransitTrips', '_OntimeDepInTransitTrips',
+                    '_NoDepartureTrips', '_MissingScheduleTrips'
+                ]
             ].sum().reset_index().rename(columns={
+                '_OnTimeDepartureTrips': 'On-time Departure Trips',
+                '_LateDepartureTrips': 'Late Departure Trips',
+                '_OnTimeArrivalTrips': 'On-time Arrival Trips',
+                '_LateArrivalTrips': 'Late Arrival Trips',
                 '_InTransitTrips': 'In-Transit Trips',
+                '_LateDepInTransitTrips': 'Late Dep, In-Transit Trips',
+                '_OntimeDepInTransitTrips': 'Ontime Dep, In-Transit Trips',
                 '_NoDepartureTrips': 'No Departure Trips',
                 '_MissingScheduleTrips': 'Missing Schedule Trips'
             })
             df_leg_sum = df_leg_sum.merge(status_counts, on=status_group_keys, how='left')
             for status_name, count_col in [
+                ('On-time Departure', 'On-time Departure Trips'),
+                ('Late Departure', 'Late Departure Trips'),
+                ('On-time Arrival', 'On-time Arrival Trips'),
+                ('Late Arrival', 'Late Arrival Trips'),
                 ('In-Transit', 'In-Transit Trips'),
+                ('Late Dep, In-Transit', 'Late Dep, In-Transit Trips'),
+                ('Ontime Dep, In-Transit', 'Ontime Dep, In-Transit Trips'),
                 ('No Departure', 'No Departure Trips'),
                 ('Missing Schedule', 'Missing Schedule Trips')
             ]:
@@ -4574,23 +4702,44 @@ elif choice == "📊 Operations Summary":
                 count_text.str.replace(",", "", regex=False), errors="coerce"
             ).fillna(0).astype(int)
 
-        def _ops_trip_count(column):
-            return int(_ops_trip_counts(column).sum())
+        ops_outcome_counts, ops_total_trips, ops_outcome_labels = summarize_ops_remark_outcomes(raw_status)
+        ops_on_time = ops_outcome_counts['Ontime Dep, Ontime Arr']
+        ops_ontime_dep_late_arr = ops_outcome_counts['Ontime Dep, Late Arr']
+        ops_late_dep_late_arr = ops_outcome_counts['Late Dep, Late Arr']
+        ops_late_dep_ontime_arr = ops_outcome_counts['Late Dep, Ontime Arr']
+        dep_status_for_gauges = raw_status.get('Dep_Status', pd.Series('', index=raw_status.index)).fillna('').astype(str).str.casefold()
+        arr_status_for_gauges = raw_status.get('Arr_Status', pd.Series('', index=raw_status.index)).fillna('').astype(str).str.casefold()
+        ops_ontime_departures = int(dep_status_for_gauges.str.contains(r'ontime\s+(dep|departure)', regex=True).sum())
+        ops_late_departures = int(dep_status_for_gauges.str.contains(r'late\s+(dep|departure)', regex=True).sum())
+        ops_ontime_arrivals = int(arr_status_for_gauges.str.contains(r'ontime\s+(arr|arrival)', regex=True).sum())
+        ops_late_arrivals = int(arr_status_for_gauges.str.contains(r'late\s+(arr|arrival)', regex=True).sum())
 
-        ops_total_trips = int(pd.to_numeric(
-            df_leg_sum.get("Total_Trips", pd.Series(0, index=df_leg_sum.index)), errors="coerce"
-        ).fillna(0).sum())
-        ops_on_time = _ops_trip_count("Ontime Dep, Ontime Arr %")
-        ops_ontime_dep_late_arr = _ops_trip_count("Ontime Dep, Late Arr %")
-        ops_late_dep_late_arr = _ops_trip_count("Late Dep, Late Arr %")
-        ops_late_dep_ontime_arr = _ops_trip_count("Late Dep, Ontime Arr %")
-        ops_ontime_departures = ops_on_time + ops_ontime_dep_late_arr
-        ops_ontime_arrivals = ops_on_time + ops_late_dep_ontime_arr
-        ops_late_arrivals = ops_ontime_dep_late_arr + ops_late_dep_late_arr
-        ops_late_departures = ops_late_dep_late_arr + ops_late_dep_ontime_arr
+        st.markdown("### Remark-wise Trip Outcome")
+        st.caption("🟢 Ontime Dep, Ontime Arr · 🌸 Ontime Dep, Late Arr · 🔴 Late Dep, Late Arr · 🔴 No Departure · 🟡 Late Dep, In-Transit · 🟡 Missing Schedule · 🟡 In-Transit · 🟣 Late Dep, Ontime Arr. Counts follow the selected date, zone, RO, and route search.")
+        outcome_cards = []
+        for outcome_label, outcome_tone, outcome_icon in ops_outcome_labels:
+            outcome_count = ops_outcome_counts[outcome_label]
+            primary_outcome = outcome_label in {
+                'Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr',
+                'Late Dep, Late Arr', 'Late Dep, In-Transit'
+            }
+            if primary_outcome or outcome_count > 0:
+                outcome_pct = (outcome_count / ops_total_trips * 100) if ops_total_trips else 0
+                card_html = (
+                    f'<div class="outcome-card outcome-{outcome_tone.replace("_", "-")}">'
+                    f'<div class="outcome-label">{outcome_icon} {html_module.escape(outcome_label)}</div>'
+                    f'<div class="outcome-value">{outcome_count:,}</div>'
+                    f'<div class="outcome-share">{outcome_pct:.1f}% of {ops_total_trips:,} trips</div>'
+                    '</div>'
+                )
+                outcome_cards.append(card_html)
+        for card_start in range(0, len(outcome_cards), 4):
+            outcome_columns = st.columns(4, gap='small')
+            for outcome_column, outcome_card in zip(outcome_columns, outcome_cards[card_start:card_start + 4]):
+                with outcome_column:
+                    st.markdown(outcome_card, unsafe_allow_html=True)
 
-        # Add separate departure/arrival rates alongside the four combined outcomes.
-        # These are derived from the same outcome counts, so the source logic is unchanged.
+        # Add standalone status rates from each filtered trip's Remark components.
         ops_totals_by_route = pd.to_numeric(
             df_leg_sum.get("Total_Trips", pd.Series(0, index=df_leg_sum.index)), errors="coerce"
         ).fillna(0).astype(int)
@@ -4607,10 +4756,25 @@ elif choice == "📊 Operations Summary":
         ol_counts = _ops_trip_counts("Ontime Dep, Late Arr %")
         ll_counts = _ops_trip_counts("Late Dep, Late Arr %")
         lo_counts = _ops_trip_counts("Late Dep, Ontime Arr %")
-        df_leg_sum["On-time Departure %"] = _ops_rate_for_table(oo_counts + ol_counts)
-        df_leg_sum["Late Departure %"] = _ops_rate_for_table(ll_counts + lo_counts)
-        df_leg_sum["On-time Arrival %"] = _ops_rate_for_table(oo_counts + lo_counts)
-        df_leg_sum["Late Arrival %"] = _ops_rate_for_table(ol_counts + ll_counts)
+        for status_label, count_col in [
+            ('On-time Departure', 'On-time Departure Trips'),
+            ('Late Departure', 'Late Departure Trips'),
+            ('On-time Arrival', 'On-time Arrival Trips'),
+            ('Late Arrival', 'Late Arrival Trips'),
+            ('Late Dep, In-Transit', 'Late Dep, In-Transit Trips'),
+            ('Ontime Dep, In-Transit', 'Ontime Dep, In-Transit Trips')
+        ]:
+            if count_col in df_leg_sum.columns:
+                status_counts_for_table = pd.to_numeric(df_leg_sum[count_col], errors='coerce').fillna(0).astype(int)
+                df_leg_sum[f'{status_label} %'] = _ops_rate_for_table(status_counts_for_table)
+        if 'On-time Departure %' not in df_leg_sum.columns:
+            df_leg_sum['On-time Departure %'] = _ops_rate_for_table(oo_counts + ol_counts)
+        if 'Late Departure %' not in df_leg_sum.columns:
+            df_leg_sum['Late Departure %'] = _ops_rate_for_table(ll_counts + lo_counts)
+        if 'On-time Arrival %' not in df_leg_sum.columns:
+            df_leg_sum['On-time Arrival %'] = _ops_rate_for_table(oo_counts + lo_counts)
+        if 'Late Arrival %' not in df_leg_sum.columns:
+            df_leg_sum['Late Arrival %'] = _ops_rate_for_table(ol_counts + ll_counts)
 
         gauge_specs = [
             ("On-time Arrival", ops_ontime_arrivals, "success"),
@@ -4654,14 +4818,13 @@ elif choice == "📊 Operations Summary":
         for gauge_column, gauge_card_html in zip(gauge_columns, gauge_html):
             with gauge_column:
                 st.markdown(gauge_card_html, unsafe_allow_html=True)
-        st.caption("🟢 On-time target: 95%+ · 🟡 80–94.9% / in-transit · 🔴 below 80% or any late/missing trip · 🟣 late departure with on-time arrival. Insights use the selected date, zone, and RO filters.")
-
-        search_q = col3.text_input("🔍 Quick Search:", placeholder="Search Route, Leg...")
+        st.caption("🟢 On-time target: 95%+ · 🟡 80–94.9% / in-transit · 🔴 below 80% or any late/missing trip · 🟣 late departure with on-time arrival. Insights use the selected date, zone, RO, and route search.")
 
         display_cols = [
             'Origin RO', 'Route Path', 'Legwise', 'Legs', 'Total_Trips', 
             'On-time Departure %', 'Late Departure %', 'On-time Arrival %', 'Late Arrival %',
-            'In-Transit %', 'No Departure %', 'Missing Schedule %',
+            'In-Transit %', 'Late Dep, In-Transit %', 'Ontime Dep, In-Transit %',
+            'No Departure %', 'Missing Schedule %',
             'Ontime Dep, Ontime Arr %', 'Ontime Dep, Late Arr %', 
             'Late Dep, Late Arr %', 'Late Dep, Ontime Arr %'
         ]
@@ -4669,10 +4832,6 @@ elif choice == "📊 Operations Summary":
         df_display = df_leg_sum[[c for c in display_cols if c in df_leg_sum.columns]].copy()
         df_display['RowKey'] = df_display['Origin RO'].astype(str) + " || " + df_display['Route Path'].astype(str) + " | " + df_display['Legwise'].astype(str)
         
-        if search_q:
-            mask = df_display.astype(str).apply(lambda x: x.str.contains(search_q, case=False, regex=False, na=False)).any(axis=1)
-            df_display = df_display[mask]
-            
         def extract_pct(x):
             if isinstance(x, str) and '%' in x:
                 try: return float(x.split('%')[0].strip())
@@ -4692,11 +4851,17 @@ elif choice == "📊 Operations Summary":
             col = str(column).lower()
             if pct is None:
                 return text
-            if 'late dep, ontime arr' in col:
-                icon = '🟣' if pct > 0 else '🟢'
-            elif 'ontime dep, late arr' in col or 'in-transit' in col:
+            if 'ontime dep, ontime arr' in col:
+                icon = '🟢' if pct > 0 else '⚪'
+            elif 'ontime dep, late arr' in col:
+                icon = '🌸' if pct > 0 else '🟢'
+            elif 'late dep, in-transit' in col or 'ontime dep, in-transit' in col or 'in-transit' in col:
                 icon = '🟡' if pct > 0 else '🟢'
-            elif 'no departure' in col or 'missing schedule' in col:
+            elif 'late dep, ontime arr' in col:
+                icon = '🟣' if pct > 0 else '🟢'
+            elif 'missing schedule' in col:
+                icon = '🟡' if pct > 0 else '🟢'
+            elif 'no departure' in col:
                 icon = '🔴' if pct > 0 else '🟢'
             elif 'late dep' in col or 'late arrival' in col or 'late departure' in col or 'late arr' in col:
                 icon = '🔴' if pct > 0 else '🟢'
@@ -4704,6 +4869,8 @@ elif choice == "📊 Operations Summary":
                 icon = '🟢' if pct >= 95 else ('🟡' if pct >= 80 else '🔴')
             else:
                 icon = ''
+            if pct == 0:
+                icon = '⚪'
             return f"{icon} {text}".strip()
 
         for c in pct_cols:
@@ -4733,12 +4900,14 @@ elif choice == "📊 Operations Summary":
             'On-time Arrival %': st.column_config.TextColumn('On-time Arr', width='medium', help='Trips with an on-time arrival, as a percentage and count.'),
             'Late Arrival %': st.column_config.TextColumn('Late Arr', width='medium', help='Trips with a late arrival, as a percentage and count.'),
             'In-Transit %': st.column_config.TextColumn('In-Transit', width='small', help='Arrival has not yet been recorded.'),
+            'Late Dep, In-Transit %': st.column_config.TextColumn('Late Dep, In-Transit', width='medium'),
+            'Ontime Dep, In-Transit %': st.column_config.TextColumn('Ontime Dep, In-Transit', width='medium'),
             'No Departure %': st.column_config.TextColumn('No Departure', width='small', help='Departure actual time is missing.'),
             'Missing Schedule %': st.column_config.TextColumn('Missing Schedule', width='small', help='A scheduled departure or arrival time is missing.'),
-            'Ontime Dep, Ontime Arr %': st.column_config.TextColumn('On-time Dep + Arr', width='medium'),
-            'Ontime Dep, Late Arr %': st.column_config.TextColumn('On-time Dep · Late Arr', width='medium'),
-            'Late Dep, Late Arr %': st.column_config.TextColumn('Late Dep + Arr', width='medium'),
-            'Late Dep, Ontime Arr %': st.column_config.TextColumn('Late Dep · On-time Arr', width='medium'),
+            'Ontime Dep, Ontime Arr %': st.column_config.TextColumn('Ontime Dep, Ontime Arr', width='medium'),
+            'Ontime Dep, Late Arr %': st.column_config.TextColumn('Ontime Dep, Late Arr', width='medium'),
+            'Late Dep, Late Arr %': st.column_config.TextColumn('Late Dep, Late Arr', width='medium'),
+            'Late Dep, Ontime Arr %': st.column_config.TextColumn('Late Dep, Ontime Arr', width='medium'),
             'Action Plan ✍️': st.column_config.TextColumn('Action Plan ✍️', width='large')
         }
 
@@ -4851,7 +5020,7 @@ elif choice == "🚚 Vendor Performance":
         mod_ap = ap_data.get("Vendor Performance", {})
         summary_cols = [c for c in display_cols if c in df_display.columns and c not in ['RowKey', 'Action Plan ✍️', 'Select 👁️']]
         table_display = df_display[summary_cols].reset_index(drop=True)
-        st.caption('Click any trip count or performance rate to see the matching trip records.')
+        st.caption('🟢 On-time arrival · 🔴 Late arrival · 🟡 In-transit. Click any trip count or rate to open matching trip records.')
         try:
             vendor_event = st.dataframe(
                 style_ui_dataframe(table_display), use_container_width=True, height=350, hide_index=True,
