@@ -1581,55 +1581,37 @@ def build_overall_issues_summary(ops_raw, pay_raw, cpk_raw=None):
             '_LL': 'Late Dep, Late Arr',
             '_LO': 'Late Dep, Ontime Arr'
         }
-        dep_lower = dep_status.fillna('').astype(str).str.casefold()
-        arr_lower = arr_status.fillna('').astype(str).str.casefold()
-        outcome_lower = outcome_source.fillna('').astype(str).str.casefold()
         grouped = pd.DataFrame({
             '_RO': ops_ro, '_ZONE': ops_zone,
             **{key: outcome_source.str.contains(pattern, case=False, na=False).astype(int)
-               for key, pattern in outcome_patterns.items()},
-            '_DEP_ON_TIME': dep_lower.str.contains(r'ontime\s+(dep|departure)', regex=True).astype(int),
-            '_DEP_LATE': dep_lower.str.contains(r'late\s+(dep|departure)', regex=True).astype(int),
-            '_ARR_ON_TIME': arr_lower.str.contains(r'ontime\s+(arr|arrival)', regex=True).astype(int),
-            '_ARR_LATE': arr_lower.str.contains(r'late\s+(arr|arrival)', regex=True).astype(int),
-            '_IN_TRANSIT': (arr_lower.eq('in-transit') | outcome_lower.str.contains('in-transit', regex=False)).astype(int),
-            '_NO_DEPARTURE': dep_lower.str.contains('no dep', regex=False).astype(int),
-            '_MISSING_SCHEDULE': (
-                dep_lower.str.contains('missing', regex=False) |
-                arr_lower.str.contains('missing', regex=False) |
-                outcome_lower.str.contains('missing', regex=False)
-            ).astype(int)
+               for key, pattern in outcome_patterns.items()}
         }).groupby(['_RO', '_ZONE'], dropna=False).agg(
             Total_Trips=('_RO', 'size'), OO_Cnt=('_OO', 'sum'), OL_Cnt=('_OL', 'sum'),
-            LL_Cnt=('_LL', 'sum'), LO_Cnt=('_LO', 'sum'),
-            Dep_On_Time_Cnt=('_DEP_ON_TIME', 'sum'), Dep_Late_Cnt=('_DEP_LATE', 'sum'),
-            Arr_On_Time_Cnt=('_ARR_ON_TIME', 'sum'), Arr_Late_Cnt=('_ARR_LATE', 'sum'),
-            In_Transit_Cnt=('_IN_TRANSIT', 'sum'), No_Departure_Cnt=('_NO_DEPARTURE', 'sum'),
-            Missing_Schedule_Cnt=('_MISSING_SCHEDULE', 'sum')
+            LL_Cnt=('_LL', 'sum'), LO_Cnt=('_LO', 'sum')
         )
         for (ro, zone), row in grouped.iterrows():
             ops_rows[(ro, zone)] = row.to_dict()
 
     if pay_ro_col:
-        status_col = get_col(pay, ['Status', 'Invoice Status'])
-        status = pay[status_col].fillna('').astype(str).str.strip().str.upper().str.replace(' ', '_', regex=False) if status_col else pd.Series('', index=pay.index)
-        draft_mask = status.eq('DRAFT').astype(int)
-        pending_mask = status.eq('PENDING').astype(int)
-        payment_pending_mask = status.isin(['PAYMENT_PENDING', 'PAID']).astype(int)
-        finance_pending_hold_mask = status.isin(['FINANCE_PENDING', 'FINANCE_HOLD']).astype(int)
-        known_mask = (draft_mask.astype(bool) | pending_mask.astype(bool) | payment_pending_mask.astype(bool) | finance_pending_hold_mask.astype(bool))
-        other_mask = (status.ne('') & ~known_mask).astype(int)
+        payment_masks = get_overall_payment_status_masks(pay)
+        draft_mask = payment_masks['Draft bills'].astype(int)
+        pending_mask = payment_masks['Pending bills'].astype(int)
+        payment_pending_mask = payment_masks['Payment pending / paid'].astype(int)
+        finance_pending_mask = payment_masks['Finance pending'].astype(int)
+        finance_hold_mask = payment_masks['Finance hold'].astype(int)
+        other_mask = payment_masks['Other bills'].astype(int)
         pay_ro = _clean_ro_series(pay[pay_ro_col])
         pay_zone = pay[pay_zone_col].fillna('UNKNOWN ZONE').astype(str).str.strip().str.upper() if pay_zone_col else pd.Series('UNKNOWN ZONE', index=pay.index)
         pay_zone = pay_zone.replace({'': 'UNKNOWN ZONE', 'NAN': 'UNKNOWN ZONE', 'NONE': 'UNKNOWN ZONE'})
         grouped = pd.DataFrame({
             '_RO': pay_ro, '_ZONE': pay_zone, '_DRAFT': draft_mask,
             '_PENDING': pending_mask, '_PAYMENT_PENDING_PAID': payment_pending_mask,
-            '_FINANCE_PENDING_HOLD': finance_pending_hold_mask, '_OTHER': other_mask
+            '_FINANCE_PENDING': finance_pending_mask, '_FINANCE_HOLD': finance_hold_mask, '_OTHER': other_mask
         }).groupby(['_RO', '_ZONE'], dropna=False).agg(
             Total_Bills=('_RO', 'size'), Draft_Cnt=('_DRAFT', 'sum'), Pending_Cnt=('_PENDING', 'sum'),
             Payment_Pending_Paid_Cnt=('_PAYMENT_PENDING_PAID', 'sum'),
-            Finance_Pending_Hold_Cnt=('_FINANCE_PENDING_HOLD', 'sum'), Other_Cnt=('_OTHER', 'sum')
+            Finance_Pending_Cnt=('_FINANCE_PENDING', 'sum'), Finance_Hold_Cnt=('_FINANCE_HOLD', 'sum'),
+            Other_Cnt=('_OTHER', 'sum')
         )
         for (ro, zone), row in grouped.iterrows():
             pay_rows[(ro, zone)] = row.to_dict()
@@ -1679,25 +1661,15 @@ def build_overall_issues_summary(ops_raw, pay_raw, cpk_raw=None):
         ol = int(ops_stats.get('OL_Cnt', 0))
         ll = int(ops_stats.get('LL_Cnt', 0))
         lo = int(ops_stats.get('LO_Cnt', 0))
-        dep_on_time = int(ops_stats.get('Dep_On_Time_Cnt', oo + ol))
-        dep_late = int(ops_stats.get('Dep_Late_Cnt', ll + lo))
-        arr_on_time = int(ops_stats.get('Arr_On_Time_Cnt', oo + lo))
-        arr_late = int(ops_stats.get('Arr_Late_Cnt', ol + ll))
         draft = int(pay_stats.get('Draft_Cnt', 0))
         pending = int(pay_stats.get('Pending_Cnt', 0))
         payment_pending_paid = int(pay_stats.get('Payment_Pending_Paid_Cnt', 0))
-        finance_pending_hold = int(pay_stats.get('Finance_Pending_Hold_Cnt', 0))
+        finance_pending = int(pay_stats.get('Finance_Pending_Cnt', 0))
+        finance_hold = int(pay_stats.get('Finance_Hold_Cnt', 0))
         other = int(pay_stats.get('Other_Cnt', 0))
         utilization = utilization_rows.get((ro, zone), {})
         rows.append({
             'RO Name': ro, 'Zone': zone, 'Total Trips': trips,
-            'On-time Departure %': format_pct_cnt(dep_on_time, trips),
-            'Late Departure %': format_pct_cnt(dep_late, trips),
-            'On-time Arrival %': format_pct_cnt(arr_on_time, trips),
-            'Late Arrival %': format_pct_cnt(arr_late, trips),
-            'In-Transit %': format_pct_cnt(int(ops_stats.get('In_Transit_Cnt', 0)), trips),
-            'No Departure %': format_pct_cnt(int(ops_stats.get('No_Departure_Cnt', 0)), trips),
-            'Missing Schedule %': format_pct_cnt(int(ops_stats.get('Missing_Schedule_Cnt', 0)), trips),
             'Ontime Dep, Ontime Arr': format_pct_cnt(oo, trips),
             'Ontime Dep, Late Arr': format_pct_cnt(ol, trips),
             'Late Dep, Late Arr': format_pct_cnt(ll, trips),
@@ -1705,18 +1677,17 @@ def build_overall_issues_summary(ops_raw, pay_raw, cpk_raw=None):
             'Draft Bills': format_pct_cnt(draft, bills),
             'Pending': format_pct_cnt(pending, bills),
             'Payment Pending / Paid': format_pct_cnt(payment_pending_paid, bills),
-            'Finance Pending / Hold': format_pct_cnt(finance_pending_hold, bills),
+            'Finance Pending': format_pct_cnt(finance_pending, bills),
+            'Finance Hold': format_pct_cnt(finance_hold, bills),
             'Other': format_pct_cnt(other, bills),
             'Underutilized Routes': utilization.get('Underutilized Routes', '0.0% (0)'),
             'Efficiently Utilized Routes': utilization.get('Efficiently Utilized Routes', '0.0% (0)')
         })
     return pd.DataFrame(rows, columns=[
-        'RO Name', 'Zone', 'Total Trips', 'On-time Departure %', 'Late Departure %',
-        'On-time Arrival %', 'Late Arrival %', 'In-Transit %', 'No Departure %',
-        'Missing Schedule %', 'Ontime Dep, Ontime Arr',
+        'RO Name', 'Zone', 'Total Trips', 'Ontime Dep, Ontime Arr',
         'Ontime Dep, Late Arr', 'Late Dep, Late Arr', 'Late Dep, Ontime Arr',
         'Total Bills', 'Draft Bills', 'Pending', 'Payment Pending / Paid',
-        'Finance Pending / Hold', 'Other', 'Underutilized Routes',
+        'Finance Pending', 'Finance Hold', 'Other', 'Underutilized Routes',
         'Efficiently Utilized Routes'
     ])
 
@@ -2117,6 +2088,21 @@ def style_ui_dataframe(df_in):
         if not s_lower or s_lower in ('-', 'nan', 'none'):
             return ''
 
+        if c_lower == 'payment pending / paid' or s_lower == 'payment pending / paid':
+            return tone_css('green')
+        if c_lower == 'finance hold' or s_lower == 'finance hold':
+            return tone_css('red')
+        if c_lower == 'finance pending' or s_lower == 'finance pending':
+            return tone_css('yellow')
+        if c_lower == 'other' or s_lower == 'other':
+            return tone_css('yellow')
+        if c_lower in ['draft', 'draft bills'] or s_lower == 'draft':
+            return tone_css('red')
+        if c_lower == 'underutilized routes':
+            return tone_css('red')
+        if c_lower == 'efficiently utilized routes':
+            return tone_css('green')
+
         # Schedule outcomes follow the Remark pair first, before generic arrival/departure rules.
         if 'late dep, in-transit' in c_lower:
             return tone_css('yellow' if pct is None or pct > 0 else 'muted')
@@ -2154,7 +2140,7 @@ def style_ui_dataframe(df_in):
         if 'ontime dep, ontime arr' in s_lower:
             return tone_css('green')
         if 'late dep, ontime arr' in s_lower:
-            return tone_css('purple')
+            return tone_css('yellow')
         if 'missing sch' in s_lower or 'missing schedule' in s_lower:
             return tone_css('yellow')
         if 'ontime dep, in-transit' in s_lower or 'in-transit' in s_lower or 'finance pending' in s_lower or 'finance hold' in s_lower or 'cost control pending' in s_lower or 'pending' in s_lower:
@@ -2164,7 +2150,7 @@ def style_ui_dataframe(df_in):
         if 'ontime arrival' in s_lower or 'ontime departure' in s_lower or s_lower == 'paid' or 'paid achievement' in s_lower or 'active' in s_lower or 'efficiently utilized' in s_lower:
             return tone_css('green')
         if 'payment pending / paid' in s_lower:
-            return tone_css('yellow')
+            return tone_css('green')
 
         if 'util' in c_lower and pct is not None:
             return tone_css('red') if pct < 60 else (tone_css('yellow') if pct < 80 else tone_css('green'))
@@ -2235,14 +2221,16 @@ def style_ui_dataframe(df_in):
     payment_good = contains_status(r'^paid$|paid achievement|payment completed')
     row_tones.loc[payment_good] = 'green'
     row_tones.loc[contains_status(r'payment pending|finance pending|finance hold|cost control pending|in-transit')] = 'yellow'
-    row_tones.loc[contains_status(r'late dep, ontime arr')] = 'purple'
+    row_tones.loc[contains_status(r'late dep, ontime arr')] = 'yellow'
     row_tones.loc[contains_status(r'ontime dep, ontime arr|ontime arrival')] = 'green'
     row_tones.loc[contains_status(r'ontime dep, late arr')] = 'soft_red'
     # Apply exact paired Remark outcomes last, so a mixed row follows its actual trip result.
     row_tones.loc[contains_status(r'late dep, in-transit')] = 'yellow'
     row_tones.loc[contains_status(r'late dep, late arr|^draft$|late arrival|late departure|no dep|no arrival')] = 'red'
     row_tones.loc[contains_status(r'missing sch|missing schedule')] = 'yellow'
-    row_tones.loc[contains_status(r'^other$')] = 'muted'
+    row_tones.loc[contains_status(r'payment pending / paid')] = 'green'
+    row_tones.loc[contains_status(r'finance hold')] = 'red'
+    row_tones.loc[contains_status(r'^other$')] = 'yellow'
     if 'Utilization Class' in df_in.columns:
         util_class = df_in['Utilization Class'].fillna('').astype(str).str.lower()
         row_tones.loc[util_class.str.contains('efficiently', na=False)] = 'green'
@@ -2478,8 +2466,8 @@ def compact_detail_frame(frame, kind):
         return pd.DataFrame()
     preferred_by_kind = {
         'ven_raw': ['Date', 'Remark with 15 min waiver', 'Origin RO', 'Route Path', 'Legwise', 'VendorName', 'Actual Arrival Time', 'Delay Hours', 'MasterCDNo'],
-        'ops_raw': ['MCD_StartDate', 'Remark', 'Zone', 'Origin RO', 'Route Path', 'Legwise', 'Legs', 'CD_FromBranch', 'CD_ToBranch', 'MasterCDNo'],
-        'pay_raw': ['Invoice Id', 'Invoice Date', 'RO Name', 'Zone', 'Vendor Name', 'Amount', 'Status', 'Payment Group', 'Pending With', 'Days Pending'],
+        'ops_raw': ['MCD_StartDate', 'Remark', 'Operations Outcome', 'Zone', 'Origin RO', 'Route Path', 'Legwise', 'Legs', 'CD_FromBranch', 'CD_ToBranch', 'MasterCDNo'],
+        'pay_raw': ['Invoice Id', 'Invoice Date', 'RO Name', 'Zone', 'Vendor Name', 'Amount', 'Status', 'Payment Group', 'Pending With', 'Hold Name', 'Hold Key', 'Days Pending'],
         'cpk_raw': ['Date', 'RO_Clean', 'Final_Route', 'Final_Type', 'VendorName', 'Vehicle No', 'Cap', 'Wt', 'Trips', 'Cost']
     }
     cols = [col for col in preferred_by_kind.get(kind, list(frame.columns)) if col in frame.columns]
@@ -3800,17 +3788,40 @@ def get_overall_issue_query_url():
 
 def get_overall_payment_status_masks(frame):
     status_col = get_col(frame, ['Status', 'Invoice Status'])
-    status = frame[status_col].fillna('').astype(str).str.strip().str.upper().str.replace(' ', '_', regex=False) if status_col else pd.Series('', index=frame.index)
-    draft = status.eq('DRAFT')
-    pending = status.eq('PENDING')
-    payment_pending_paid = status.isin(['PAYMENT_PENDING', 'PAID'])
-    finance_pending_hold = status.isin(['FINANCE_PENDING', 'FINANCE_HOLD'])
-    other = status.ne('') & ~(draft | pending | payment_pending_paid | finance_pending_hold)
+    status = (frame[status_col].fillna('').astype(str).str.strip().str.upper()
+              .str.replace(r'[\s/-]+', '_', regex=True).str.strip('_')) if status_col else pd.Series('', index=frame.index)
+    pending_with_col = get_col(frame, ['Pending With', 'PendingWith'])
+    pending_with = frame[pending_with_col].fillna('').astype(str).str.strip().str.upper() if pending_with_col else pd.Series('', index=frame.index)
+
+    def has_value(column_names):
+        column = get_col(frame, column_names)
+        if not column:
+            return pd.Series(False, index=frame.index)
+        value = frame[column].fillna('').astype(str).str.strip().str.upper()
+        return value.ne('') & ~value.isin(['NAN', 'NONE', 'NULL', '0'])
+
+    finance_hold = (
+        status.str.contains(r'(?:^|_)HOLD(?:$|_)', regex=True, na=False)
+        | has_value(['Hold Name', 'HoldName'])
+        | has_value(['Hold Key', 'HoldKey'])
+    )
+    finance_pending = (
+        status.str.contains(r'(?:^|_)FINANCE(?:$|_)', regex=True, na=False)
+        | pending_with.str.contains(r'FINANCE|LEVEL\s*3', regex=True, na=False)
+    ) & ~finance_hold
+    payment_pending_paid = (
+        status.str.contains(r'(?:^|_)(?:PAID|PROCESSED|PAYMENT)(?:_|$)', regex=True, na=False)
+        | pending_with.str.contains('PAYMENT', regex=False, na=False)
+    ) & ~finance_hold & ~finance_pending
+    draft = status.str.contains(r'(?:^|_)DRAFT(?:$|_)', regex=True, na=False) & ~finance_hold & ~finance_pending & ~payment_pending_paid
+    pending = status.str.contains(r'(?:^|_)PENDING(?:$|_)', regex=True, na=False) & ~finance_hold & ~finance_pending & ~payment_pending_paid & ~draft
+    other = status.ne('') & ~(draft | pending | payment_pending_paid | finance_pending | finance_hold)
     return {
         'Draft bills': draft,
         'Pending bills': pending,
         'Payment pending / paid': payment_pending_paid,
-        'Finance pending / hold': finance_pending_hold,
+        'Finance pending': finance_pending,
+        'Finance hold': finance_hold,
         'Other bills': other
     }
 
@@ -3847,10 +3858,10 @@ def build_overall_issue_export_frames(ops_raw, pay_raw, cpk_raw, ro='ALL ROS'):
         operations.loc[mask, 'Operations Outcome'] = outcome
     operations = operations[operations['Operations Outcome'].ne('')].copy()
     operations_columns = [
-        'MCD_StartDate', 'Zone', 'Origin RO', 'Route Path', 'Legwise', 'Legs',
-        'CD_FromBranch', 'CD_ToBranch', 'MasterCDNo', 'Operations Outcome',
-        'Scheduled Departure Time', 'Actual Departure Time', 'Dep_Status',
-        'Scheduled Arrival Time', 'Actual Arrival Time', 'Arr_Status'
+        'MCD_StartDate', 'Remark', 'Operations Outcome', 'Zone', 'Origin RO', 'Route Path', 'Legwise', 'Legs',
+        'CD_FromBranch', 'CD_ToBranch', 'MasterCDNo',
+        'Scheduled Departure Time', 'Actual Departure Time',
+        'Scheduled Arrival Time', 'Actual Arrival Time'
     ]
     operations = operations.reindex(columns=[c for c in operations_columns if c in operations.columns]).fillna('')
 
@@ -3862,14 +3873,14 @@ def build_overall_issue_export_frames(ops_raw, pay_raw, cpk_raw, ro='ALL ROS'):
     for label, mask_name in [
         ('Draft', 'Draft bills'), ('Pending', 'Pending bills'),
         ('Payment Pending / Paid', 'Payment pending / paid'),
-        ('Finance Pending / Hold', 'Finance pending / hold')
+        ('Finance Pending', 'Finance pending'), ('Finance Hold', 'Finance hold')
     ]:
         payments.loc[status_masks[mask_name], 'Payment Group'] = label
     payments.loc[status_masks['Other bills'], 'Payment Group'] = 'Other'
     payment_columns = [
         'Base Date', 'Invoice Id', 'Invoice Date', 'RO Name', 'Zone', 'Vendor Name',
         'Category', 'Amount', 'Status', 'Payment Group', 'Pending With', 'Last Approved At',
-        'Partial Payment', 'Balance Payable Amount', 'Hold Name', 'Finance Revert Remarks 1',
+        'Partial Payment', 'Balance Payable Amount', 'Hold Name', 'Hold Key', 'Finance Revert Remarks 1',
         'Approver Revert Remarks'
     ]
     payments = payments.reindex(columns=[c for c in payment_columns if c in payments.columns]).fillna('')
@@ -3928,6 +3939,7 @@ def build_overall_issues_excel_bytes(summary, payment, operations, utilization, 
         high_odd = workbook.add_format({'bg_color': '#FFF0E0', 'font_color': '#8A3B0A', 'bold': True, 'bottom': 1, 'bottom_color': '#E9CBAA', 'align': 'center'})
         row_green_fmt = workbook.add_format({'bg_color': '#E2F0D9', 'font_color': '#1F4E2B', 'bottom': 1, 'bottom_color': '#B8DDC8', 'valign': 'vcenter', 'text_wrap': True})
         row_red_fmt = workbook.add_format({'bg_color': '#FCE4D6', 'font_color': '#7F1D1D', 'bottom': 1, 'bottom_color': '#E9BABA', 'valign': 'vcenter', 'text_wrap': True})
+        row_soft_red_fmt = workbook.add_format({'bg_color': '#FFF1F2', 'font_color': '#9F1239', 'bottom': 1, 'bottom_color': '#FECDD3', 'valign': 'vcenter', 'text_wrap': True})
         row_yellow_fmt = workbook.add_format({'bg_color': '#FFF2CC', 'font_color': '#7F6000', 'bottom': 1, 'bottom_color': '#E9CBAA', 'valign': 'vcenter', 'text_wrap': True})
         row_purple_fmt = workbook.add_format({'bg_color': '#E4DFEC', 'font_color': '#4C2A69', 'bottom': 1, 'bottom_color': '#D5C8E5', 'valign': 'vcenter', 'text_wrap': True})
         for sheet_name, source_df, thresholds in sheets:
@@ -3951,12 +3963,12 @@ def build_overall_issues_excel_bytes(summary, payment, operations, utilization, 
                 row_label_text = ' '.join(str(row.get(col, '')).strip().lower() for col in ['Payment Group', 'Operations Outcome', 'Utilization Class'] if col in row.index)
                 if 'payment pending / paid' in row_label_text or 'efficiently' in row_label_text or 'ontime dep, ontime arr' in row_label_text:
                     row_fmt = row_green_fmt
-                elif 'other' in row_label_text or 'draft' in row_label_text or 'underutilized' in row_label_text or 'late dep, late arr' in row_label_text:
+                elif 'finance hold' in row_label_text or 'draft' in row_label_text or 'underutilized' in row_label_text or 'late dep, late arr' in row_label_text:
                     row_fmt = row_red_fmt
-                elif 'finance pending' in row_label_text or 'finance pending / hold' in row_label_text or 'cost control pending' in row_label_text or 'ontime dep, late arr' in row_label_text:
+                elif 'ontime dep, late arr' in row_label_text:
+                    row_fmt = row_soft_red_fmt
+                elif 'finance pending' in row_label_text or 'other' in row_label_text or 'pending' in row_label_text or 'late dep, ontime arr' in row_label_text:
                     row_fmt = row_yellow_fmt
-                elif 'late dep, ontime arr' in row_label_text:
-                    row_fmt = row_purple_fmt
                 else:
                     row_fmt = base_even if even else base_odd
                 for ci, col in enumerate(frame.columns):
@@ -3969,12 +3981,22 @@ def build_overall_issues_excel_bytes(summary, payment, operations, utilization, 
                     col_lower = str(col).strip().lower()
                     if col_lower == 'payment pending / paid':
                         fmt = row_green_fmt
-                    elif col_lower == 'other' or col_lower == 'other bills':
-                        fmt = row_red_fmt
-                    elif col_lower in ['draft', 'draft bills']:
-                        fmt = row_red_fmt
-                    elif col_lower in ['finance pending / hold', 'finance pending']:
+                    elif col_lower in ['other', 'other bills']:
                         fmt = row_yellow_fmt
+                    elif col_lower in ['draft', 'draft bills', 'finance hold', 'underutilized routes']:
+                        fmt = row_red_fmt
+                    elif col_lower in ['finance pending', 'pending']:
+                        fmt = row_yellow_fmt
+                    elif col_lower == 'ontime dep, ontime arr':
+                        fmt = row_green_fmt
+                    elif col_lower == 'ontime dep, late arr':
+                        fmt = row_soft_red_fmt
+                    elif col_lower == 'late dep, late arr':
+                        fmt = row_red_fmt
+                    elif col_lower == 'late dep, ontime arr':
+                        fmt = row_yellow_fmt
+                    elif col_lower == 'efficiently utilized routes':
+                        fmt = row_green_fmt
                     threshold = thresholds.get(col)
                     if threshold is not None:
                         pct = None if col == 'Overall Util %' and isinstance(value, (int, float)) else parse_pct_from_str(value)
@@ -3987,9 +4009,17 @@ def build_overall_issues_excel_bytes(summary, payment, operations, utilization, 
                             fmt = (low_even if even else low_odd) if is_low else (high_even if even else high_odd)
                     if col_lower == 'payment pending / paid':
                         fmt = row_green_fmt
-                    elif col_lower in ['other', 'other bills', 'draft', 'draft bills']:
+                    elif col_lower in ['draft', 'draft bills', 'finance hold', 'underutilized routes']:
                         fmt = row_red_fmt
-                    elif col_lower in ['finance pending / hold', 'finance pending', 'pending']:
+                    elif col_lower in ['finance pending', 'pending', 'other', 'other bills']:
+                        fmt = row_yellow_fmt
+                    elif col_lower in ['ontime dep, ontime arr', 'efficiently utilized routes']:
+                        fmt = row_green_fmt
+                    elif col_lower == 'ontime dep, late arr':
+                        fmt = row_soft_red_fmt
+                    elif col_lower == 'late dep, late arr':
+                        fmt = row_red_fmt
+                    elif col_lower == 'late dep, ontime arr':
                         fmt = row_yellow_fmt
                     ws.write(ri, ci, value, fmt)
                 ws.set_row(ri, 23)
@@ -4032,7 +4062,7 @@ def _overall_issue_pivot_selection(frame, group_columns, count_label, key, defau
 def render_overall_issue_raw_page(data, query):
     """Show focused issue details with summaries, filters and one formatted workbook."""
     st.markdown('## Issue detail records')
-    st.caption('Focused raw data with a compact pivot summary. Select a summary row to narrow the records, or download all three detail sheets.')
+    st.caption('Only the selected issue category is shown. Select a summary row to narrow its records, or download the selected issue.')
     ops_all, pay_all = get_overall_issue_frames(data)
     cpk_all = get_overall_cpk_frame(data)
     default_start, default_end = get_overall_issue_date_bounds(ops_all, pay_all, cpk_all)
@@ -4047,7 +4077,7 @@ def render_overall_issue_raw_page(data, query):
     issue_type = query.get('issues_type', 'Ontime Dep, Ontime Arr') or 'Ontime Dep, Ontime Arr'
     valid_types = [
         'Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr', 'Late Dep, Late Arr', 'Late Dep, Ontime Arr',
-        'Draft bills', 'Pending bills', 'Payment pending / paid', 'Finance pending / hold', 'Other bills',
+        'Draft bills', 'Pending bills', 'Payment pending / paid', 'Finance pending', 'Finance hold', 'Other bills',
         'Underutilized routes', 'Efficiently utilized routes'
     ]
     if issue_type not in valid_types:
@@ -4095,7 +4125,7 @@ def render_overall_issue_raw_page(data, query):
         ro_filter(cpk_base, ['RO_Clean', 'VendorRO', 'RO'])
     )
     route_applies_to_payment = issue_type.lower() in [
-        'draft bills', 'pending bills', 'payment pending / paid', 'finance pending / hold', 'other bills'
+        'draft bills', 'pending bills', 'payment pending / paid', 'finance pending', 'finance hold', 'other bills'
     ]
     if selected_route != 'ALL ROUTES':
         ops_route_col = get_col(operations, ['Route Path', 'Route'])
@@ -4115,7 +4145,7 @@ def render_overall_issue_raw_page(data, query):
     payment_groups = {
         'Draft bills': 'Draft', 'Pending bills': 'Pending',
         'Payment pending / paid': 'Payment Pending / Paid',
-        'Finance pending / hold': 'Finance Pending / Hold', 'Other bills': 'Other'
+        'Finance pending': 'Finance Pending', 'Finance hold': 'Finance Hold', 'Other bills': 'Other'
     }
     if issue_type in operations_issues:
         focused = operations[operations.get('Operations Outcome', pd.Series('', index=operations.index)).eq(issue_type)].copy()
@@ -4140,48 +4170,40 @@ def render_overall_issue_raw_page(data, query):
     m3.metric('Selected denominator', f'{denominator:,}')
 
     if issue_type in operations_issues:
-        detail_tab_order = ['Operations Performance', 'Payment', 'Utilization']
-    elif issue_type in ['Underutilized routes', 'Efficiently utilized routes']:
-        detail_tab_order = ['Utilization', 'Payment', 'Operations Performance']
-    else:
-        detail_tab_order = ['Payment', 'Operations Performance', 'Utilization']
-    detail_tab_containers = st.tabs(detail_tab_order)
-    detail_tabs = dict(zip(detail_tab_order, detail_tab_containers))
-    with detail_tabs['Payment']:
-        payment_group = payment_groups.get(issue_type)
-        payment_default = payments[payments['Payment Group'].eq(payment_group)].copy() if payment_group and 'Payment Group' in payments else payments.iloc[0:0].copy()
+        st.markdown('### Operations Performance')
         view = _overall_issue_pivot_selection(
-            payments, ['RO Name', 'Payment Group'], 'Bills', f'overall_issues_payment_pivot{pivot_suffix}', payment_default
+            focused, ['Origin RO', 'Route Path', 'Operations Outcome'], 'Trips',
+            f'overall_issues_ops_pivot{pivot_suffix}', focused
         )
-        st.markdown('#### Payment records')
-        compact_view = compact_detail_frame(view, 'pay_raw')
-        if compact_view.empty:
-            st.info('Payment details are hidden until you click a payment issue or select a payment row in the summary above.')
-        else:
-            st.dataframe(style_ui_dataframe(compact_view), use_container_width=True, hide_index=True, height=330)
-    with detail_tabs['Operations Performance']:
-        operations_default = operations[operations['Operations Outcome'].eq(issue_type)].copy() if issue_type in operations_issues and 'Operations Outcome' in operations else operations.iloc[0:0].copy()
-        view = _overall_issue_pivot_selection(
-            operations, ['Origin RO', 'Route Path', 'Operations Outcome'], 'Trips', f'overall_issues_ops_pivot{pivot_suffix}', operations_default
-        )
-        st.markdown('#### Operations performance records')
         compact_view = compact_detail_frame(view, 'ops_raw')
         if compact_view.empty:
-            st.info('Operations details are hidden until you click an operations issue or select an operations row in the summary above.')
+            st.info('No matching operations records for this issue.')
         else:
             st.dataframe(style_ui_dataframe(compact_view), use_container_width=True, hide_index=True, height=330)
-    with detail_tabs['Utilization']:
-        util_ro_col = get_col(utilization, ['RO'])
-        util_route_col = get_col(utilization, ['Route'])
-        util_type_col = get_col(utilization, ['Route Type'])
-        util_class_col = get_col(utilization, ['Utilization Class'])
+    elif issue_type in payment_groups:
+        st.markdown('### Payment')
+        view = _overall_issue_pivot_selection(
+            focused, ['RO Name', 'Payment Group'], 'Bills',
+            f'overall_issues_payment_pivot{pivot_suffix}', focused
+        )
+        compact_view = compact_detail_frame(view, 'pay_raw')
+        if compact_view.empty:
+            st.info('No matching payment records for this issue.')
+        else:
+            st.dataframe(style_ui_dataframe(compact_view), use_container_width=True, hide_index=True, height=330)
+    else:
+        st.markdown('### Utilization')
+        util_ro_col = get_col(focused, ['RO'])
+        util_route_col = get_col(focused, ['Route'])
+        util_type_col = get_col(focused, ['Route Type'])
+        util_class_col = get_col(focused, ['Utilization Class'])
         util_group_cols = [c for c in [util_ro_col, util_route_col, util_type_col, util_class_col] if c]
-        util_default = focused if issue_type in ['Underutilized routes', 'Efficiently utilized routes'] else utilization.iloc[0:0].copy()
-        view = _overall_issue_pivot_selection(utilization, util_group_cols, 'Routes', f'overall_issues_util_pivot{pivot_suffix}', util_default) if util_group_cols else util_default
-        st.markdown('#### Utilization records')
+        view = _overall_issue_pivot_selection(
+            focused, util_group_cols, 'Routes', f'overall_issues_util_pivot{pivot_suffix}', focused
+        ) if util_group_cols else focused
         compact_view = compact_detail_frame(view, 'cpk_raw')
         if compact_view.empty:
-            st.info('Utilization details are hidden until you click a utilization issue or select a utilization row in the summary above.')
+            st.info('No matching utilization records for this issue.')
         else:
             st.dataframe(style_ui_dataframe(compact_view), use_container_width=True, hide_index=True, height=330)
 
@@ -4231,62 +4253,71 @@ def render_overall_issues_metric_cards(metric_specs, zone=None, start_date=None,
         'Late Dep, Ontime Arr': 'Late Dep, Ontime Arr',
         'Draft Bills': 'Draft bills', 'Pending': 'Pending bills',
         'Payment Pending / Paid': 'Payment pending / paid',
-        'Finance Pending / Hold': 'Finance pending / hold', 'Other': 'Other bills',
+        'Finance Pending': 'Finance pending', 'Finance Hold': 'Finance hold', 'Other': 'Other bills',
         'Underutilized Routes': 'Underutilized routes',
         'Efficiently Utilized Routes': 'Efficiently utilized routes'
     }
-    cards = []
+    gauge_colors = {
+        'Ontime Dep, Ontime Arr': ('#16a34a', '#f0fdf4', '#bbf7d0', '🟢'),
+        'Ontime Dep, Late Arr': ('#f87171', '#fff1f2', '#fecdd3', '🌸'),
+        'Late Dep, Late Arr': ('#dc2626', '#fef2f2', '#fecaca', '🔴'),
+        'Late Dep, Ontime Arr': ('#f59e0b', '#fffbeb', '#fde68a', '🟡'),
+        'Draft Bills': ('#dc2626', '#fef2f2', '#fecaca', '🔴'),
+        'Pending': ('#f59e0b', '#fffbeb', '#fde68a', '🟡'),
+        'Payment Pending / Paid': ('#16a34a', '#f0fdf4', '#bbf7d0', '🟢'),
+        'Finance Pending': ('#f59e0b', '#fffbeb', '#fde68a', '🟡'),
+        'Finance Hold': ('#dc2626', '#fef2f2', '#fecaca', '🔴'),
+        'Other': ('#f59e0b', '#fffbeb', '#fde68a', '🟡'),
+        'Underutilized Routes': ('#dc2626', '#fef2f2', '#fecaca', '🔴'),
+        'Efficiently Utilized Routes': ('#16a34a', '#f0fdf4', '#bbf7d0', '🟢')
+    }
+    gauges = []
     for label, count, total, unit in metric_specs:
         issue = issue_lookup.get(label)
         if not issue:
             continue
-        pct = (count / total * 100) if total else 0
+        pct = min(100, max(0, count / total * 100)) if total else 0
+        color, surface, border, icon = gauge_colors[label]
         params_json, base_url_json = _overall_issue_link_markup(issue, ro, zone or 'ALL ZONES', start_date, end_date, route)
-        if label == 'Ontime Dep, Ontime Arr':
-            tone = 'good' if pct >= 95 else ('warn' if pct >= 80 else 'bad')
-        elif label == 'Ontime Dep, Late Arr' or label in ['Pending', 'Finance Pending / Hold', 'Payment Pending / Paid']:
-            tone = 'warn' if count > 0 else 'good'
-        elif label == 'Late Dep, Late Arr' or label in ['Other', 'Draft Bills']:
-            tone = 'bad' if count > 0 else 'good'
-        elif label == 'Late Dep, Ontime Arr':
-            tone = 'recover' if count > 0 else 'good'
-        else:
-            tone = 'neutral'
-        cards.append(
-            f'<a class="card {tone}" href="#" data-params="{html_module.escape(params_json, quote=True)}" '
-            f'data-base="{html_module.escape(base_url_json, quote=True)}"><span>{html_module.escape(label)} · {pct:.1f}%</span>'
-            f'<strong>{count:,}</strong><small>{count:,} of {total:,} {html_module.escape(unit)}</small></a>'
-        )
+        gauge_dash = 201.06 * pct / 100
+        gauges.append(f'''<a class="gauge-link" href="#" data-params="{html_module.escape(params_json, quote=True)}" data-base="{html_module.escape(base_url_json, quote=True)}">
+          <div class="gauge-card" style="background:{surface};border-color:{border}">
+            <div class="gauge-label">{icon} {html_module.escape(label)}</div>
+            <svg viewBox="0 0 160 108" role="img" aria-label="{pct:.1f} percent">
+              <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="#e6ebf1" stroke-width="11" stroke-linecap="round" pathLength="201.06"/>
+              <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="{color}" stroke-width="11" stroke-linecap="round" stroke-dasharray="{gauge_dash:.2f} 201.06" pathLength="201.06"/>
+              <text x="80" y="83" text-anchor="middle" font-size="22" font-weight="750" fill="#172033">{pct:.1f}%</text>
+              <text x="16" y="104" text-anchor="middle" font-size="9" fill="#718096">0%</text>
+              <text x="144" y="104" text-anchor="middle" font-size="9" fill="#718096">100%</text>
+            </svg>
+            <div class="gauge-caption">{count:,} of {total:,} {html_module.escape(unit)}</div>
+          </div>
+        </a>''')
     markup = '''<!doctype html><html><head><meta charset="utf-8"><style>
-    * { box-sizing:border-box; } body { margin:0; font:12px/1.35 Arial,sans-serif; background:#091521; color:#e5eef9; }
-    .grid { display:grid; grid-template-columns:repeat(5,minmax(145px,1fr)); gap:10px; }
-    .card { display:flex; flex-direction:column; gap:4px; min-height:82px; padding:11px 13px; border:1px solid #31475e; border-radius:12px; background:linear-gradient(135deg,#122b40,#101d30); color:#eaf5ff; text-decoration:none; }
-    .card:hover { border-color:#67e8f9; transform:translateY(-1px); box-shadow:0 8px 22px rgba(8,145,178,.16); }
-    .card span { color:#a9bfd4; font-weight:700; } .card strong { color:#9cc8ff; font-size:23px; line-height:1.05; }
-    .card.good { border-color:rgba(52,211,153,.48); } .card.good strong { color:#6ee7b7; }
-    .card.warn { border-color:rgba(250,204,21,.5); } .card.warn strong { color:#fde68a; }
-    .card.recover { border-color:rgba(192,132,252,.5); } .card.recover strong { color:#e9d5ff; }
-    .card.bad { border-color:rgba(248,113,113,.52); } .card.bad strong { color:#fca5a5; }
-    .card small { color:#8299ae; } @media(max-width:900px) { .grid { grid-template-columns:repeat(2,minmax(140px,1fr)); } }
+    * { box-sizing:border-box; } body { margin:0; font:12px/1.35 Arial,sans-serif; background:#f4f7fb; color:#172033; }
+    .grid { display:grid; grid-template-columns:repeat(4,minmax(150px,1fr)); gap:10px; }
+    .gauge-link { color:inherit; text-decoration:none; min-width:0; }
+    .gauge-link:hover .gauge-card { transform:translateY(-2px); box-shadow:0 10px 24px rgba(15,23,42,.11); }
+    .gauge-card { min-width:0; min-height:148px; text-align:center; border:1px solid #dbe4ee; border-radius:15px; padding:.65rem .45rem .55rem; box-shadow:0 6px 18px rgba(15,23,42,.055); transition:transform .14s ease,box-shadow .14s ease; }
+    .gauge-label { min-height:2.25rem; color:#172033; font-size:.78rem; font-weight:700; display:flex; justify-content:center; align-items:center; }
+    svg { display:block; width:min(100%,160px); height:auto; margin:.05rem auto -.15rem; overflow:visible; }
+    .gauge-caption { color:#64748b; font-size:.7rem; font-weight:600; }
+    @media(max-width:900px) { .grid { grid-template-columns:repeat(2,minmax(140px,1fr)); } }
+    @media(max-width:520px) { .grid { grid-template-columns:1fr; } }
     </style></head><body><div class="grid">CARD_HTML</div><script>
-    document.querySelectorAll('.card').forEach((link) => link.addEventListener('click', (event) => {
+    let lastGaugeOpenAt = 0;
+    document.querySelectorAll('.gauge-link').forEach((link) => link.addEventListener('click', (event) => {
       event.preventDefault();
+      const now = Date.now();
+      if (now - lastGaugeOpenAt < 650) return;
+      lastGaugeOpenAt = now;
       try { const base = JSON.parse(link.dataset.base) || document.referrer; const target = new URL(base);
         Object.entries(JSON.parse(link.dataset.params)).forEach(([key,value]) => target.searchParams.set(key,value));
         window.open(target.toString(), '_blank', 'noopener,noreferrer');
       } catch (error) { window.alert('Could not open issue details. Please open the dashboard in a browser tab and try again.'); }
     }));
-    </script></body></html>'''.replace('CARD_HTML', ''.join(cards))
-    if selected_theme_name == '🤍 Bright Executive':
-        markup = (markup.replace('background:#091521; color:#e5eef9;', 'background:#f4f7fb; color:#172033;')
-                  .replace('border:1px solid #31475e;', 'border:1px solid #cbd5e1;')
-                  .replace('background:linear-gradient(135deg,#122b40,#101d30);', 'background:linear-gradient(135deg,#ffffff,#f1f6fc);')
-                  .replace('color:#a9bfd4;', 'color:#526176;').replace('color:#9cc8ff;', 'color:#1d4ed8;')
-                  .replace('color:#8299ae;', 'color:#64748b;').replace('rgba(52,211,153,.48)', 'rgba(22,163,74,.38)')
-                  .replace('rgba(250,204,21,.5);', 'rgba(245,158,11,.38);').replace('color:#fde68a;', 'color:#92400e;')
-                  .replace('rgba(192,132,252,.5);', 'rgba(147,51,234,.38);').replace('color:#e9d5ff;', 'color:#6b21a8;')
-                  .replace('rgba(248,113,113,.52)', 'rgba(220,38,38,.38)'))
-    st.components.v1.html(markup, height=190, scrolling=False)
+    </script></body></html>'''.replace('CARD_HTML', ''.join(gauges))
+    st.components.v1.html(markup, height=560, scrolling=False)
 
 def render_overall_issues_clickable_table(summary, start_date=None, end_date=None,
                                            zone='ALL ZONES', route='ALL ROUTES'):
@@ -4298,25 +4329,19 @@ def render_overall_issues_clickable_table(summary, start_date=None, end_date=Non
         'Late Dep, Ontime Arr': 'Late Dep, Ontime Arr',
         'Draft Bills': 'Draft bills', 'Pending': 'Pending bills',
         'Payment Pending / Paid': 'Payment pending / paid',
-        'Finance Pending / Hold': 'Finance pending / hold', 'Other': 'Other bills',
+        'Finance Pending': 'Finance pending', 'Finance Hold': 'Finance hold', 'Other': 'Other bills',
         'Underutilized Routes': 'Underutilized routes',
         'Efficiently Utilized Routes': 'Efficiently utilized routes'
     }
     all_columns = [
         'RO Name', 'Zone', 'Total Trips',
-        'On-time Departure %', 'Late Departure %', 'On-time Arrival %', 'Late Arrival %',
-        'In-Transit %', 'No Departure %', 'Missing Schedule %',
         'Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr', 'Late Dep, Late Arr', 'Late Dep, Ontime Arr',
-        'Total Bills', 'Draft Bills', 'Pending', 'Payment Pending / Paid', 'Finance Pending / Hold', 'Other',
+        'Total Bills', 'Draft Bills', 'Pending', 'Payment Pending / Paid', 'Finance Pending', 'Finance Hold', 'Other',
         'Underutilized Routes', 'Efficiently Utilized Routes'
     ]
     columns = [c for c in all_columns if c in summary.columns]
     header_html = ''.join(f'<th title="{html_module.escape(str(col), quote=True)}">{html_module.escape(str(col))}</th>' for col in columns)
     rows_html = []
-    status_columns = {
-        'On-time Departure %', 'Late Departure %', 'On-time Arrival %', 'Late Arrival %',
-        'In-Transit %', 'No Departure %', 'Missing Schedule %'
-    }
     for _, row in summary.iterrows():
         cells = []
         for col in columns:
@@ -4324,19 +4349,19 @@ def render_overall_issues_clickable_table(summary, start_date=None, end_date=Non
             if col in issue_lookup:
                 pct = parse_pct_from_str(str(row.get(col, '')))
                 if col == 'Ontime Dep, Ontime Arr':
-                    tone = 'good' if pct is not None and pct >= 95 else ('warn' if pct is not None and pct >= 80 else 'bad')
+                    tone = 'good'
                 elif col == 'Ontime Dep, Late Arr':
-                    tone = 'warn' if pct is not None and pct > 0 else 'good'
+                    tone = 'soft-red' if pct is not None and pct > 0 else 'good'
                 elif col == 'Late Dep, Late Arr':
                     tone = 'bad' if pct is not None and pct > 0 else 'good'
                 elif col == 'Late Dep, Ontime Arr':
-                    tone = 'recover' if pct is not None and pct > 0 else 'good'
-                elif col == 'Payment Pending / Paid' or col in ['Pending', 'Finance Pending / Hold']:
                     tone = 'warn' if pct is not None and pct > 0 else 'good'
-                elif col in ['Other', 'Draft Bills', 'Underutilized Routes']:
+                elif col in ['Pending', 'Finance Pending', 'Other']:
+                    tone = 'warn' if pct is not None and pct > 0 else 'good'
+                elif col in ['Finance Hold', 'Draft Bills', 'Underutilized Routes']:
                     tone = 'bad' if pct is not None and pct > 0 else 'good'
-                elif col == 'Efficiently Utilized Routes':
-                    tone = 'good' if pct is not None and pct >= 60 else 'warn'
+                elif col in ['Payment Pending / Paid', 'Efficiently Utilized Routes']:
+                    tone = 'good'
                 else:
                     tone = 'good'
                 params_json, base_url_json = _overall_issue_link_markup(
@@ -4344,15 +4369,6 @@ def render_overall_issues_clickable_table(summary, start_date=None, end_date=Non
                 )
                 cells.append(f'<td><a class="issue-cell {tone}" href="#" data-params="{html_module.escape(params_json, quote=True)}" '
                              f'data-base="{html_module.escape(base_url_json, quote=True)}">{value}</a></td>')
-            elif col in status_columns:
-                pct = parse_pct_from_str(str(row.get(col, '')))
-                if col.startswith('On-time'):
-                    tone = 'good' if pct is not None and pct >= 95 else ('warn' if pct is not None and pct >= 80 else 'bad')
-                elif col == 'In-Transit %':
-                    tone = 'warn' if pct is not None and pct > 0 else 'good'
-                else:
-                    tone = 'bad' if pct is not None and pct > 0 else 'good'
-                cells.append(f'<td class="status-cell {tone}">{value}</td>')
             else:
                 cells.append(f'<td>{value}</td>')
         rows_html.append('<tr>' + ''.join(cells) + '</tr>')
@@ -4374,6 +4390,7 @@ def render_overall_issues_clickable_table(summary, start_date=None, end_date=Non
     tr:nth-child(even) td:nth-child(-n+3) { background:#122b40; }
     .issue-cell { display:block; margin:-8px -11px; padding:8px 11px; color:inherit; text-decoration:none; font-weight:700; }
     .issue-cell.good { background:rgba(52,211,153,.15); color:#a7f3d0; }
+    .issue-cell.soft-red { background:rgba(244,63,94,.18); color:#fda4af; }
     .issue-cell.warn { background:rgba(250,204,21,.16); color:#fde68a; }
     .issue-cell.bad { background:rgba(248,113,113,.22); color:#fecaca; }
     .issue-cell.recover { background:rgba(192,132,252,.18); color:#e9d5ff; }
@@ -4383,8 +4400,12 @@ def render_overall_issues_clickable_table(summary, start_date=None, end_date=Non
     .status-cell.bad { background:rgba(248,113,113,.22); color:#fecaca; }
     .issue-cell:hover { outline:2px solid #67e8f9; outline-offset:-2px; filter:brightness(1.18); }
     </style></head><body><div class="wrap"><table><thead><tr>HEADER_HTML</tr></thead><tbody>ROWS_HTML</tbody></table></div><script>
+    let lastIssueOpenAt = 0;
     document.querySelectorAll('.issue-cell').forEach((link) => link.addEventListener('click', (event) => {
       event.preventDefault();
+      const now = Date.now();
+      if (now - lastIssueOpenAt < 650) return;
+      lastIssueOpenAt = now;
       try { const base = JSON.parse(link.dataset.base) || document.referrer; const target = new URL(base);
         Object.entries(JSON.parse(link.dataset.params)).forEach(([key,value]) => target.searchParams.set(key,value));
         window.open(target.toString(), '_blank', 'noopener,noreferrer');
@@ -4399,6 +4420,7 @@ def render_overall_issues_clickable_table(summary, start_date=None, end_date=Non
                   .replace('rgba(30,49,69,.44)', 'rgba(226,232,240,.55)')
                   .replace('rgba(148,163,184,.13)', 'rgba(100,116,139,.20)')
                   .replace('rgba(52,211,153,.15); color:#a7f3d0;', 'rgba(22,163,74,.14); color:#166534;')
+                  .replace('rgba(244,63,94,.18); color:#fda4af;', 'rgba(244,63,94,.12); color:#9f1239;')
                   .replace('rgba(250,204,21,.16); color:#fde68a;', 'rgba(245,158,11,.16); color:#92400e;')
                   .replace('rgba(248,113,113,.22); color:#fecaca;', 'rgba(220,38,38,.14); color:#991b1b;')
                   .replace('rgba(192,132,252,.18); color:#e9d5ff;', 'rgba(147,51,234,.14); color:#6b21a8;')
@@ -4514,7 +4536,7 @@ def render_overall_issues(data):
         if cpk_route_col:
             cpk_view = cpk_view[cpk_view[cpk_route_col].fillna('').astype(str).str.strip().eq(selected_route)].copy()
 
-    summary_key = ('schedule-status-columns-v2', source_key, selected_zone, start_date, end_date, selected_ro, selected_route)
+    summary_key = ('remark-gauges-finance-split-v3', source_key, selected_zone, start_date, end_date, selected_ro, selected_route)
     summary_cache = st.session_state.get('_overall_issues_summary_cache')
     if summary_cache and summary_cache[0] == summary_key:
         summary = summary_cache[1].copy()
@@ -4533,25 +4555,20 @@ def render_overall_issues(data):
     ]
     metric_specs += [
         (label, sum(_overall_count_from_cell(v) for v in summary.get(label, pd.Series(dtype=object))), bills, 'bills')
-        for label in ['Draft Bills', 'Pending', 'Payment Pending / Paid', 'Finance Pending / Hold', 'Other']
+        for label in ['Draft Bills', 'Pending', 'Payment Pending / Paid', 'Finance Pending', 'Finance Hold', 'Other']
+    ]
+    utilization_count = sum(_overall_count_from_cell(v) for v in summary.get('Underutilized Routes', pd.Series(dtype=object)))
+    efficient_count = sum(_overall_count_from_cell(v) for v in summary.get('Efficiently Utilized Routes', pd.Series(dtype=object)))
+    utilization_total = utilization_count + efficient_count
+    metric_specs += [
+        ('Underutilized Routes', utilization_count, utilization_total, 'routes'),
+        ('Efficiently Utilized Routes', efficient_count, utilization_total, 'routes')
     ]
     render_overall_issues_metric_cards(
         metric_specs, selected_zone, start_date, end_date, selected_ro, selected_route
     )
-    st.markdown('### Operations status snapshot')
-    status_metric_specs = [
-        ('🟢 On-time Departure', 'On-time Departure %'),
-        ('🔴 Late Departure', 'Late Departure %'),
-        ('🟢 On-time Arrival', 'On-time Arrival %'),
-        ('🔴 Late Arrival', 'Late Arrival %'),
-        ('🟡 In-Transit', 'In-Transit %')
-    ]
-    status_metric_cols = st.columns(len(status_metric_specs))
-    for metric_col, (metric_label, summary_col) in zip(status_metric_cols, status_metric_specs):
-        status_count = sum(_overall_count_from_cell(value) for value in summary.get(summary_col, pd.Series(dtype=object)))
-        metric_col.metric(metric_label, format_pct_cnt(status_count, trips), help=f"{status_count:,} of {trips:,} filtered operations trips")
-    st.markdown('### RO-wise performance and exception rates')
-    st.caption('🟢 On-time target: 95%+ · 🟡 80–94.9% / in-transit or pending · 🔴 late, missing, draft or underutilized · 🟣 late departure with on-time arrival. All departure, arrival, paired-outcome, payment and utilization columns are included; scroll horizontally inside the table to view the rest.')
+    st.markdown('### RO-wise issue summary')
+    st.caption('Click a gauge or a rate/count cell to open only that issue type. Operations, payment, and utilization outcomes use the same colors in the summary below.')
     render_overall_issues_clickable_table(summary, start_date, end_date, selected_zone, selected_route)
     excel_cache = st.session_state.get('_overall_issues_excel_cache')
     if excel_cache and excel_cache[0] == summary_key:
