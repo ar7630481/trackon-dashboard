@@ -249,6 +249,13 @@ if selected_theme_name == "🤍 Bright Executive":
         color:#17314f !important; background:linear-gradient(120deg,#e3edfb,#e0f3f0);
         transition:transform .16s ease, box-shadow .16s ease, border-color .16s ease;
     }
+    .stApp button[data-testid="stBaseButton-secondary"], .stApp button[data-testid="stBaseButton-secondary"]:hover {
+        background:linear-gradient(120deg,#e8f0fd,#e5f5f1) !important; color:#17314f !important;
+        border:1px solid rgba(37,99,235,.22) !important; box-shadow:none;
+    }
+    .stApp button[data-testid="stBaseButton-secondary"]:disabled {
+        background:#f1f5f9 !important; color:#64748b !important; border:1px solid #dce4ed !important; opacity:1 !important;
+    }
     .stButton > button:hover, .stDownloadButton > button:hover { transform:translateY(-1px); border-color:#087e8b; box-shadow:0 8px 20px rgba(15,23,42,.1); color:#0f253e !important; }
     button[data-testid="stBaseButton-primary"] { color:#fff !important; background:linear-gradient(120deg,#2563eb,#087e8b) !important; border:0 !important; }
     [role="tablist"] { gap:.35rem; border-bottom:1px solid rgba(51,65,85,.14); }
@@ -261,14 +268,32 @@ if selected_theme_name == "🤍 Bright Executive":
     [data-baseweb="select"] > div > div, [data-baseweb="select"] [role="combobox"],
     [data-baseweb="input"] input, [data-baseweb="textarea"] textarea,
     input, textarea { background:#fff !important; color:#172033 !important; }
+    [data-testid="stDateInput"] [data-baseweb="input"],
+    [data-testid="stDateInput"] [data-baseweb="input"] *,
+    [data-testid="stDateInput"] input, [data-testid="stDateInput"] button,
+    [data-testid="stDateInput"] [role="button"] {
+        background-color:#fff !important; color:#172033 !important; border-color:#cbd5e1 !important;
+    }
+    [data-testid="stDateInput"] svg { fill:#64748b !important; color:#64748b !important; }
     [data-baseweb="select"] svg { fill:#64748b !important; }
     .stApp [data-baseweb="select"] > div, .stApp [data-baseweb="select"] > div > div,
     .stApp [data-baseweb="select"] [role="combobox"] { background-color:#fff !important; color:#172033 !important; }
+    .stApp [data-baseweb="select"], .stApp [data-baseweb="select"] * { background-color:#fff !important; color:#172033 !important; }
     .stApp [data-baseweb="select"] [data-testid="stMarkdownContainer"], .stApp [data-baseweb="select"] span { color:#172033 !important; }
+    .stApp [data-testid*="DateInput"] [data-baseweb="input"],
+    .stApp [data-testid*="DateInput"] [data-baseweb="input"] *,
+    .stApp [data-testid*="DateInput"] input, .stApp [data-testid*="DateInput"] button {
+        background:#fff !important; color:#172033 !important; border-color:#cbd5e1 !important;
+    }
+    .stApp [data-testid^="stBaseButton-"] { font-weight:650 !important; border-radius:10px !important; }
+    .stApp button[data-testid="stBaseButton-secondary"] { background:#e8f0fd !important; color:#17314f !important; border:1px solid #cbdcf2 !important; }
+    .stApp button[data-testid="stBaseButton-secondary"]:disabled { background:#f1f5f9 !important; color:#64748b !important; }
     [data-baseweb="popover"] [role="listbox"] { background:#fff; color:#172033; }
     [data-testid="stRadio"] label, [data-testid="stSegmentedControl"] button { border-radius:9px; }
-    [data-testid="stSidebar"] [data-testid="stRadio"] label { padding:.42rem .55rem; margin:.08rem 0; }
-    [data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) { background:#eaf2ff; color:#1d4ed8 !important; font-weight:700; }
+    [data-testid="stSidebar"] [data-testid="stRadio"] label { padding:.48rem .6rem; margin:.08rem 0; font-size:.88rem; border-radius:9px; }
+    [data-testid="stSidebar"] [data-testid="stRadio"] [data-baseweb="radio"] { display:none !important; }
+    [data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked),
+    [data-testid="stSidebar"] [data-testid="stRadio"] label:has([aria-checked="true"]) { background:#eaf2ff; color:#1d4ed8 !important; font-weight:700; }
     [data-testid="stSidebar"] [data-testid="stSelectbox"] label { color:#087e8b !important; font-weight:700; }
     hr { border-color:rgba(51,65,85,.14); }
     .app-topline {
@@ -950,9 +975,14 @@ def filter_df_by_user_vendors(df, vendor_col):
         return df.iloc[0:0].copy()
     allowed_norm = [normalize_vendor_name(v) for v in allowed_raw if v]
     allowed_norm = list(dict.fromkeys([v for v in allowed_norm if v]))
-    mask = df[vendor_col].astype(str).apply(normalize_vendor_name).apply(
-        lambda vn: any(av in vn or vn in av for av in allowed_norm if vn)
-    )
+    vendor_text = df[vendor_col].fillna('').astype(str)
+    vendor_map = {value: normalize_vendor_name(value) for value in vendor_text.unique()}
+    normalized_vendors = vendor_text.map(vendor_map)
+    match_map = {
+        vendor_name: any(allowed in vendor_name or vendor_name in allowed for allowed in allowed_norm if vendor_name)
+        for vendor_name in normalized_vendors.unique()
+    }
+    mask = normalized_vendors.map(match_map)
     return df[mask].copy()
 
 def save_file(uploaded_file, key):
@@ -2409,9 +2439,9 @@ def get_processed_data_cached(file_timestamps):
             valid_brn = df_brn_master[df_brn_master['RO_CLEAN'].notna() & (~df_brn_master['RO_CLEAN'].isin(['', 'NAN', 'NONE']))]
             ro_zone_map = valid_brn.drop_duplicates(subset=['RO_CLEAN']).set_index('RO_CLEAN')['ZONE_CLEAN'].to_dict()
             
-            for _, r_b in valid_brn.drop_duplicates(subset=['BRN_CLEAN']).iterrows():
-                branch_to_ro_map[r_b['BRN_CLEAN']] = r_b['RO_CLEAN']
-                branch_to_zone_map[r_b['BRN_CLEAN']] = r_b['ZONE_CLEAN']
+            unique_branches = valid_brn.drop_duplicates(subset=['BRN_CLEAN'])
+            branch_to_ro_map = unique_branches.set_index('BRN_CLEAN')['RO_CLEAN'].to_dict()
+            branch_to_zone_map = unique_branches.set_index('BRN_CLEAN')['ZONE_CLEAN'].to_dict()
         except Exception as e:
             logging.warning(f"Branch master read warning: {e}")
 
@@ -2589,16 +2619,14 @@ def get_processed_data_cached(file_timestamps):
         df_vperf['Actual Driving Hours_Raw'] = df_vperf['Actual_Secs'] / 3600.0
         df_vperf['Delay Hours_Raw'] = df_vperf['Actual Driving Hours_Raw'] - df_vperf['Given Driving Hours_Raw']
         
-        def assign_vendor_remark(row):
-            if pd.isna(row['Actual Arrival Time']):
-                return "In-Transit"
-            if pd.isna(row['Delay Hours_Raw']):
-                return "Missing Schedule"
-            if row['Delay Hours_Raw'] <= 0.25:
-                return "Ontime Arrival"
-            return "Late Arrival"
-            
-        df_vperf['Remark with 15 min waiver'] = df_vperf.apply(assign_vendor_remark, axis=1)
+        vendor_arrival_missing = df_vperf['Actual Arrival Time'].isna()
+        vendor_schedule_missing = df_vperf['Delay Hours_Raw'].isna()
+        vendor_within_waiver = df_vperf['Delay Hours_Raw'].le(0.25)
+        df_vperf['Remark with 15 min waiver'] = np.select(
+            [vendor_arrival_missing, vendor_schedule_missing, vendor_within_waiver],
+            ['In-Transit', 'Missing Schedule', 'Ontime Arrival'],
+            default='Late Arrival'
+        )
         df_vperf['Given Driving Hours'] = df_vperf['Given Driving Hours_Raw'].apply(format_hrs_safe)
         df_vperf['Actual Driving Hours'] = df_vperf['Actual Driving Hours_Raw'].apply(format_hrs_safe)
         df_vperf['Delay Hours'] = df_vperf['Delay Hours_Raw'].apply(format_hrs_safe)
@@ -2626,17 +2654,21 @@ def get_processed_data_cached(file_timestamps):
         # OPERATIONS EXCEPTION
         df_leg = df_leg_all[(df_leg_all['MCD_Created_By'] == 'SCHEDULED') & (df_leg_all['LH Type'].isin(['National LH', 'Zonal LH']))].copy()
         
-        def calc_status(act, sch, mode):
-            if pd.isna(act):
-                return f"No {mode}" if mode == 'Dep' else "In-Transit"
-            if pd.isna(sch):
-                return "Missing Sch"
-            if (act - sch).total_seconds() / 60 <= 15:
-                return f"Ontime {mode}"
-            return f"Late {mode}"
-            
-        df_leg['Dep_Status'] = df_leg.apply(lambda r: calc_status(r['Actual Departure Time'], r['Scheduled Departure Time'], 'Dep'), axis=1)
-        df_leg['Arr_Status'] = df_leg.apply(lambda r: calc_status(r['Actual Arrival Time'], r['Scheduled Arrival Time'], 'Arr'), axis=1)
+        def calc_status_series(actual, scheduled, mode):
+            delay_minutes = (actual - scheduled).dt.total_seconds() / 60
+            missing_actual_status = f"No {mode}" if mode == 'Dep' else "In-Transit"
+            return pd.Series(np.select(
+                [actual.isna(), scheduled.isna(), delay_minutes.le(15)],
+                [missing_actual_status, 'Missing Sch', f"Ontime {mode}"],
+                default=f"Late {mode}"
+            ), index=actual.index)
+
+        df_leg['Dep_Status'] = calc_status_series(
+            df_leg['Actual Departure Time'], df_leg['Scheduled Departure Time'], 'Dep'
+        )
+        df_leg['Arr_Status'] = calc_status_series(
+            df_leg['Actual Arrival Time'], df_leg['Scheduled Arrival Time'], 'Arr'
+        )
         df_leg['Remark'] = df_leg['Dep_Status'] + ", " + df_leg['Arr_Status']
 
         df_leg['Late Dep'] = df_leg['Remark'].str.contains('Late Dep', case=False, na=False).astype(int)
@@ -4158,12 +4190,17 @@ def render_overall_issues(data):
     st.markdown('### RO-wise performance and exception rates')
     st.caption('Click any percentage/count cell to open a focused detail tab. Red is 50% or higher; green is below 50%. Route utilization is underutilized below 60%.')
     render_overall_issues_clickable_table(summary, start_date, end_date, selected_zone, selected_route)
-    pct_cols = [c for c in summary.columns if c not in ['RO Name', 'Zone', 'Total Trips', 'Total Bills']]
-    excel_bytes = build_formatted_excel_bytes(
-        summary, 'Summary', f"Overall Issues · {selected_zone} · {start_date:%d %b %Y} to {end_date:%d %b %Y}",
-        percent_columns=pct_cols,
-        width_overrides={'RO Name': 17, 'Zone': 16, 'Total Trips': 14, 'Total Bills': 14}
-    )
+    excel_cache = st.session_state.get('_overall_issues_excel_cache')
+    if excel_cache and excel_cache[0] == summary_key:
+        excel_bytes = excel_cache[1]
+    else:
+        pct_cols = [c for c in summary.columns if c not in ['RO Name', 'Zone', 'Total Trips', 'Total Bills']]
+        excel_bytes = build_formatted_excel_bytes(
+            summary, 'Summary', f"Overall Issues · {selected_zone} · {start_date:%d %b %Y} to {end_date:%d %b %Y}",
+            percent_columns=pct_cols,
+            width_overrides={'RO Name': 17, 'Zone': 16, 'Total Trips': 14, 'Total Bills': 14}
+        )
+        st.session_state['_overall_issues_excel_cache'] = (summary_key, excel_bytes)
     st.download_button(
         '📊 Download Formatted RO Summary (Excel)', data=excel_bytes,
         file_name=f"Overall_Issues_Summary_{start_date:%Y%m%d}_{end_date:%Y%m%d}.xlsx",
