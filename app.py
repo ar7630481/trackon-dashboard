@@ -160,6 +160,51 @@ theme_css = """
     [data-testid="stRadio"] label:hover, [data-testid="stSegmentedControl"] button:hover { color: var(--cyan); }
     [data-testid="stSidebar"] [data-testid="stSelectbox"] label { color: var(--cyan) !important; font-weight: 700; }
     hr { border-color: rgba(148, 163, 184, .16); }
+    .app-topline {
+        display: flex; justify-content: space-between; align-items: center; gap: 1rem;
+        margin: .25rem 0 1.2rem; padding: .95rem 1.15rem;
+        border: 1px solid var(--line); border-radius: 16px;
+        background: linear-gradient(110deg, var(--card-1), var(--card-2));
+        box-shadow: 0 8px 24px rgba(15, 23, 42, .045);
+    }
+    .app-eyebrow, .section-kicker { color: var(--cyan); font-size: .72rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+    .app-brandline { color: var(--text); font-size: 1.05rem; font-weight: 750; margin-top: .12rem; }
+    .app-subline { color: var(--muted); font-size: .82rem; font-weight: 500; margin-left: .45rem; }
+    .app-chip { border: 1px solid var(--line); border-radius: 999px; padding: .42rem .72rem; color: var(--muted); font-size: .76rem; font-weight: 650; white-space: nowrap; }
+    .ops-overview-line { display:flex; justify-content:space-between; align-items:end; gap:1rem; margin:.15rem 0 .7rem; }
+    .ops-overview-line h3 { margin:.2rem 0 0 !important; }
+    .ops-data-chip { border:1px solid var(--line); border-radius:999px; padding:.45rem .8rem; color:var(--muted); font-size:.82rem; font-weight:650; white-space:nowrap; }
+    .gauge-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; margin:.6rem 0 1.1rem; }
+    .gauge-card { min-width:0; text-align:center; background:linear-gradient(145deg,var(--card-1),var(--card-2)); border:1px solid var(--line); border-radius:15px; padding:1rem .55rem .8rem; box-shadow:0 8px 22px rgba(15,23,42,.05); }
+    .gauge-label { min-height:2.35rem; color:var(--text); font-size:.82rem; font-weight:700; display:flex; justify-content:center; align-items:center; }
+    .gauge-card svg { display:block; width:min(100%,170px); height:auto; margin:.2rem auto -.15rem; overflow:visible; }
+    .gauge-caption { color:var(--muted); font-size:.72rem; font-weight:550; }
+    [data-testid="stDataEditor"], [data-testid="stDataFrame"] {
+        --gdg-bg-cell: #ffffff;
+        --gdg-bg-cell-medium: #f8fafc;
+        --gdg-bg-cell-medium-hover: #f1f5f9;
+        --gdg-bg-cell-light: #ffffff;
+        --gdg-bg-header: #eef3f9;
+        --gdg-bg-header-hovered: #e4edf8;
+        --gdg-bg-header-has-focus: #dbeafe;
+        --gdg-bg-header-has-focus-hovered: #dbeafe;
+        --gdg-text-dark: #1e293b;
+        --gdg-text-medium: #334155;
+        --gdg-text-light: #64748b;
+        --gdg-text-header: #172033;
+        --gdg-text-group-header: #334155;
+        --gdg-border-color: #e2e8f0;
+        --gdg-horizontal-border-color: #e2e8f0;
+        --gdg-accent-color: #2563eb;
+        --gdg-link-color: #0f766e;
+        --gdg-font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+    @media (max-width: 1100px) { .gauge-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } }
+    @media (max-width: 700px) {
+        .gauge-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+        .app-topline, .ops-overview-line { align-items:flex-start; flex-direction:column; }
+    }
+    @media (max-width: 420px) { .gauge-grid { grid-template-columns:1fr; } }
     </style>
 """
 for theme_key, theme_value in selected_theme.items():
@@ -169,6 +214,7 @@ if selected_theme_name == "🤍 Bright Executive":
     st.markdown("""
     <style>
     html, body, [class*="css"] { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    :root { color-scheme:light; --primary-color:#2563eb !important; --background-color:#f4f7fb !important; --secondary-background-color:#ffffff !important; --text-color:#172033 !important; }
     .stApp {
         background:
           radial-gradient(ellipse at 7% 0%, rgba(59,130,246,.08), transparent 34%),
@@ -179,6 +225,7 @@ if selected_theme_name == "🤍 Bright Executive":
     [data-testid="stHeader"] { background: transparent !important; }
     [data-testid="stMainBlockContainer"], .block-container { max-width:1560px; padding-top:1.15rem; padding-bottom:3rem; }
     [data-testid="stSidebar"] { background:linear-gradient(180deg,#fff 0%,#f5f8fc 100%); border-right:1px solid rgba(51,65,85,.14); }
+    [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3, [data-testid="stSidebar"] h4 { font-size:1rem !important; letter-spacing:-.01em; }
     [data-testid="stSidebar"] [data-testid="stMarkdownContainer"], [data-testid="stSidebar"] p, [data-testid="stSidebar"] label,
     p, label, [data-testid="stCaptionContainer"], [data-testid="stMarkdownContainer"] { color:#334155; }
     [data-testid="stCaptionContainer"] { color:#64748b !important; }
@@ -211,8 +258,17 @@ if selected_theme_name == "🤍 Bright Executive":
     [data-baseweb="select"] > div, [data-baseweb="input"] > div, [data-baseweb="textarea"] > div {
         background:#fff !important; color:#172033 !important; border-color:rgba(51,65,85,.18); border-radius:10px;
     }
+    [data-baseweb="select"] > div > div, [data-baseweb="select"] [role="combobox"],
+    [data-baseweb="input"] input, [data-baseweb="textarea"] textarea,
+    input, textarea { background:#fff !important; color:#172033 !important; }
+    [data-baseweb="select"] svg { fill:#64748b !important; }
+    .stApp [data-baseweb="select"] > div, .stApp [data-baseweb="select"] > div > div,
+    .stApp [data-baseweb="select"] [role="combobox"] { background-color:#fff !important; color:#172033 !important; }
+    .stApp [data-baseweb="select"] [data-testid="stMarkdownContainer"], .stApp [data-baseweb="select"] span { color:#172033 !important; }
     [data-baseweb="popover"] [role="listbox"] { background:#fff; color:#172033; }
     [data-testid="stRadio"] label, [data-testid="stSegmentedControl"] button { border-radius:9px; }
+    [data-testid="stSidebar"] [data-testid="stRadio"] label { padding:.42rem .55rem; margin:.08rem 0; }
+    [data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) { background:#eaf2ff; color:#1d4ed8 !important; font-weight:700; }
     [data-testid="stSidebar"] [data-testid="stSelectbox"] label { color:#087e8b !important; font-weight:700; }
     hr { border-color:rgba(51,65,85,.14); }
     .app-topline {
@@ -225,6 +281,9 @@ if selected_theme_name == "🤍 Bright Executive":
     .app-subline { color:#64748b; font-size:.82rem; font-weight:500; margin-left:.45rem; }
     .app-chip { border:1px solid rgba(51,65,85,.14); border-radius:999px; padding:.42rem .72rem; color:#526176; font-size:.76rem; font-weight:650; white-space:nowrap; }
     .section-kicker { color:#087e8b; font-size:.72rem; font-weight:800; letter-spacing:.11em; text-transform:uppercase; margin:.2rem 0 -.35rem; }
+    .gauge-card { background:linear-gradient(145deg,#fff,#f7faff); border-color:rgba(51,65,85,.13); box-shadow:0 8px 24px rgba(15,23,42,.055); }
+    .gauge-label { color:#172033; }
+    .gauge-caption, .ops-data-chip { color:#64748b; }
     @media (max-width:700px) { .block-container { padding:.75rem .8rem 2rem; } .app-topline { align-items:flex-start; flex-direction:column; } }
     </style>
     """, unsafe_allow_html=True)
@@ -1924,6 +1983,21 @@ def style_ui_dataframe(df_in):
         return ''
 
     styled = df_in.style
+    if selected_theme_name == '🤍 Bright Executive':
+        styled = styled.set_properties(**{
+            'background-color': '#ffffff',
+            'color': '#334155',
+            'border-color': '#e7edf4',
+            'font-size': '12px',
+            'padding': '7px 9px'
+        }).set_table_styles([
+            {'selector': 'th', 'props': [
+                ('background-color', '#edf3f9'), ('color', '#172033'),
+                ('font-weight', '700'), ('border-color', '#dfe7f0'),
+                ('padding', '8px 9px')
+            ]},
+            {'selector': 'td', 'props': [('border-color', '#e7edf4')]},
+        ], overwrite=False)
     for col in df_in.columns:
         if hasattr(styled, 'map'):
             styled = styled.map(lambda x, c=col: ui_cell_color(x, c), subset=[col])
@@ -4152,76 +4226,47 @@ elif choice == "📊 Operations Summary":
             df_leg_sum.get("Total_Trips", pd.Series(0, index=df_leg_sum.index)), errors="coerce"
         ).fillna(0).sum())
         ops_on_time = _ops_trip_count("Ontime Dep, Ontime Arr %")
-        ops_late_arrivals = (
-            _ops_trip_count("Ontime Dep, Late Arr %")
-            + _ops_trip_count("Late Dep, Late Arr %")
-        )
-        ops_on_time_pct = (ops_on_time / ops_total_trips * 100) if ops_total_trips else 0
-        ops_late_arrival_pct = (ops_late_arrivals / ops_total_trips * 100) if ops_total_trips else 0
+        ops_ontime_dep_late_arr = _ops_trip_count("Ontime Dep, Late Arr %")
+        ops_late_dep_late_arr = _ops_trip_count("Late Dep, Late Arr %")
+        ops_late_dep_ontime_arr = _ops_trip_count("Late Dep, Ontime Arr %")
+        ops_ontime_departures = ops_on_time + ops_ontime_dep_late_arr
+        ops_ontime_arrivals = ops_on_time + ops_late_dep_ontime_arr
+        ops_late_arrivals = ops_ontime_dep_late_arr + ops_late_dep_late_arr
+        ops_late_departures = ops_late_dep_late_arr + ops_late_dep_ontime_arr
 
-        st.markdown('<div class="section-kicker">Network pulse</div>', unsafe_allow_html=True)
-        st.markdown("### Executive Snapshot")
-        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-        kpi1.metric("Total Trips", f"{ops_total_trips:,}")
-        kpi2.metric("Route Legs", f"{len(df_leg_sum):,}")
-        kpi3.metric("On-time Dep. & Arrival", f"{ops_on_time_pct:.1f}%", help=f"{ops_on_time:,} trips")
-        kpi4.metric("Late Arrivals", f"{ops_late_arrival_pct:.1f}%", help=f"{ops_late_arrivals:,} trips")
+        gauge_specs = [
+            ("On-time Arrival", ops_ontime_arrivals, "#2eae50"),
+            ("On-time Departure", ops_ontime_departures, "#e4c63d"),
+            ("Departure & Arrival On-time", ops_on_time, "#7bc92e"),
+            ("Late Arrival", ops_late_arrivals, "#f5a623"),
+            ("Late Departure", ops_late_departures, "#2eae50"),
+        ]
+        gauge_html = []
+        for gauge_label, gauge_count, gauge_color in gauge_specs:
+            gauge_pct = min(100, max(0, gauge_count / ops_total_trips * 100)) if ops_total_trips else 0
+            gauge_dash = 201.06 * gauge_pct / 100
+            gauge_html.append(f"""
+            <div class="gauge-card">
+              <div class="gauge-label">{html_module.escape(gauge_label)}</div>
+              <svg viewBox="0 0 160 108" role="img" aria-label="{gauge_pct:.1f} percent">
+                <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="#e6ebf1" stroke-width="11" stroke-linecap="round" pathLength="201.06"/>
+                <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="{gauge_color}" stroke-width="11" stroke-linecap="round" stroke-dasharray="{gauge_dash:.2f} 201.06" pathLength="201.06"/>
+                <text x="80" y="83" text-anchor="middle" font-size="22" font-weight="750" fill="#172033">{gauge_pct:.1f}%</text>
+                <text x="16" y="104" text-anchor="middle" font-size="9" fill="#718096">0%</text>
+                <text x="144" y="104" text-anchor="middle" font-size="9" fill="#718096">100%</text>
+              </svg>
+              <div class="gauge-caption">{gauge_count:,} of {ops_total_trips:,} trips</div>
+            </div>
+            """)
+
+        st.markdown(f"""
+        <div class="ops-overview-line">
+          <div><div class="section-kicker">Network pulse</div><h3>Schedule Performance</h3></div>
+          <div class="ops-data-chip">{ops_total_trips:,} trips &nbsp;·&nbsp; {len(df_leg_sum):,} route legs</div>
+        </div>
+        <div class="gauge-grid">{''.join(gauge_html)}</div>
+        """, unsafe_allow_html=True)
         st.caption("Insights reflect the selected date range, zone, and RO filters.")
-
-        if PLOTLY_AVAILABLE and ops_total_trips:
-            outcome_counts = {
-                "On-time departure & arrival": ops_on_time,
-                "On-time departure, late arrival": _ops_trip_count("Ontime Dep, Late Arr %"),
-                "Late departure & arrival": _ops_trip_count("Late Dep, Late Arr %"),
-                "Late departure, on-time arrival": _ops_trip_count("Late Dep, Ontime Arr %"),
-            }
-            outcome_df = pd.DataFrame([
-                {"Schedule outcome": label, "Trips": count}
-                for label, count in outcome_counts.items() if count > 0
-            ])
-            late_by_leg = pd.DataFrame({
-                "Route / Leg": (
-                    df_leg_sum.get("Route Path", pd.Series("Route", index=df_leg_sum.index)).astype(str)
-                    + " / "
-                    + df_leg_sum.get("Legwise", pd.Series("Leg", index=df_leg_sum.index)).astype(str)
-                ),
-                "Late Arrivals": (
-                    _ops_trip_counts("Ontime Dep, Late Arr %")
-                    + _ops_trip_counts("Late Dep, Late Arr %")
-                ),
-            })
-            late_by_leg = late_by_leg.groupby("Route / Leg", as_index=False)["Late Arrivals"].sum()
-            late_by_leg = late_by_leg.sort_values("Late Arrivals", ascending=False).head(6).sort_values("Late Arrivals")
-
-            chart1, chart2 = st.columns([1, 1.25])
-            if not outcome_df.empty:
-                with chart1:
-                    fig_outcomes = px.pie(
-                        outcome_df, names="Schedule outcome", values="Trips", hole=0.66,
-                        color_discrete_sequence=["#16a394", "#f4b740", "#ef6b62", "#5b8def"],
-                        title="Schedule Outcome Mix"
-                    )
-                    fig_outcomes.update_traces(textposition="inside", textinfo="percent")
-                    fig_outcomes.update_layout(
-                        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                        font_color=selected_theme["text"], height=320,
-                        margin=dict(t=58, b=12, l=12, r=12), legend=dict(orientation="h", y=-0.08)
-                    )
-                    st.plotly_chart(fig_outcomes, use_container_width=True, config={"displayModeBar": False})
-            with chart2:
-                fig_late = px.bar(
-                    late_by_leg, x="Late Arrivals", y="Route / Leg", orientation="h",
-                    text="Late Arrivals", title="Route Legs to Review",
-                    color_discrete_sequence=["#e98555"]
-                )
-                fig_late.update_traces(textposition="outside", cliponaxis=False, marker_line_width=0)
-                fig_late.update_layout(
-                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                    font_color=selected_theme["text"], height=320,
-                    margin=dict(t=58, b=12, l=12, r=28), xaxis_title="Late arrivals", yaxis_title="",
-                    showlegend=False
-                )
-                st.plotly_chart(fig_late, use_container_width=True, config={"displayModeBar": False})
 
         search_q = col3.text_input("🔍 Quick Search:", placeholder="Search Route, Leg...")
 
@@ -5075,7 +5120,7 @@ elif choice == "💰 Network Utilization":
                             title='Total Cost by Zone', hole=0.4, 
                             color_discrete_sequence=px.colors.sequential.Teal
                         )
-                        fig1.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color="white", margin=dict(t=30, b=0, l=0, r=0))
+                        fig1.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color=selected_theme["text"], margin=dict(t=30, b=0, l=0, r=0))
                         st.plotly_chart(fig1, use_container_width=True)
 
                 with col_chart2:
@@ -5087,7 +5132,7 @@ elif choice == "💰 Network Utilization":
                             title='Top 5 Vendors by Volume', text_auto=True,
                             color_discrete_sequence=['#3B82F6']
                         )
-                        fig2.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color="white", margin=dict(t=30, b=0, l=0, r=0))
+                        fig2.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color=selected_theme["text"], margin=dict(t=30, b=0, l=0, r=0))
                         st.plotly_chart(fig2, use_container_width=True)
                 st.markdown("---")
 
