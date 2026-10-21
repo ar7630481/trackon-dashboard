@@ -21,7 +21,7 @@ warnings.filterwarnings('ignore')
 pd.options.mode.chained_assignment = None
 
 # ==========================================
-# 1. PAGE SETUP (Professional VIP Dark Theme)
+# 1. PAGE SETUP (Trackon Executive Dashboard)
 # ==========================================
 st.set_page_config(
     page_title="Trackon Command Center",
@@ -60,7 +60,11 @@ THEME_OPTIONS = {
         "text": "#172033", "muted": "#526176", "button1": "#dceafe", "button2": "#d8f3ee"
     }
 }
-selected_theme_name = st.sidebar.selectbox("✨ Choose your theme", list(THEME_OPTIONS), key="app_visual_theme")
+_theme_names = list(THEME_OPTIONS)
+_default_theme = _theme_names.index("🤍 Bright Executive")
+selected_theme_name = st.sidebar.selectbox(
+    "✨ Choose your theme", _theme_names, index=_default_theme, key="app_visual_theme"
+)
 selected_theme = THEME_OPTIONS[selected_theme_name]
 
 # Custom CSS adapts to the selected theme.
@@ -164,19 +168,64 @@ st.markdown(theme_css, unsafe_allow_html=True)
 if selected_theme_name == "🤍 Bright Executive":
     st.markdown("""
     <style>
-    [data-testid="stHeader"] { background: rgba(255,255,255,.92) !important; }
-    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
-    p, label, [data-testid="stCaptionContainer"], [data-baseweb="tab"] { color:#475569 !important; }
-    h1, h2, h3, h4 { color:#172033 !important; }
-    [data-testid="stMetricLabel"] { color:#526176 !important; }
-    [data-testid="stMetricValue"] { color:#172033 !important; }
-    [data-testid="stDataFrame"], [data-testid="stDataEditor"] { background:#fff !important; }
-    th { background-color:#dce7f3 !important; color:#172033 !important; }
-    .stButton > button, .stDownloadButton > button { color:#17314f !important; }
-    .stButton > button:hover, .stDownloadButton > button:hover { color:#0f253e !important; }
-    [data-baseweb="select"] > div, [data-baseweb="input"] > div,
-    [data-baseweb="textarea"] > div { background:#fff !important; color:#172033 !important; }
-    [data-testid="stDataFrame"], [data-testid="stDataEditor"] { width:100%; max-width:100%; }
+    html, body, [class*="css"] { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .stApp {
+        background:
+          radial-gradient(ellipse at 7% 0%, rgba(59,130,246,.08), transparent 34%),
+          radial-gradient(ellipse at 94% 8%, rgba(20,184,166,.06), transparent 31%),
+          linear-gradient(145deg, #f4f7fb 0%, #ffffff 56%, #edf3f9 100%);
+        color: #172033;
+    }
+    [data-testid="stHeader"] { background: transparent !important; }
+    [data-testid="stMainBlockContainer"], .block-container { max-width:1560px; padding-top:1.15rem; padding-bottom:3rem; }
+    [data-testid="stSidebar"] { background:linear-gradient(180deg,#fff 0%,#f5f8fc 100%); border-right:1px solid rgba(51,65,85,.14); }
+    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"], [data-testid="stSidebar"] p, [data-testid="stSidebar"] label,
+    p, label, [data-testid="stCaptionContainer"], [data-testid="stMarkdownContainer"] { color:#334155; }
+    [data-testid="stCaptionContainer"] { color:#64748b !important; }
+    h1, h2, h3, h4 { color:#172033 !important; letter-spacing:-.03em; font-weight:720 !important; }
+    h1 { font-size:clamp(2rem,3vw,2.65rem) !important; }
+    h2 { font-size:clamp(1.4rem,2vw,1.85rem) !important; }
+    [data-testid="metric-container"] {
+        background:linear-gradient(145deg,#fff,#f7faff); border:1px solid rgba(51,65,85,.13);
+        border-radius:16px; padding:1rem 1.15rem; box-shadow:0 8px 24px rgba(15,23,42,.055);
+        transition:transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+    }
+    [data-testid="metric-container"]:hover { transform:translateY(-2px); border-color:rgba(37,99,235,.35); box-shadow:0 12px 28px rgba(15,23,42,.09); }
+    [data-testid="stMetricLabel"] { color:#64748b !important; font-weight:600; }
+    [data-testid="stMetricValue"] { color:#172033 !important; font-weight:750; }
+    [data-testid="stDataFrame"], [data-testid="stDataEditor"], [data-testid="stTable"] {
+        background:#fff !important; border:1px solid rgba(51,65,85,.14); border-radius:14px; overflow:hidden;
+    }
+    th { background-color:#edf3f9 !important; color:#172033 !important; font-weight:650 !important; }
+    .stButton > button, .stDownloadButton > button {
+        border:1px solid rgba(37,99,235,.22); border-radius:10px; min-height:2.55rem; font-weight:650;
+        color:#17314f !important; background:linear-gradient(120deg,#e3edfb,#e0f3f0);
+        transition:transform .16s ease, box-shadow .16s ease, border-color .16s ease;
+    }
+    .stButton > button:hover, .stDownloadButton > button:hover { transform:translateY(-1px); border-color:#087e8b; box-shadow:0 8px 20px rgba(15,23,42,.1); color:#0f253e !important; }
+    button[data-testid="stBaseButton-primary"] { color:#fff !important; background:linear-gradient(120deg,#2563eb,#087e8b) !important; border:0 !important; }
+    [role="tablist"] { gap:.35rem; border-bottom:1px solid rgba(51,65,85,.14); }
+    [data-baseweb="tab"] { color:#64748b; font-weight:600; }
+    [aria-selected="true"][data-baseweb="tab"] { color:#2563eb !important; }
+    [data-testid="stAlert"] { border-radius:12px; }
+    [data-baseweb="select"] > div, [data-baseweb="input"] > div, [data-baseweb="textarea"] > div {
+        background:#fff !important; color:#172033 !important; border-color:rgba(51,65,85,.18); border-radius:10px;
+    }
+    [data-baseweb="popover"] [role="listbox"] { background:#fff; color:#172033; }
+    [data-testid="stRadio"] label, [data-testid="stSegmentedControl"] button { border-radius:9px; }
+    [data-testid="stSidebar"] [data-testid="stSelectbox"] label { color:#087e8b !important; font-weight:700; }
+    hr { border-color:rgba(51,65,85,.14); }
+    .app-topline {
+        display:flex; justify-content:space-between; align-items:center; gap:1rem; margin:.25rem 0 1.2rem;
+        padding:.95rem 1.15rem; border:1px solid rgba(51,65,85,.13); border-radius:16px;
+        background:linear-gradient(110deg,#fff,#f5f8fc); box-shadow:0 8px 24px rgba(15,23,42,.045);
+    }
+    .app-eyebrow { color:#087e8b; font-size:.68rem; font-weight:800; letter-spacing:.13em; text-transform:uppercase; }
+    .app-brandline { color:#172033; font-size:1.05rem; font-weight:750; letter-spacing:-.02em; margin-top:.12rem; }
+    .app-subline { color:#64748b; font-size:.82rem; font-weight:500; margin-left:.45rem; }
+    .app-chip { border:1px solid rgba(51,65,85,.14); border-radius:999px; padding:.42rem .72rem; color:#526176; font-size:.76rem; font-weight:650; white-space:nowrap; }
+    .section-kicker { color:#087e8b; font-size:.72rem; font-weight:800; letter-spacing:.11em; text-transform:uppercase; margin:.2rem 0 -.35rem; }
+    @media (max-width:700px) { .block-container { padding:.75rem .8rem 2rem; } .app-topline { align-items:flex-start; flex-direction:column; } }
     </style>
     """, unsafe_allow_html=True)
 
@@ -3129,6 +3178,16 @@ if not data and choice not in ["🔐 User & Access Control", "🧭 Scheduled Rou
     st.warning("No processed data for this page. Admin must upload the relevant files and process data.")
     st.stop()
 
+st.markdown(f"""
+<div class="app-topline">
+  <div>
+    <div class="app-eyebrow">Trackon • Fleet Operations</div>
+    <div class="app-brandline">Command Center <span class="app-subline">Network performance at a glance</span></div>
+  </div>
+  <div class="app-chip">{html_module.escape(selected_theme_name)} &nbsp;·&nbsp; {html_module.escape(choice)}</div>
+</div>
+""", unsafe_allow_html=True)
+
 try:
     import plotly.express as px
     PLOTLY_AVAILABLE = True
@@ -4076,6 +4135,93 @@ elif choice == "📊 Operations Summary":
         if selected_ro != "ALL":
             df_leg_sum = df_leg_sum[df_leg_sum['Origin RO'] == selected_ro]
             df_raw_leg = df_raw_leg[df_raw_leg['Origin RO'] == selected_ro]
+
+        # Read-only insight cards and charts based on the current date, zone, and RO scope.
+        def _ops_trip_counts(column):
+            if column not in df_leg_sum.columns:
+                return pd.Series(0, index=df_leg_sum.index, dtype="int64")
+            count_text = df_leg_sum[column].astype(str).str.extract(r"\(([\d,]+)\)", expand=False)
+            return pd.to_numeric(
+                count_text.str.replace(",", "", regex=False), errors="coerce"
+            ).fillna(0).astype(int)
+
+        def _ops_trip_count(column):
+            return int(_ops_trip_counts(column).sum())
+
+        ops_total_trips = int(pd.to_numeric(
+            df_leg_sum.get("Total_Trips", pd.Series(0, index=df_leg_sum.index)), errors="coerce"
+        ).fillna(0).sum())
+        ops_on_time = _ops_trip_count("Ontime Dep, Ontime Arr %")
+        ops_late_arrivals = (
+            _ops_trip_count("Ontime Dep, Late Arr %")
+            + _ops_trip_count("Late Dep, Late Arr %")
+        )
+        ops_on_time_pct = (ops_on_time / ops_total_trips * 100) if ops_total_trips else 0
+        ops_late_arrival_pct = (ops_late_arrivals / ops_total_trips * 100) if ops_total_trips else 0
+
+        st.markdown('<div class="section-kicker">Network pulse</div>', unsafe_allow_html=True)
+        st.markdown("### Executive Snapshot")
+        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+        kpi1.metric("Total Trips", f"{ops_total_trips:,}")
+        kpi2.metric("Route Legs", f"{len(df_leg_sum):,}")
+        kpi3.metric("On-time Dep. & Arrival", f"{ops_on_time_pct:.1f}%", help=f"{ops_on_time:,} trips")
+        kpi4.metric("Late Arrivals", f"{ops_late_arrival_pct:.1f}%", help=f"{ops_late_arrivals:,} trips")
+        st.caption("Insights reflect the selected date range, zone, and RO filters.")
+
+        if PLOTLY_AVAILABLE and ops_total_trips:
+            outcome_counts = {
+                "On-time departure & arrival": ops_on_time,
+                "On-time departure, late arrival": _ops_trip_count("Ontime Dep, Late Arr %"),
+                "Late departure & arrival": _ops_trip_count("Late Dep, Late Arr %"),
+                "Late departure, on-time arrival": _ops_trip_count("Late Dep, Ontime Arr %"),
+            }
+            outcome_df = pd.DataFrame([
+                {"Schedule outcome": label, "Trips": count}
+                for label, count in outcome_counts.items() if count > 0
+            ])
+            late_by_leg = pd.DataFrame({
+                "Route / Leg": (
+                    df_leg_sum.get("Route Path", pd.Series("Route", index=df_leg_sum.index)).astype(str)
+                    + " / "
+                    + df_leg_sum.get("Legwise", pd.Series("Leg", index=df_leg_sum.index)).astype(str)
+                ),
+                "Late Arrivals": (
+                    _ops_trip_counts("Ontime Dep, Late Arr %")
+                    + _ops_trip_counts("Late Dep, Late Arr %")
+                ),
+            })
+            late_by_leg = late_by_leg.groupby("Route / Leg", as_index=False)["Late Arrivals"].sum()
+            late_by_leg = late_by_leg.sort_values("Late Arrivals", ascending=False).head(6).sort_values("Late Arrivals")
+
+            chart1, chart2 = st.columns([1, 1.25])
+            if not outcome_df.empty:
+                with chart1:
+                    fig_outcomes = px.pie(
+                        outcome_df, names="Schedule outcome", values="Trips", hole=0.66,
+                        color_discrete_sequence=["#16a394", "#f4b740", "#ef6b62", "#5b8def"],
+                        title="Schedule Outcome Mix"
+                    )
+                    fig_outcomes.update_traces(textposition="inside", textinfo="percent")
+                    fig_outcomes.update_layout(
+                        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                        font_color=selected_theme["text"], height=320,
+                        margin=dict(t=58, b=12, l=12, r=12), legend=dict(orientation="h", y=-0.08)
+                    )
+                    st.plotly_chart(fig_outcomes, use_container_width=True, config={"displayModeBar": False})
+            with chart2:
+                fig_late = px.bar(
+                    late_by_leg, x="Late Arrivals", y="Route / Leg", orientation="h",
+                    text="Late Arrivals", title="Route Legs to Review",
+                    color_discrete_sequence=["#e98555"]
+                )
+                fig_late.update_traces(textposition="outside", cliponaxis=False, marker_line_width=0)
+                fig_late.update_layout(
+                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                    font_color=selected_theme["text"], height=320,
+                    margin=dict(t=58, b=12, l=12, r=28), xaxis_title="Late arrivals", yaxis_title="",
+                    showlegend=False
+                )
+                st.plotly_chart(fig_late, use_container_width=True, config={"displayModeBar": False})
 
         search_q = col3.text_input("🔍 Quick Search:", placeholder="Search Route, Leg...")
 
