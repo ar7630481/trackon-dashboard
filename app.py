@@ -1765,23 +1765,23 @@ def build_ops_summary_from_raw(df_group):
     summary['Ontime Dep, Late Arr %'] = summary.apply(lambda r: format_pct_cnt(r['OL_Cnt'], r[trip_col]), axis=1)
     return sort_by_route_and_leg(summary)
 
-def summarize_ops_remark_outcomes(df_raw):
-    """Count each selected operations trip once using its stored Remark outcome."""
-    labels = [
-        ('Ontime Dep, Ontime Arr', 'green', '🟢'),
-        ('Ontime Dep, Late Arr', 'soft_red', '🌸'),
-        ('Late Dep, Late Arr', 'red', '🔴'),
-        ('Late Dep, In-Transit', 'yellow', '🟡'),
-        ('Late Dep, Ontime Arr', 'purple', '🟣'),
-        ('Ontime Dep, In-Transit', 'yellow', '🟡'),
-        ('No Departure', 'red', '🔴'),
-        ('Missing Schedule', 'yellow', '🟡'),
-        ('In-Transit', 'yellow', '🟡'),
-        ('Other', 'muted', '⚪')
-    ]
-    if not isinstance(df_raw, pd.DataFrame) or df_raw.empty:
-        return {label: 0 for label, _, _ in labels}, 0, labels
+OPS_REMARK_OUTCOME_LABELS = [
+    ('Ontime Dep, Ontime Arr', 'green', '🟢'),
+    ('Ontime Dep, Late Arr', 'soft_red', '🌸'),
+    ('Late Dep, Late Arr', 'red', '🔴'),
+    ('Late Dep, In-Transit', 'yellow', '🟡'),
+    ('Late Dep, Ontime Arr', 'purple', '🟣'),
+    ('Ontime Dep, In-Transit', 'yellow', '🟡'),
+    ('No Departure', 'red', '🔴'),
+    ('Missing Schedule', 'yellow', '🟡'),
+    ('In-Transit', 'yellow', '🟡'),
+    ('Other', 'muted', '⚪')
+]
 
+def ops_remark_outcome_series(df_raw):
+    """Return one exclusive outcome per trip, based on Remark first."""
+    if not isinstance(df_raw, pd.DataFrame) or df_raw.empty:
+        return pd.Series(dtype=object)
     remark_col = get_col(df_raw, ['Remark'])
     dep_col = get_col(df_raw, ['Dep_Status'])
     arr_col = get_col(df_raw, ['Arr_Status'])
@@ -1790,7 +1790,6 @@ def summarize_ops_remark_outcomes(df_raw):
     arr = df_raw[arr_col].fillna('').astype(str) if arr_col else pd.Series('', index=df_raw.index)
     outcome = remark.where(remark.str.strip().ne(''), dep + ', ' + arr)
     outcome = outcome.str.casefold().str.replace(r'\s+', ' ', regex=True).str.strip()
-
     patterns = [
         ('Missing Schedule', r'missing\s+(?:sch|schedule)'),
         ('No Departure', r'no\s+dep(?:arture)?'),
@@ -1808,7 +1807,14 @@ def summarize_ops_remark_outcomes(df_raw):
         matched = unassigned & outcome.str.contains(pattern, regex=True, na=False)
         buckets.loc[matched] = label
         unassigned.loc[matched] = False
-    counts = buckets.value_counts().to_dict()
+    return buckets
+
+def summarize_ops_remark_outcomes(df_raw):
+    """Count each selected operations trip once using its stored Remark outcome."""
+    labels = OPS_REMARK_OUTCOME_LABELS
+    if not isinstance(df_raw, pd.DataFrame) or df_raw.empty:
+        return {label: 0 for label, _, _ in labels}, 0, labels
+    counts = ops_remark_outcome_series(df_raw).value_counts().to_dict()
     return {label: int(counts.get(label, 0)) for label, _, _ in labels}, len(df_raw), labels
 
 @st.cache_data(show_spinner=False, max_entries=8)
@@ -2040,8 +2046,8 @@ def clean_dataframe_for_excel(df_in, sheet_type="generic"):
             df[c] = df[c].apply(format_ops_badge)
     elif sheet_type == "ops_raw":
         preferred = [
-            'Origin RO', 'Route Path', 'MCD_StartDate', 'Legwise', 'Legs',
-            'Remark', 'Scheduled Departure Time', 'Actual Departure Time',
+            'MCD_StartDate', 'Remark', 'Origin RO', 'Route Path', 'Legwise', 'Legs',
+            'Scheduled Departure Time', 'Actual Departure Time',
             'Scheduled Arrival Time', 'Actual Arrival Time',
             'Scheduled Halting', 'Actual Halting', 'VendorName',
             'VehicleNo', 'MasterCDNo', 'RouteCode'
@@ -2232,14 +2238,15 @@ def style_ui_dataframe(df_in):
     row_tones.loc[contains_status(r'ontime dep, late arr')] = 'soft_red'
     # Apply exact paired Remark outcomes last, so a mixed row follows its actual trip result.
     row_tones.loc[contains_status(r'late dep, in-transit')] = 'yellow'
-    row_tones.loc[contains_status(r'late dep, late arr|^other$|^draft$|late arrival|late departure|no dep|no arrival')] = 'red'
+    row_tones.loc[contains_status(r'late dep, late arr|^draft$|late arrival|late departure|no dep|no arrival')] = 'red'
     row_tones.loc[contains_status(r'missing sch|missing schedule')] = 'yellow'
+    row_tones.loc[contains_status(r'^other$')] = 'muted'
     if 'Utilization Class' in df_in.columns:
         util_class = df_in['Utilization Class'].fillna('').astype(str).str.lower()
         row_tones.loc[util_class.str.contains('efficiently', na=False)] = 'green'
         row_tones.loc[util_class.str.contains('underutilized', na=False)] = 'red'
     row_style = pd.DataFrame('', index=df_in.index, columns=df_in.columns)
-    for tone in ['green', 'soft_red', 'red', 'yellow', 'purple']:
+    for tone in ['green', 'soft_red', 'red', 'yellow', 'purple', 'muted']:
         row_style.loc[row_tones.eq(tone), :] = tone_css(tone)
     styled = styled.apply(lambda col: row_style[col.name], axis=0)
     return styled
@@ -2469,7 +2476,7 @@ def compact_detail_frame(frame, kind):
         return pd.DataFrame()
     preferred_by_kind = {
         'ven_raw': ['Date', 'Origin RO', 'Route Path', 'Legwise', 'VendorName', 'Actual Arrival Time', 'Delay Hours', 'Remark with 15 min waiver', 'MasterCDNo'],
-        'ops_raw': ['MCD_StartDate', 'Zone', 'Origin RO', 'Route Path', 'Legwise', 'Legs', 'CD_FromBranch', 'CD_ToBranch', 'MasterCDNo', 'Remark'],
+        'ops_raw': ['MCD_StartDate', 'Remark', 'Zone', 'Origin RO', 'Route Path', 'Legwise', 'Legs', 'CD_FromBranch', 'CD_ToBranch', 'MasterCDNo'],
         'pay_raw': ['Invoice Id', 'Invoice Date', 'RO Name', 'Zone', 'Vendor Name', 'Amount', 'Status', 'Payment Group', 'Pending With', 'Days Pending'],
         'cpk_raw': ['Date', 'RO_Clean', 'Final_Route', 'Final_Type', 'VendorName', 'Vehicle No', 'Cap', 'Wt', 'Trips', 'Cost']
     }
@@ -4624,8 +4631,7 @@ elif choice == "📊 Operations Summary":
             st.info("No operation trips match the selected date, zone, RO, and route search.")
             st.stop()
 
-        # Preserve the four paired outcomes while also exposing exceptions that
-        # those paired buckets do not represent (in-transit, no departure, missing schedule).
+        # Classify every filtered trip into one mutually exclusive Remark outcome.
         raw_status = df_raw_leg.copy()
         if 'E2E_Pair' not in raw_status.columns and 'Route Path' in raw_status.columns:
             raw_status['E2E_Pair'] = raw_status['Route Path'].apply(get_route_pair)
@@ -4642,104 +4648,72 @@ elif choice == "📊 Operations Summary":
             if key in raw_status.columns and key in df_leg_sum.columns
         ]
         if status_group_keys:
-            dep_status_values = raw_status.get('Dep_Status', pd.Series('', index=raw_status.index)).fillna('').astype(str).str.casefold()
-            arr_status_values = raw_status.get('Arr_Status', pd.Series('', index=raw_status.index)).fillna('').astype(str).str.casefold()
-            remark_status_values = raw_status.get('Remark', pd.Series('', index=raw_status.index)).fillna('').astype(str).str.casefold()
-            raw_status['_OnTimeDepartureTrips'] = dep_status_values.str.contains(r'ontime\s+(dep|departure)', regex=True).astype(int)
-            raw_status['_LateDepartureTrips'] = dep_status_values.str.contains(r'late\s+(dep|departure)', regex=True).astype(int)
-            raw_status['_OnTimeArrivalTrips'] = arr_status_values.str.contains(r'ontime\s+(arr|arrival)', regex=True).astype(int)
-            raw_status['_LateArrivalTrips'] = arr_status_values.str.contains(r'late\s+(arr|arrival)', regex=True).astype(int)
-            raw_status['_InTransitTrips'] = (arr_status_values.eq('in-transit') | remark_status_values.str.contains('in-transit', regex=False)).astype(int)
-            raw_status['_LateDepInTransitTrips'] = remark_status_values.str.contains(r'late\s+dep\s*,\s*in-transit', regex=True).astype(int)
-            raw_status['_OntimeDepInTransitTrips'] = remark_status_values.str.contains(r'ontime\s+dep\s*,\s*in-transit', regex=True).astype(int)
-            raw_status['_NoDepartureTrips'] = dep_status_values.str.contains(r'no\s+dep(?:arture)?', regex=True).astype(int)
-            raw_status['_MissingScheduleTrips'] = (
-                dep_status_values.str.contains(r'missing\s+(sch|schedule)', regex=True) |
-                arr_status_values.str.contains(r'missing\s+(sch|schedule)', regex=True) |
-                remark_status_values.str.contains(r'missing\s+(sch|schedule)', regex=True)
-            ).astype(int)
-            status_counts = raw_status.groupby(status_group_keys, dropna=False, sort=False)[
-                [
-                    '_OnTimeDepartureTrips', '_LateDepartureTrips', '_OnTimeArrivalTrips', '_LateArrivalTrips',
-                    '_InTransitTrips', '_LateDepInTransitTrips', '_OntimeDepInTransitTrips',
-                    '_NoDepartureTrips', '_MissingScheduleTrips'
-                ]
-            ].sum().reset_index().rename(columns={
-                '_OnTimeDepartureTrips': 'On-time Departure Trips',
-                '_LateDepartureTrips': 'Late Departure Trips',
-                '_OnTimeArrivalTrips': 'On-time Arrival Trips',
-                '_LateArrivalTrips': 'Late Arrival Trips',
-                '_InTransitTrips': 'In-Transit Trips',
-                '_LateDepInTransitTrips': 'Late Dep, In-Transit Trips',
-                '_OntimeDepInTransitTrips': 'Ontime Dep, In-Transit Trips',
-                '_NoDepartureTrips': 'No Departure Trips',
-                '_MissingScheduleTrips': 'Missing Schedule Trips'
-            })
+            raw_status['_RemarkOutcome'] = ops_remark_outcome_series(raw_status)
+            status_counts = raw_status.groupby(
+                status_group_keys + ['_RemarkOutcome'], dropna=False, sort=False
+            ).size().unstack('_RemarkOutcome', fill_value=0)
+            status_counts = status_counts.reindex(
+                columns=[label for label, _, _ in OPS_REMARK_OUTCOME_LABELS], fill_value=0
+            )
+            status_counts.columns = [f'{label} Trips' for label in status_counts.columns]
+            status_counts = status_counts.reset_index()
             df_leg_sum = df_leg_sum.merge(status_counts, on=status_group_keys, how='left')
-            for status_name, count_col in [
-                ('On-time Departure', 'On-time Departure Trips'),
-                ('Late Departure', 'Late Departure Trips'),
-                ('On-time Arrival', 'On-time Arrival Trips'),
-                ('Late Arrival', 'Late Arrival Trips'),
-                ('In-Transit', 'In-Transit Trips'),
-                ('Late Dep, In-Transit', 'Late Dep, In-Transit Trips'),
-                ('Ontime Dep, In-Transit', 'Ontime Dep, In-Transit Trips'),
-                ('No Departure', 'No Departure Trips'),
-                ('Missing Schedule', 'Missing Schedule Trips')
-            ]:
+            for status_name, _, _ in OPS_REMARK_OUTCOME_LABELS:
+                count_col = f'{status_name} Trips'
+                if count_col not in df_leg_sum.columns:
+                    df_leg_sum[count_col] = 0
                 df_leg_sum[count_col] = pd.to_numeric(df_leg_sum[count_col], errors='coerce').fillna(0).astype(int)
                 df_leg_sum[f'{status_name} %'] = [
                     format_pct_cnt(count, total)
                     for count, total in zip(df_leg_sum[count_col], pd.to_numeric(df_leg_sum['Total_Trips'], errors='coerce').fillna(0))
                 ]
 
-        # Read-only insight cards and charts based on the current date, zone, and RO scope.
-        def _ops_trip_counts(column):
-            if column not in df_leg_sum.columns:
-                return pd.Series(0, index=df_leg_sum.index, dtype="int64")
-            count_text = df_leg_sum[column].astype(str).str.extract(r"\(([\d,]+)\)", expand=False)
-            return pd.to_numeric(
-                count_text.str.replace(",", "", regex=False), errors="coerce"
-            ).fillna(0).astype(int)
-
+        # Remark-wise gauges and route rates follow the current filter scope.
         ops_outcome_counts, ops_total_trips, ops_outcome_labels = summarize_ops_remark_outcomes(raw_status)
-        ops_on_time = ops_outcome_counts['Ontime Dep, Ontime Arr']
-        ops_ontime_dep_late_arr = ops_outcome_counts['Ontime Dep, Late Arr']
-        ops_late_dep_late_arr = ops_outcome_counts['Late Dep, Late Arr']
-        ops_late_dep_ontime_arr = ops_outcome_counts['Late Dep, Ontime Arr']
-        dep_status_for_gauges = raw_status.get('Dep_Status', pd.Series('', index=raw_status.index)).fillna('').astype(str).str.casefold()
-        arr_status_for_gauges = raw_status.get('Arr_Status', pd.Series('', index=raw_status.index)).fillna('').astype(str).str.casefold()
-        ops_ontime_departures = int(dep_status_for_gauges.str.contains(r'ontime\s+(dep|departure)', regex=True).sum())
-        ops_late_departures = int(dep_status_for_gauges.str.contains(r'late\s+(dep|departure)', regex=True).sum())
-        ops_ontime_arrivals = int(arr_status_for_gauges.str.contains(r'ontime\s+(arr|arrival)', regex=True).sum())
-        ops_late_arrivals = int(arr_status_for_gauges.str.contains(r'late\s+(arr|arrival)', regex=True).sum())
 
         st.markdown("### Remark-wise Trip Outcome")
-        st.caption("🟢 Ontime Dep, Ontime Arr · 🌸 Ontime Dep, Late Arr · 🔴 Late Dep, Late Arr · 🔴 No Departure · 🟡 Late Dep, In-Transit · 🟡 Missing Schedule · 🟡 In-Transit · 🟣 Late Dep, Ontime Arr. Counts follow the selected date, zone, RO, and route search.")
-        outcome_cards = []
+        st.caption("🟢 Ontime Dep, Ontime Arr · 🌸 Ontime Dep, Late Arr · 🔴 Late Dep, Late Arr · 🟣 Late Dep, Ontime Arr · 🟡 Late Dep, In-Transit · 🟡 Ontime Dep, In-Transit · 🔴 No Departure · 🟡 Missing Schedule · 🟡 In-Transit · ⚪ Other. Each trip is counted once from its Remark; figures follow the selected date, zone, RO, and route search.")
+        st.caption(f"{ops_total_trips:,} trips · {len(df_leg_sum):,} route legs")
+
+        outcome_gauges = []
+        gauge_tones = {
+            'green': ('#16a34a', '#f0fdf4', '#bbf7d0'),
+            'soft_red': ('#f472b6', '#fff1f2', '#fecdd3'),
+            'red': ('#dc2626', '#fef2f2', '#fecaca'),
+            'yellow': ('#f59e0b', '#fffbeb', '#fde68a'),
+            'purple': ('#8b5cf6', '#f5f3ff', '#ddd6fe'),
+            'muted': ('#94a3b8', '#f8fafc', '#e2e8f0')
+        }
         for outcome_label, outcome_tone, outcome_icon in ops_outcome_labels:
             outcome_count = ops_outcome_counts[outcome_label]
             primary_outcome = outcome_label in {
                 'Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr',
-                'Late Dep, Late Arr', 'Late Dep, In-Transit'
+                'Late Dep, Late Arr', 'Late Dep, Ontime Arr'
             }
             if primary_outcome or outcome_count > 0:
-                outcome_pct = (outcome_count / ops_total_trips * 100) if ops_total_trips else 0
-                card_html = (
-                    f'<div class="outcome-card outcome-{outcome_tone.replace("_", "-")}">'
-                    f'<div class="outcome-label">{outcome_icon} {html_module.escape(outcome_label)}</div>'
-                    f'<div class="outcome-value">{outcome_count:,}</div>'
-                    f'<div class="outcome-share">{outcome_pct:.1f}% of {ops_total_trips:,} trips</div>'
-                    '</div>'
-                )
-                outcome_cards.append(card_html)
-        for card_start in range(0, len(outcome_cards), 4):
+                gauge_pct = min(100, max(0, outcome_count / ops_total_trips * 100)) if ops_total_trips else 0
+                gauge_color, gauge_surface, gauge_border = gauge_tones.get(outcome_tone, gauge_tones['muted'])
+                gauge_dash = 201.06 * gauge_pct / 100
+                outcome_gauges.append(textwrap.dedent(f"""
+                <div class="gauge-card" style="background:{gauge_surface};border-color:{gauge_border}">
+                  <div class="gauge-label">{outcome_icon} {html_module.escape(outcome_label)}</div>
+                  <svg viewBox="0 0 160 108" role="img" aria-label="{gauge_pct:.1f} percent">
+                    <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="#e6ebf1" stroke-width="11" stroke-linecap="round" pathLength="201.06"/>
+                    <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="{gauge_color}" stroke-width="11" stroke-linecap="round" stroke-dasharray="{gauge_dash:.2f} 201.06" pathLength="201.06"/>
+                    <text x="80" y="83" text-anchor="middle" font-size="22" font-weight="750" fill="#172033">{gauge_pct:.1f}%</text>
+                    <text x="16" y="104" text-anchor="middle" font-size="9" fill="#718096">0%</text>
+                    <text x="144" y="104" text-anchor="middle" font-size="9" fill="#718096">100%</text>
+                  </svg>
+                  <div class="gauge-caption">{outcome_count:,} of {ops_total_trips:,} trips</div>
+                </div>
+                """).strip())
+        for gauge_start in range(0, len(outcome_gauges), 4):
             outcome_columns = st.columns(4, gap='small')
-            for outcome_column, outcome_card in zip(outcome_columns, outcome_cards[card_start:card_start + 4]):
+            for outcome_column, gauge_html in zip(outcome_columns, outcome_gauges[gauge_start:gauge_start + 4]):
                 with outcome_column:
-                    st.markdown(outcome_card, unsafe_allow_html=True)
+                    st.markdown(gauge_html, unsafe_allow_html=True)
 
-        # Add standalone status rates from each filtered trip's Remark components.
+        # Route-level rates use the same exclusive Remark buckets as the gauges.
         ops_totals_by_route = pd.to_numeric(
             df_leg_sum.get("Total_Trips", pd.Series(0, index=df_leg_sum.index)), errors="coerce"
         ).fillna(0).astype(int)
@@ -4752,81 +4726,16 @@ elif choice == "📊 Operations Summary":
                 index=df_leg_sum.index
             )
 
-        oo_counts = _ops_trip_counts("Ontime Dep, Ontime Arr %")
-        ol_counts = _ops_trip_counts("Ontime Dep, Late Arr %")
-        ll_counts = _ops_trip_counts("Late Dep, Late Arr %")
-        lo_counts = _ops_trip_counts("Late Dep, Ontime Arr %")
-        for status_label, count_col in [
-            ('On-time Departure', 'On-time Departure Trips'),
-            ('Late Departure', 'Late Departure Trips'),
-            ('On-time Arrival', 'On-time Arrival Trips'),
-            ('Late Arrival', 'Late Arrival Trips'),
-            ('Late Dep, In-Transit', 'Late Dep, In-Transit Trips'),
-            ('Ontime Dep, In-Transit', 'Ontime Dep, In-Transit Trips')
-        ]:
-            if count_col in df_leg_sum.columns:
-                status_counts_for_table = pd.to_numeric(df_leg_sum[count_col], errors='coerce').fillna(0).astype(int)
-                df_leg_sum[f'{status_label} %'] = _ops_rate_for_table(status_counts_for_table)
-        if 'On-time Departure %' not in df_leg_sum.columns:
-            df_leg_sum['On-time Departure %'] = _ops_rate_for_table(oo_counts + ol_counts)
-        if 'Late Departure %' not in df_leg_sum.columns:
-            df_leg_sum['Late Departure %'] = _ops_rate_for_table(ll_counts + lo_counts)
-        if 'On-time Arrival %' not in df_leg_sum.columns:
-            df_leg_sum['On-time Arrival %'] = _ops_rate_for_table(oo_counts + lo_counts)
-        if 'Late Arrival %' not in df_leg_sum.columns:
-            df_leg_sum['Late Arrival %'] = _ops_rate_for_table(ol_counts + ll_counts)
-
-        gauge_specs = [
-            ("On-time Arrival", ops_ontime_arrivals, "success"),
-            ("On-time Departure", ops_ontime_departures, "success"),
-            ("Departure & Arrival On-time", ops_on_time, "success"),
-            ("Late Arrival", ops_late_arrivals, "exception"),
-            ("Late Departure", ops_late_departures, "exception"),
-        ]
-        gauge_html = []
-        for gauge_label, gauge_count, gauge_kind in gauge_specs:
-            gauge_pct = min(100, max(0, gauge_count / ops_total_trips * 100)) if ops_total_trips else 0
-            if gauge_kind == 'success':
-                gauge_color = '#16a34a' if gauge_pct >= 95 else ('#d97706' if gauge_pct >= 80 else '#dc2626')
-            else:
-                gauge_color = '#dc2626' if gauge_count > 0 else '#16a34a'
-            gauge_dash = 201.06 * gauge_pct / 100
-            gauge_html.append(textwrap.dedent(f"""
-            <div class="gauge-card">
-              <div class="gauge-label">{html_module.escape(gauge_label)}</div>
-              <svg viewBox="0 0 160 108" role="img" aria-label="{gauge_pct:.1f} percent">
-                <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="#e6ebf1" stroke-width="11" stroke-linecap="round" pathLength="201.06"/>
-                <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="{gauge_color}" stroke-width="11" stroke-linecap="round" stroke-dasharray="{gauge_dash:.2f} 201.06" pathLength="201.06"/>
-                <text x="80" y="83" text-anchor="middle" font-size="22" font-weight="750" fill="#172033">{gauge_pct:.1f}%</text>
-                <text x="16" y="104" text-anchor="middle" font-size="9" fill="#718096">0%</text>
-                <text x="144" y="104" text-anchor="middle" font-size="9" fill="#718096">100%</text>
-              </svg>
-              <div class="gauge-caption">{gauge_count:,} of {ops_total_trips:,} trips</div>
-            </div>
-            """).strip())
-
-        overview_header_html = f"""
-<div class="ops-overview-line">
-  <div><div class="section-kicker">Network pulse</div><h3>Schedule Performance</h3></div>
-  <div class="ops-data-chip">{ops_total_trips:,} trips &nbsp;·&nbsp; {len(df_leg_sum):,} route legs</div>
-</div>
-""".strip()
-        st.markdown(overview_header_html, unsafe_allow_html=True)
-        # Render each card in its own Streamlit column. Adjacent HTML div blocks
-        # were being parsed as Markdown after the first gauge on hosted builds.
-        gauge_columns = st.columns(len(gauge_html), gap='small')
-        for gauge_column, gauge_card_html in zip(gauge_columns, gauge_html):
-            with gauge_column:
-                st.markdown(gauge_card_html, unsafe_allow_html=True)
-        st.caption("🟢 On-time target: 95%+ · 🟡 80–94.9% / in-transit · 🔴 below 80% or any late/missing trip · 🟣 late departure with on-time arrival. Insights use the selected date, zone, RO, and route search.")
+        for status_label, _, _ in OPS_REMARK_OUTCOME_LABELS:
+            count_col = f'{status_label} Trips'
+            status_counts_for_table = pd.to_numeric(
+                df_leg_sum.get(count_col, pd.Series(0, index=df_leg_sum.index)), errors='coerce'
+            ).fillna(0).astype(int)
+            df_leg_sum[f'{status_label} %'] = _ops_rate_for_table(status_counts_for_table)
 
         display_cols = [
-            'Origin RO', 'Route Path', 'Legwise', 'Legs', 'Total_Trips', 
-            'On-time Departure %', 'Late Departure %', 'On-time Arrival %', 'Late Arrival %',
-            'In-Transit %', 'Late Dep, In-Transit %', 'Ontime Dep, In-Transit %',
-            'No Departure %', 'Missing Schedule %',
-            'Ontime Dep, Ontime Arr %', 'Ontime Dep, Late Arr %', 
-            'Late Dep, Late Arr %', 'Late Dep, Ontime Arr %'
+            'Origin RO', 'Route Path', 'Legwise', 'Legs', 'Total_Trips',
+            *[f'{label} %' for label, _, _ in OPS_REMARK_OUTCOME_LABELS]
         ]
         
         df_display = df_leg_sum[[c for c in display_cols if c in df_leg_sum.columns]].copy()
@@ -4867,6 +4776,8 @@ elif choice == "📊 Operations Summary":
                 icon = '🔴' if pct > 0 else '🟢'
             elif 'ontime' in col or 'on-time' in col:
                 icon = '🟢' if pct >= 95 else ('🟡' if pct >= 80 else '🔴')
+            elif 'other' in col:
+                icon = '⚪'
             else:
                 icon = ''
             if pct == 0:
@@ -4877,7 +4788,7 @@ elif choice == "📊 Operations Summary":
             df_display[c] = df_display[c].apply(lambda value, col=c: _format_ops_status_badge(value, col))
 
         st.markdown("### Top Priority Routes Summary")
-        st.caption("The table includes departure, arrival, in-transit, missing-schedule and paired-outcome rates with trip counts. Scroll horizontally to reach every column.")
+        st.caption("Every column is one exclusive Remark outcome with its trip count. Scroll horizontally to reach every outcome.")
         
         df_display.insert(0, 'Select 👁️', False)
         ap_data = load_action_plans()
@@ -4895,21 +4806,14 @@ elif choice == "📊 Operations Summary":
             'Legwise': st.column_config.TextColumn('Leg', width='small'),
             'Legs': st.column_config.TextColumn('Leg Path', width='medium'),
             'Total_Trips': st.column_config.NumberColumn('Trips', width='small', format='%d'),
-            'On-time Departure %': st.column_config.TextColumn('On-time Dep', width='medium', help='Trips with an on-time departure, as a percentage and count.'),
-            'Late Departure %': st.column_config.TextColumn('Late Dep', width='medium', help='Trips with a late departure, as a percentage and count.'),
-            'On-time Arrival %': st.column_config.TextColumn('On-time Arr', width='medium', help='Trips with an on-time arrival, as a percentage and count.'),
-            'Late Arrival %': st.column_config.TextColumn('Late Arr', width='medium', help='Trips with a late arrival, as a percentage and count.'),
-            'In-Transit %': st.column_config.TextColumn('In-Transit', width='small', help='Arrival has not yet been recorded.'),
-            'Late Dep, In-Transit %': st.column_config.TextColumn('Late Dep, In-Transit', width='medium'),
-            'Ontime Dep, In-Transit %': st.column_config.TextColumn('Ontime Dep, In-Transit', width='medium'),
-            'No Departure %': st.column_config.TextColumn('No Departure', width='small', help='Departure actual time is missing.'),
-            'Missing Schedule %': st.column_config.TextColumn('Missing Schedule', width='small', help='A scheduled departure or arrival time is missing.'),
-            'Ontime Dep, Ontime Arr %': st.column_config.TextColumn('Ontime Dep, Ontime Arr', width='medium'),
-            'Ontime Dep, Late Arr %': st.column_config.TextColumn('Ontime Dep, Late Arr', width='medium'),
-            'Late Dep, Late Arr %': st.column_config.TextColumn('Late Dep, Late Arr', width='medium'),
-            'Late Dep, Ontime Arr %': st.column_config.TextColumn('Late Dep, Ontime Arr', width='medium'),
             'Action Plan ✍️': st.column_config.TextColumn('Action Plan ✍️', width='large')
         }
+        for outcome_label, _, _ in OPS_REMARK_OUTCOME_LABELS:
+            outcome_column = f'{outcome_label} %'
+            if outcome_column in df_display.columns:
+                ops_column_config[outcome_column] = st.column_config.TextColumn(
+                    outcome_label, width='medium', help='Trips in this exclusive Remark category, as a percentage and count.'
+                )
 
         edited_df = st.data_editor(
             styled_df,
@@ -4941,10 +4845,11 @@ elif choice == "📊 Operations Summary":
             selected_leg = df_display.loc[selected_idx, 'Legwise']
             
             st.markdown("---")
-            st.markdown(f"### 📄 Details for `{selected_route}` - `{selected_leg}`")
+            st.markdown(f"### 📄 Remark-wise Raw Trip Data · `{selected_route}` · `{selected_leg}`")
             
             filtered_raw = df_raw_leg[(df_raw_leg['Route Path'] == selected_route) & (df_raw_leg['Legwise'] == selected_leg)].copy()
             filtered_raw = clean_dataframe_for_excel(filtered_raw, sheet_type="ops_raw")
+            st.caption("The Remark column is the trip outcome shown for each raw record.")
             st.dataframe(style_ui_dataframe(filtered_raw), use_container_width=True)
         else:
             st.info("👆 Check the 'Select 👁️' box in the table above to view detailed trip records.")
