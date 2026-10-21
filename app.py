@@ -1833,14 +1833,16 @@ def build_vendor_summary_from_raw(df_vperf_raw):
         Total_Trips=('MasterCDNo', 'count'),
         Ontime_Cnt=('Remark with 15 min waiver', lambda x: (x == 'Ontime Arrival').sum()),
         Late_Cnt=('Remark with 15 min waiver', lambda x: (x == 'Late Arrival').sum()),
-        Transit_Cnt=('Remark with 15 min waiver', lambda x: (x == 'In-Transit').sum())
+        Transit_Cnt=('Remark with 15 min waiver', lambda x: (x == 'In-Transit').sum()),
+        Missing_Cnt=('Remark with 15 min waiver', lambda x: (x == 'Missing Schedule').sum())
     ).reset_index()
     
     perf_sum['Ontime Arrival'] = perf_sum.apply(lambda r: format_pct_cnt(r['Ontime_Cnt'], r['Total_Trips']), axis=1)
     perf_sum['Late Arrival'] = perf_sum.apply(lambda r: format_pct_cnt(r['Late_Cnt'], r['Total_Trips']), axis=1)
     perf_sum['In-Transit'] = perf_sum.apply(lambda r: format_pct_cnt(r['Transit_Cnt'], r['Total_Trips']), axis=1)
+    perf_sum['Missing Schedule'] = perf_sum.apply(lambda r: format_pct_cnt(r['Missing_Cnt'], r['Total_Trips']), axis=1)
     
-    perf_sum = perf_sum.drop(columns=['Ontime_Cnt', 'Late_Cnt', 'Transit_Cnt'], errors='ignore')
+    perf_sum = perf_sum.drop(columns=['Ontime_Cnt', 'Late_Cnt', 'Transit_Cnt', 'Missing_Cnt'], errors='ignore')
     return sort_by_route_and_leg(perf_sum)
 
 @st.cache_data(show_spinner=False, max_entries=8)
@@ -2055,15 +2057,15 @@ def clean_dataframe_for_excel(df_in, sheet_type="generic"):
     elif sheet_type == "ven_sum":
         preferred = [
             'Origin RO', 'Route Path', 'Legwise', 'Legs', 'VendorName',
-            'Total_Trips', 'Ontime Arrival', 'Late Arrival', 'In-Transit'
+            'Total_Trips', 'Ontime Arrival', 'Late Arrival', 'In-Transit', 'Missing Schedule'
         ]
     elif sheet_type == "ven_raw":
         preferred = [
-            'Origin RO', 'Route Path', 'Date', 'Legwise', 'Legs',
+            'Date', 'Remark with 15 min waiver', 'Origin RO', 'Route Path', 'Legwise', 'Legs',
             'VendorName', 'VehicleNo', 'Actual Departure Time',
             'Actual Arrival Time', 'Given Driving Hours',
             'Actual Driving Hours', 'Delay Hours',
-            'Remark with 15 min waiver', 'MasterCDNo', 'RouteCode'
+            'MasterCDNo', 'RouteCode'
         ]
     elif sheet_type == "cpk_raw":
         preferred = [
@@ -2475,7 +2477,7 @@ def compact_detail_frame(frame, kind):
     if frame is None or frame.empty:
         return pd.DataFrame()
     preferred_by_kind = {
-        'ven_raw': ['Date', 'Origin RO', 'Route Path', 'Legwise', 'VendorName', 'Actual Arrival Time', 'Delay Hours', 'Remark with 15 min waiver', 'MasterCDNo'],
+        'ven_raw': ['Date', 'Remark with 15 min waiver', 'Origin RO', 'Route Path', 'Legwise', 'VendorName', 'Actual Arrival Time', 'Delay Hours', 'MasterCDNo'],
         'ops_raw': ['MCD_StartDate', 'Remark', 'Zone', 'Origin RO', 'Route Path', 'Legwise', 'Legs', 'CD_FromBranch', 'CD_ToBranch', 'MasterCDNo'],
         'pay_raw': ['Invoice Id', 'Invoice Date', 'RO Name', 'Zone', 'Vendor Name', 'Amount', 'Status', 'Payment Group', 'Pending With', 'Days Pending'],
         'cpk_raw': ['Date', 'RO_Clean', 'Final_Route', 'Final_Type', 'VendorName', 'Vehicle No', 'Cap', 'Wt', 'Trips', 'Cost']
@@ -4920,7 +4922,44 @@ elif choice == "🚚 Vendor Performance":
             type="primary"
         )
 
-        st.markdown("### Vendor Arrival Performance Summary")
+        st.markdown("### Vendor Arrival Performance")
+        vendor_total_trips = int(pd.to_numeric(
+            df_display.get('Total_Trips', pd.Series(0, index=df_display.index)), errors='coerce'
+        ).fillna(0).sum())
+
+        def _vendor_outcome_count(column):
+            if column not in df_display.columns:
+                return 0
+            count_text = df_display[column].astype(str).str.extract(r"\(([,\d]+)\)", expand=False)
+            return int(pd.to_numeric(
+                count_text.str.replace(',', '', regex=False), errors='coerce'
+            ).fillna(0).sum())
+
+        vendor_gauge_specs = [
+            ('Ontime Arrival', _vendor_outcome_count('Ontime Arrival'), '#16a34a', '#f0fdf4', '#bbf7d0'),
+            ('Late Arrival', _vendor_outcome_count('Late Arrival'), '#dc2626', '#fef2f2', '#fecaca')
+        ]
+        vendor_gauge_columns = st.columns(2, gap='small')
+        for gauge_column, (gauge_label, gauge_count, gauge_color, gauge_surface, gauge_border) in zip(vendor_gauge_columns, vendor_gauge_specs):
+            gauge_pct = min(100, max(0, gauge_count / vendor_total_trips * 100)) if vendor_total_trips else 0
+            gauge_dash = 201.06 * gauge_pct / 100
+            gauge_html = textwrap.dedent(f"""
+            <div class="gauge-card" style="background:{gauge_surface};border-color:{gauge_border}">
+              <div class="gauge-label">{'🟢' if gauge_label == 'Ontime Arrival' else '🔴'} {gauge_label}</div>
+              <svg viewBox="0 0 160 108" role="img" aria-label="{gauge_pct:.1f} percent">
+                <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="#e6ebf1" stroke-width="11" stroke-linecap="round" pathLength="201.06"/>
+                <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="{gauge_color}" stroke-width="11" stroke-linecap="round" stroke-dasharray="{gauge_dash:.2f} 201.06" pathLength="201.06"/>
+                <text x="80" y="83" text-anchor="middle" font-size="22" font-weight="750" fill="#172033">{gauge_pct:.1f}%</text>
+                <text x="16" y="104" text-anchor="middle" font-size="9" fill="#718096">0%</text>
+                <text x="144" y="104" text-anchor="middle" font-size="9" fill="#718096">100%</text>
+              </svg>
+              <div class="gauge-caption">{gauge_count:,} of {vendor_total_trips:,} trips</div>
+            </div>
+            """).strip()
+            with gauge_column:
+                st.markdown(gauge_html, unsafe_allow_html=True)
+
+        st.markdown("#### Vendor Route / Leg Summary")
         ap_data = load_action_plans()
         mod_ap = ap_data.get("Vendor Performance", {})
         summary_cols = [c for c in display_cols if c in df_display.columns and c not in ['RowKey', 'Action Plan ✍️', 'Select 👁️']]
