@@ -3036,7 +3036,9 @@ MENU_SHEETS = {
         'Legwise_Route_Summary', 'Vendor_Perf_Summary',
         'CPK_National_Zonal_Master', 'CPK_Feeder_Regional', 'CPK_Coloader'
     ),
-    "🔐 User & Access Control": ('Vendor_Perf_Raw', 'CPK_Raw_Data')
+    # Access control only needs distinct vendor names. Read those columns below
+    # instead of loading both full raw sheets on every rerun.
+    "🔐 User & Access Control": ()
 }
 
 # Dynamically filter Navigation menu based on user's allowed_modules
@@ -3212,6 +3214,27 @@ def read_payment_sheet_cached(path, signature, sheet_name):
         selected_sheet = sheet_name if sheet_name in workbook.sheet_names else workbook.sheet_names[0]
         return workbook.parse(selected_sheet)
 
+@st.cache_data(show_spinner=False, max_entries=8)
+def read_access_vendor_options_cached(path, signature):
+    """Read only vendor-name columns for the access editor, not both full raw sheets."""
+    vendor_names = set()
+    try:
+        with pd.ExcelFile(path, engine='openpyxl') as workbook:
+            for sheet_name in ('Vendor_Perf_Raw', 'CPK_Raw_Data'):
+                if sheet_name not in workbook.sheet_names:
+                    continue
+                header = workbook.parse(sheet_name, nrows=0)
+                if 'VendorName' not in header.columns:
+                    continue
+                values = workbook.parse(sheet_name, usecols=['VendorName'])['VendorName'].dropna().unique()
+                vendor_names.update(
+                    clean_name for clean_name in (normalize_vendor_name(value) for value in values)
+                    if clean_name
+                )
+    except Exception as exc:
+        logging.warning(f"Could not load access-control vendor options: {exc}")
+    return sorted(vendor_names)
+
 def load_dashboard_data(page):
     if page == "🧭 Scheduled Route Master":
         return {'Scheduled_Route_Master': get_scheduled_route_master(get_route_lookup_signature())}
@@ -3228,6 +3251,8 @@ def load_dashboard_data(page):
         return {}
     try:
         processed_signature = file_version(path)
+        if page == "🔐 User & Access Control":
+            return {'Vendor_Options': read_access_vendor_options_cached(path, processed_signature)}
         data = read_dashboard_sheets_cached(path, processed_signature, MENU_SHEETS[page])
         if page in ["⚠️ Overall Issues", "💳 Payment Dashboard", "📱 Communication Hub"] and os.path.exists(FILE_MAP.get('PAYMENT', '')):
             try:
@@ -5461,11 +5486,7 @@ elif choice == "🔐 User & Access Control":
     users_db_live = load_users_db()
 
     # Gather all unique normalized vendor names from the dataset + existing user mappings
-    known_vendors_set = set()
-    if 'Vendor_Perf_Raw' in data and not data['Vendor_Perf_Raw'].empty and 'VendorName' in data['Vendor_Perf_Raw'].columns:
-        known_vendors_set.update(data['Vendor_Perf_Raw']['VendorName'].dropna().apply(normalize_vendor_name).unique().tolist())
-    if 'CPK_Raw_Data' in data and not data['CPK_Raw_Data'].empty and 'VendorName' in data['CPK_Raw_Data'].columns:
-        known_vendors_set.update(data['CPK_Raw_Data']['VendorName'].dropna().apply(normalize_vendor_name).unique().tolist())
+    known_vendors_set = set(data.get('Vendor_Options', []))
     for u_d in users_db_live.values():
         for v_item in u_d.get("vendors", []):
             known_vendors_set.add(normalize_vendor_name(v_item))
