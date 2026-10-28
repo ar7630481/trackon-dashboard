@@ -59,14 +59,71 @@ THEME_OPTIONS = {
         "accent": "#087e8b", "blue": "#2563eb", "card1": "#ffffff", "card2": "#f1f6fc",
         "sidebar1": "#edf4fb", "sidebar2": "#e5eef8", "line": "rgba(51, 65, 85, .18)",
         "text": "#172033", "muted": "#526176", "button1": "#dceafe", "button2": "#d8f3ee"
+    },
+    "📊 Power BI Pro": {
+        "navy950": "#f3f6fb", "navy900": "#ffffff", "navy800": "#edf2f8",
+        "glow1": "rgba(17, 141, 255, .11)", "glow2": "rgba(242, 200, 17, .12)",
+        "accent": "#8a6d00", "blue": "#0f6cbd", "card1": "#ffffff", "card2": "#edf2f8",
+        "sidebar1": "#ffffff", "sidebar2": "#f6f8fc", "line": "rgba(23, 43, 77, .14)",
+        "text": "#172b4d", "muted": "#5f6f86", "button1": "#e8f0fb", "button2": "#dce9f8"
+    },
+    "🧊 Arctic Blue": {
+        "navy950": "#eef6fb", "navy900": "#ffffff", "navy800": "#e4f0f7",
+        "glow1": "rgba(14, 165, 233, .12)", "glow2": "rgba(6, 182, 212, .08)",
+        "accent": "#0e7490", "blue": "#0369a1", "card1": "#ffffff", "card2": "#e4f0f7",
+        "sidebar1": "#f9fcff", "sidebar2": "#edf5fa", "line": "rgba(18, 48, 71, .15)",
+        "text": "#123047", "muted": "#536d80", "button1": "#dceef8", "button2": "#d8eafa"
+    },
+    "🌅 Sandstone Luxe": {
+        "navy950": "#f7f3ed", "navy900": "#fffdf9", "navy800": "#f1e9dd",
+        "glow1": "rgba(217, 119, 6, .10)", "glow2": "rgba(180, 83, 9, .07)",
+        "accent": "#9a5b13", "blue": "#8b4513", "card1": "#fffdf9", "card2": "#f1e9dd",
+        "sidebar1": "#fffdf9", "sidebar2": "#f7f1e8", "line": "rgba(48, 40, 31, .15)",
+        "text": "#30281f", "muted": "#6e6255", "button1": "#f3e7d5", "button2": "#eee0cb"
+    },
+    "🌑 Midnight Graphite": {
+        "navy950": "#101319", "navy900": "#191e27", "navy800": "#222a35",
+        "glow1": "rgba(59, 130, 246, .14)", "glow2": "rgba(251, 191, 36, .09)",
+        "accent": "#fbbf24", "blue": "#60a5fa", "card1": "#191e27", "card2": "#222a35",
+        "sidebar1": "#171b22", "sidebar2": "#101319", "line": "rgba(203, 213, 225, .17)",
+        "text": "#f4f6fa", "muted": "#a7b0bf", "button1": "#303a49", "button2": "#263342"
+    },
+    "🟣 Amethyst Studio": {
+        "navy950": "#120f1d", "navy900": "#1b1730", "navy800": "#28213e",
+        "glow1": "rgba(139, 92, 246, .18)", "glow2": "rgba(217, 70, 239, .10)",
+        "accent": "#c4b5fd", "blue": "#a78bfa", "card1": "#1b1730", "card2": "#28213e",
+        "sidebar1": "#191429", "sidebar2": "#100d19", "line": "rgba(196, 181, 253, .19)",
+        "text": "#f5f1ff", "muted": "#b8aecf", "button1": "#47336f", "button2": "#342650"
+    },
+    "🍷 Burgundy Executive": {
+        "navy950": "#1a0f16", "navy900": "#26151f", "navy800": "#36202d",
+        "glow1": "rgba(244, 63, 94, .15)", "glow2": "rgba(192, 38, 101, .10)",
+        "accent": "#fda4af", "blue": "#fb7185", "card1": "#26151f", "card2": "#36202d",
+        "sidebar1": "#21111b", "sidebar2": "#160b12", "line": "rgba(253, 164, 175, .19)",
+        "text": "#fff1f3", "muted": "#d3adb8", "button1": "#623143", "button2": "#472332"
     }
 }
 _theme_names = list(THEME_OPTIONS)
-_default_theme = _theme_names.index("🤍 Bright Executive")
+_default_theme = _theme_names.index("📊 Power BI Pro")
 selected_theme_name = st.sidebar.selectbox(
-    "✨ Choose your theme", _theme_names, index=_default_theme, key="app_visual_theme"
+    "🎨 Dashboard theme", _theme_names, index=_default_theme, key="app_visual_theme"
 )
 selected_theme = THEME_OPTIONS[selected_theme_name]
+THEME_LIGHT_NAMES = {"🤍 Bright Executive", "📊 Power BI Pro", "🧊 Arctic Blue", "🌅 Sandstone Luxe"}
+THEME_IS_LIGHT = selected_theme_name in THEME_LIGHT_NAMES
+theme_primary_text = "#ffffff" if THEME_IS_LIGHT else selected_theme["navy950"]
+if THEME_IS_LIGHT:
+    THEME_STATUS_PALETTE = {
+        'green': ('#dcfce7', '#166534'), 'red': ('#fee2e2', '#991b1b'),
+        'soft_red': ('#fff1f2', '#9f1239'), 'yellow': ('#fef3c7', '#92400e'),
+        'purple': ('#f3e8ff', '#6b21a8'), 'muted': ('#f1f5f9', selected_theme['muted'])
+    }
+else:
+    THEME_STATUS_PALETTE = {
+        'green': ('rgba(34,197,94,.16)', '#86efac'), 'red': ('rgba(248,113,113,.20)', '#fecaca'),
+        'soft_red': ('rgba(244,63,94,.16)', '#fda4af'), 'yellow': ('rgba(234,179,8,.17)', '#fde68a'),
+        'purple': ('rgba(168,85,247,.18)', '#e9d5ff'), 'muted': ('rgba(148,163,184,.10)', selected_theme['muted'])
+    }
 
 # Custom CSS adapts to the selected theme.
 theme_css = """
@@ -325,6 +382,93 @@ if selected_theme_name == "🤍 Bright Executive":
     </style>
     """, unsafe_allow_html=True)
 
+
+theme_mode = "light" if THEME_IS_LIGHT else "dark"
+theme_control_bg = "#ffffff" if THEME_IS_LIGHT else selected_theme["navy900"]
+theme_nav_active_text = selected_theme["blue"] if THEME_IS_LIGHT else selected_theme["accent"]
+theme_override_css = f"""
+<style>
+:root {{
+    color-scheme:{theme_mode};
+    --theme-bg:{selected_theme['navy950']}; --theme-surface:{selected_theme['navy900']};
+    --theme-surface-alt:{selected_theme['navy800']}; --theme-text:{selected_theme['text']};
+    --theme-muted:{selected_theme['muted']}; --theme-accent:{selected_theme['accent']};
+    --theme-blue:{selected_theme['blue']}; --theme-line:{selected_theme['line']};
+    --theme-sidebar:{selected_theme['sidebar1']}; --theme-sidebar-alt:{selected_theme['sidebar2']};
+    --theme-control-bg:{theme_control_bg}; --theme-control-text:{selected_theme['text']};
+    --theme-nav-active-text:{theme_nav_active_text};
+    --gdg-bg-cell:{selected_theme['card1']}; --gdg-bg-cell-medium:{selected_theme['card2']};
+    --gdg-bg-cell-medium-hover:{selected_theme['card2']}; --gdg-bg-cell-light:{selected_theme['card1']};
+    --gdg-bg-header:{selected_theme['card2']}; --gdg-bg-header-hovered:{selected_theme['card2']};
+    --gdg-bg-header-has-focus:{selected_theme['card2']}; --gdg-bg-header-has-focus-hovered:{selected_theme['card2']};
+    --gdg-text-dark:{selected_theme['text']}; --gdg-text-medium:{selected_theme['text']};
+    --gdg-text-light:{selected_theme['muted']}; --gdg-text-header:{selected_theme['text']};
+    --gdg-text-group-header:{selected_theme['text']}; --gdg-border-color:{selected_theme['line']};
+    --gdg-horizontal-border-color:{selected_theme['line']}; --gdg-accent-color:{selected_theme['blue']};
+    --gdg-link-color:{selected_theme['accent']};
+}}
+.stApp {{ color:var(--theme-text) !important; background:linear-gradient(145deg,var(--theme-bg),var(--theme-surface),var(--theme-surface-alt)) !important; }}
+[data-testid="stHeader"] {{ background:transparent !important; }}
+.stApp h1,.stApp h2,.stApp h3,.stApp h4 {{ color:var(--theme-text) !important; }}
+.stApp p,.stApp label,.stApp [data-testid="stCaptionContainer"],.stApp [data-testid="stMarkdownContainer"] {{ color:var(--theme-text) !important; }}
+.stApp [data-testid="stCaptionContainer"] {{ color:var(--theme-muted) !important; }}
+[data-testid="stSidebar"] {{ background:linear-gradient(180deg,var(--theme-sidebar),var(--theme-sidebar-alt)) !important; }}
+[data-testid="stSidebar"] p,[data-testid="stSidebar"] label,[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {{ color:var(--theme-text) !important; }}
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {{ color:var(--theme-muted) !important; }}
+[data-testid="stMetricLabel"] {{ color:var(--theme-muted) !important; }}
+[data-testid="stMetricValue"] {{ color:var(--theme-text) !important; }}
+[data-testid="stTable"] {{ background:{selected_theme['card1']} !important; color:{selected_theme['text']} !important; }}
+[data-testid="stTable"] th {{ background:{selected_theme['card2']} !important; color:{selected_theme['text']} !important; border-color:var(--theme-line) !important; }}
+[data-testid="stTable"] td {{ background:{selected_theme['card1']} !important; color:{selected_theme['text']} !important; border-color:var(--theme-line) !important; }}
+[data-testid="stDataFrame"],[data-testid="stDataEditor"] {{
+    --gdg-bg-cell:{selected_theme['card1']} !important; --gdg-bg-cell-medium:{selected_theme['card2']} !important;
+    --gdg-bg-cell-medium-hover:{selected_theme['card2']} !important; --gdg-bg-cell-light:{selected_theme['card1']} !important;
+    --gdg-bg-header:{selected_theme['card2']} !important; --gdg-bg-header-hovered:{selected_theme['card2']} !important;
+    --gdg-bg-header-has-focus:{selected_theme['card2']} !important; --gdg-bg-header-has-focus-hovered:{selected_theme['card2']} !important;
+    --gdg-text-dark:{selected_theme['text']} !important; --gdg-text-medium:{selected_theme['text']} !important;
+    --gdg-text-light:{selected_theme['muted']} !important; --gdg-text-header:{selected_theme['text']} !important;
+    --gdg-text-group-header:{selected_theme['text']} !important; --gdg-border-color:{selected_theme['line']} !important;
+    --gdg-horizontal-border-color:{selected_theme['line']} !important; --gdg-accent-color:{selected_theme['blue']} !important;
+}}
+[data-baseweb="select"] > div,[data-baseweb="input"] > div,[data-baseweb="textarea"] > div,
+[data-testid="stDateInput"] input,[data-testid="stDateInput"] button {{
+    background:var(--theme-control-bg) !important; color:var(--theme-control-text) !important; border-color:var(--theme-line) !important;
+}}
+.stApp [data-baseweb="select"] *,[data-baseweb="popover"],[data-baseweb="popover"] [role="listbox"],
+[data-baseweb="popover"] [role="option"] {{ background-color:var(--theme-control-bg) !important; color:var(--theme-control-text) !important; }}
+.stApp input,.stApp textarea {{ background:var(--theme-control-bg) !important; color:var(--theme-control-text) !important; }}
+[data-testid="stSidebar"] [data-testid="stRadio"] label {{ color:var(--theme-text) !important; }}
+[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked),
+[data-testid="stSidebar"] [data-testid="stRadio"] label:has([aria-checked="true"]) {{
+    background:color-mix(in srgb,var(--theme-accent) 16%,var(--theme-sidebar)) !important;
+    color:var(--theme-nav-active-text) !important; border:1px solid var(--theme-line); font-weight:750;
+}}
+[data-testid="stSidebar"] [data-testid="stSelectbox"] label {{ color:var(--theme-accent) !important; }}
+.stApp button[data-testid="stBaseButton-secondary"],.stApp button[data-testid="stBaseButton-secondary"]:hover {{
+    background:linear-gradient(120deg,{selected_theme['button1']},{selected_theme['button2']}) !important;
+    color:var(--theme-text) !important; border-color:var(--theme-line) !important;
+}}
+.stApp button[data-testid="stBaseButton-primary"] {{ background:var(--theme-blue) !important; color:{theme_primary_text} !important; border-color:var(--theme-blue) !important; }}
+[data-baseweb="tab"] {{ color:var(--theme-muted) !important; }}
+[data-baseweb="tab"][aria-selected="true"] {{ color:var(--theme-blue) !important; }}
+hr {{ border-color:var(--theme-line) !important; }}
+.app-topline {{ background:linear-gradient(110deg,{selected_theme['card1']},{selected_theme['card2']}) !important; border-color:var(--theme-line) !important; }}
+.app-brandline,.app-chip {{ color:var(--theme-text) !important; }}
+.app-subline,.gauge-caption,.ops-data-chip {{ color:var(--theme-muted) !important; }}
+.app-eyebrow,.section-kicker {{ color:var(--theme-accent) !important; }}
+.theme-preview {{ display:flex; align-items:center; gap:.38rem; margin:-.15rem 0 .7rem; color:var(--theme-muted); font-size:.73rem; font-weight:650; }}
+.theme-swatch {{ width:.68rem; height:.68rem; border-radius:50%; border:1px solid var(--theme-line); }}
+</style>
+"""
+st.markdown(theme_override_css, unsafe_allow_html=True)
+st.sidebar.markdown(
+    f"<div class='theme-preview'><span class='theme-swatch' style='background:{selected_theme['navy950']}'></span>"
+    f"<span class='theme-swatch' style='background:{selected_theme['card1']}'></span>"
+    f"<span class='theme-swatch' style='background:{selected_theme['blue']}'></span>"
+    f"<span class='theme-swatch' style='background:{selected_theme['accent']}'></span>"
+    f"<span>{html_module.escape(selected_theme_name)}</span></div>",
+    unsafe_allow_html=True
+)
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploaded_raw_data")
 if not os.path.exists(DATA_DIR):
@@ -1460,15 +1604,15 @@ def build_print_ready_schedule_html(df, branch_label):
 <style>
 @page {{ size: A3 landscape; margin: 9mm; }}
 * {{ box-sizing: border-box; }}
-body {{ margin: 0; padding: 20px; color: #172638; font: 12px/1.35 Arial, sans-serif; }}
+body {{ margin: 0; padding: 20px; color: {selected_theme["text"]}; background: {selected_theme["navy950"]}; font: 12px/1.35 Arial, sans-serif; }}
 .toolbar {{ display: flex; justify-content: space-between; align-items: center; gap: 16px; margin: 0 0 16px; }}
-.toolbar button {{ border: 0; border-radius: 7px; background: #155e75; color: white; padding: 10px 16px; font-size: 13px; font-weight: 700; cursor: pointer; }}
+.toolbar button {{ border: 0; border-radius: 7px; background: {selected_theme["blue"]}; color: {theme_primary_text}; padding: 10px 16px; font-size: 13px; font-weight: 700; cursor: pointer; }}
 h1 {{ margin: 0 0 4px; font-size: 22px; }}
-.subtitle {{ margin: 0; color: #52657a; }}
+.subtitle {{ margin: 0; color: {selected_theme["muted"]}; }}
 .schedule-table {{ width: 100%; border-collapse: collapse; font-size: 8px; }}
-.schedule-table th {{ background: #153b5b; color: #fff; text-align: left; padding: 7px 6px; }}
-.schedule-table td {{ border-bottom: 1px solid #d7e0e9; padding: 6px; vertical-align: top; }}
-.schedule-table tr:nth-child(even) td {{ background: #f2f7fb; }}
+.schedule-table th {{ background: {selected_theme["navy800"]}; color: {selected_theme["text"]}; text-align: left; padding: 7px 6px; }}
+.schedule-table td {{ border-bottom: 1px solid {selected_theme["line"]}; padding: 6px; vertical-align: top; }}
+.schedule-table tr:nth-child(even) td {{ background: {selected_theme["card2"]}; }}
 thead {{ display: table-header-group; }}
 tr {{ break-inside: avoid; page-break-inside: avoid; }}
 @media print {{ body {{ padding: 0; }} .toolbar button {{ display: none; }} }}
@@ -1781,11 +1925,16 @@ def ops_remark_outcome_series(df_raw):
     return buckets
 
 def summarize_ops_remark_outcomes(df_raw):
-    """Count each selected operations trip once using its stored Remark outcome."""
+    """Count selected rows using their cached exclusive Remark outcome."""
     labels = OPS_REMARK_OUTCOME_LABELS
     if not isinstance(df_raw, pd.DataFrame) or df_raw.empty:
         return {label: 0 for label, _, _ in labels}, 0, labels
-    counts = ops_remark_outcome_series(df_raw).value_counts().to_dict()
+    outcomes = (
+        df_raw['_OpsRemarkOutcome']
+        if '_OpsRemarkOutcome' in df_raw.columns
+        else ops_remark_outcome_series(df_raw)
+    )
+    counts = outcomes.value_counts().to_dict()
     return {label: int(counts.get(label, 0)) for label, _, _ in labels}, len(df_raw), labels
 
 @st.cache_data(show_spinner=False, max_entries=8)
@@ -2061,19 +2210,7 @@ def style_ui_dataframe(df_in):
         return df_in
 
     def tone_css(tone):
-        if selected_theme_name == '🤍 Bright Executive':
-            palette = {
-                'green': ('#dcfce7', '#166534'), 'red': ('#fee2e2', '#991b1b'),
-                'soft_red': ('#fff1f2', '#9f1239'), 'yellow': ('#fef3c7', '#92400e'), 'purple': ('#f3e8ff', '#6b21a8'),
-                'muted': ('#f1f5f9', '#64748b')
-            }
-        else:
-            palette = {
-                'green': ('rgba(56, 142, 60, 0.25)', '#b9f6ca'), 'red': ('rgba(211, 47, 47, 0.25)', '#ff8a80'),
-                'soft_red': ('rgba(244, 63, 94, 0.18)', '#fda4af'), 'yellow': ('rgba(245, 127, 23, 0.25)', '#ffe57f'), 'purple': ('rgba(123, 31, 162, 0.25)', '#ea80fc'),
-                'muted': ('transparent', '#78909C')
-            }
-        bg, fg = palette[tone]
+        bg, fg = THEME_STATUS_PALETTE.get(tone, THEME_STATUS_PALETTE['muted'])
         return f'background-color: {bg}; color: {fg}; font-weight: bold;'
 
     def ui_cell_color(val, col_name):
@@ -2190,22 +2327,20 @@ def style_ui_dataframe(df_in):
 
         return ''
 
-    styled = df_in.style
-    if selected_theme_name == '🤍 Bright Executive':
-        styled = styled.set_properties(**{
-            'background-color': '#ffffff',
-            'color': '#334155',
-            'border-color': '#e7edf4',
-            'font-size': '12px',
-            'padding': '7px 9px'
-        }).set_table_styles([
-            {'selector': 'th', 'props': [
-                ('background-color', '#edf3f9'), ('color', '#172033'),
-                ('font-weight', '700'), ('border-color', '#dfe7f0'),
-                ('padding', '8px 9px')
-            ]},
-            {'selector': 'td', 'props': [('border-color', '#e7edf4')]},
-        ], overwrite=False)
+    styled = df_in.style.set_properties(**{
+        'background-color': selected_theme['card1'],
+        'color': selected_theme['text'],
+        'border-color': selected_theme['line'],
+        'font-size': '12px',
+        'padding': '7px 9px'
+    }).set_table_styles([
+        {'selector': 'th', 'props': [
+            ('background-color', selected_theme['card2']), ('color', selected_theme['text']),
+            ('font-weight', '700'), ('border-color', selected_theme['line']),
+            ('padding', '8px 9px')
+        ]},
+        {'selector': 'td', 'props': [('border-color', selected_theme['line'])]},
+    ], overwrite=False)
     for col in df_in.columns:
         if hasattr(styled, 'map'):
             styled = styled.map(lambda x, c=col: ui_cell_color(x, c), subset=[col])
@@ -2633,14 +2768,7 @@ def get_processed_data_cached(file_timestamps):
     data_for_export = {}
     
     ro_zone_map = {}
-    branch_to_ro_map = {
-        "MUMH": "MUMRO", "BWNDLH": "MUMRO", "BWNDH": "MUMRO", "BKLH": "MUMRO",
-        "DELAP": "DELRO", "PATH": "PATRO", "CCUH": "CCURO", "HOWDG": "CCURO",
-        "BLRSH": "BLRRO", "HYDH": "HYDRO", "PNQHWH": "MAHRO", "PNQH": "MAHRO",
-        "AMDH": "AMDRO", "BDQH": "AMDRO", "SRTKDH": "AMDRO", "ANKH": "AMDRO",
-        "INDH": "INDRO", "BHOH": "INDRO", "JPRH": "JPRRO", "LKOH": "LKORO",
-        "VNS1": "LKORO", "GAUH": "GAURO", "BBSH": "BBSRO", "CHIH": "CHIRO"
-    }
+    branch_to_ro_map = {}
     branch_to_zone_map = {}
     
     if os.path.exists(FILE_MAP["BRANCH_MASTER"]):
@@ -2658,7 +2786,10 @@ def get_processed_data_cached(file_timestamps):
             df_brn_master['RO_CLEAN'] = df_brn_master[ro_col_m].astype(str).str.strip().str.upper()
             df_brn_master['ZONE_CLEAN'] = df_brn_master[zone_col_m].astype(str).str.strip().str.upper()
             
-            valid_brn = df_brn_master[df_brn_master['RO_CLEAN'].notna() & (~df_brn_master['RO_CLEAN'].isin(['', 'NAN', 'NONE']))]
+            valid_brn = df_brn_master[
+                (~df_brn_master['RO_CLEAN'].isin(['', 'NAN', 'NONE']))
+                & (~df_brn_master['BRN_CLEAN'].isin(['', 'NAN', 'NONE']))
+            ]
             ro_zone_map = valid_brn.drop_duplicates(subset=['RO_CLEAN']).set_index('RO_CLEAN')['ZONE_CLEAN'].to_dict()
             
             unique_branches = valid_brn.drop_duplicates(subset=['BRN_CLEAN'])
@@ -2782,11 +2913,10 @@ def get_processed_data_cached(file_timestamps):
         df_leg_all['CD_ToBranch_Clean'] = df_leg_all['CD_ToBranch'].astype(str).str.strip().str.upper()
         df_leg_all['Origin_Clean'] = df_leg_all['Origin'].astype(str).str.strip().str.upper()
 
-        def resolve_origin_ro(row):
-            for code in [row['Origin_Clean'], row['CD_FromBranch_Clean'], row['CD_ToBranch_Clean']]:
-                if code in branch_to_ro_map and branch_to_ro_map[code]:
-                    return branch_to_ro_map[code]
-            return "DELRO"
+        # Each leg belongs to the RO mapped to that row's origin branch.
+        df_leg_all['Origin RO'] = (
+            df_leg_all['CD_FromBranch_Clean'].map(branch_to_ro_map).fillna('UNMAPPED')
+        )
 
         def resolve_zone(row):
             ro_val = row['Origin RO']
@@ -2797,7 +2927,6 @@ def get_processed_data_cached(file_timestamps):
                     return branch_to_zone_map[code]
             return "NORTH"
 
-        df_leg_all['Origin RO'] = df_leg_all.apply(resolve_origin_ro, axis=1)
         df_leg_all['Zone'] = df_leg_all.apply(resolve_zone, axis=1)
         df_leg_all.drop(columns=['CD_ToBranch_Clean', 'Origin_Clean'], inplace=True, errors='ignore')
         
@@ -4278,17 +4407,30 @@ def render_overall_issues_metric_cards(metric_specs, zone=None, start_date=None,
             continue
         pct = min(100, max(0, count / total * 100)) if total else 0
         color, surface, border, icon = gauge_colors[label]
+        if not THEME_IS_LIGHT:
+            if label in {'Ontime Dep, Ontime Arr', 'Payment Pending / Paid', 'Efficiently Utilized Routes'}:
+                tone_key = 'green'
+            elif label in {'Ontime Dep, Late Arr'}:
+                tone_key = 'soft_red'
+            elif label in {'Late Dep, Ontime Arr', 'Draft Bills', 'Finance Hold', 'Underutilized Routes'}:
+                tone_key = 'red'
+            elif label == 'Late Dep, Late Arr':
+                tone_key = 'red'
+            else:
+                tone_key = 'yellow'
+            surface = THEME_STATUS_PALETTE[tone_key][0]
+            border = selected_theme['line']
         params_json, base_url_json = _overall_issue_link_markup(issue, ro, zone or 'ALL ZONES', start_date, end_date, route)
         gauge_dash = 201.06 * pct / 100
         gauges.append(f'''<a class="gauge-link" href="#" data-params="{html_module.escape(params_json, quote=True)}" data-base="{html_module.escape(base_url_json, quote=True)}">
           <div class="gauge-card" style="background:{surface};border-color:{border}">
             <div class="gauge-label">{icon} {html_module.escape(label)}</div>
             <svg viewBox="0 0 160 108" role="img" aria-label="{pct:.1f} percent">
-              <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="#e6ebf1" stroke-width="11" stroke-linecap="round" pathLength="201.06"/>
+              <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="{html_module.escape(selected_theme['line'])}" stroke-width="11" stroke-linecap="round" pathLength="201.06"/>
               <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="{color}" stroke-width="11" stroke-linecap="round" stroke-dasharray="{gauge_dash:.2f} 201.06" pathLength="201.06"/>
-              <text x="80" y="83" text-anchor="middle" font-size="22" font-weight="750" fill="#172033">{pct:.1f}%</text>
-              <text x="16" y="104" text-anchor="middle" font-size="9" fill="#718096">0%</text>
-              <text x="144" y="104" text-anchor="middle" font-size="9" fill="#718096">100%</text>
+              <text x="80" y="83" text-anchor="middle" font-size="22" font-weight="750" fill="{html_module.escape(selected_theme['text'])}">{pct:.1f}%</text>
+              <text x="16" y="104" text-anchor="middle" font-size="9" fill="{html_module.escape(selected_theme['muted'])}">0%</text>
+              <text x="144" y="104" text-anchor="middle" font-size="9" fill="{html_module.escape(selected_theme['muted'])}">100%</text>
             </svg>
             <div class="gauge-caption">{count:,} of {total:,} {html_module.escape(unit)}</div>
           </div>
@@ -4317,6 +4459,11 @@ def render_overall_issues_metric_cards(metric_specs, zone=None, start_date=None,
       } catch (error) { window.alert('Could not open issue details. Please open the dashboard in a browser tab and try again.'); }
     }));
     </script></body></html>'''.replace('CARD_HTML', ''.join(gauges))
+    markup = (markup.replace('background:#f4f7fb; color:#172033;',
+                             f"background:{selected_theme['navy950']}; color:{selected_theme['text']};")
+              .replace('border:1px solid #dbe4ee;', f"border:1px solid {selected_theme['line']};")
+              .replace('color:#172033;', f"color:{selected_theme['text']};")
+              .replace('color:#64748b;', f"color:{selected_theme['muted']};"))
     st.components.v1.html(markup, height=560, scrolling=False)
 
 def render_overall_issues_clickable_table(summary, start_date=None, end_date=None,
@@ -4412,21 +4559,38 @@ def render_overall_issues_clickable_table(summary, start_date=None, end_date=Non
       } catch (error) { window.alert('Could not open issue details. Please open the dashboard in a browser tab and try again.'); }
     }));
     </script></body></html>'''.replace('HEADER_HTML', header_html).replace('ROWS_HTML', ''.join(rows_html))
-    if selected_theme_name == '🤍 Bright Executive':
-        markup = (markup.replace('color:#e5eef9; background:#091521;', 'color:#172033; background:#f4f7fb;')
-                  .replace('border:1px solid #33475b;', 'border:1px solid #cbd5e1;')
-                  .replace('background:#182b40; color:#bdd1e5;', 'background:#e2e8f0; color:#334155;')
-                  .replace('border-bottom:1px solid #3b4c60;', 'border-bottom:1px solid #cbd5e1;')
-                  .replace('rgba(30,49,69,.44)', 'rgba(226,232,240,.55)')
-                  .replace('rgba(148,163,184,.13)', 'rgba(100,116,139,.20)')
-                  .replace('rgba(52,211,153,.15); color:#a7f3d0;', 'rgba(22,163,74,.14); color:#166534;')
-                  .replace('rgba(244,63,94,.18); color:#fda4af;', 'rgba(244,63,94,.12); color:#9f1239;')
-                  .replace('rgba(250,204,21,.16); color:#fde68a;', 'rgba(245,158,11,.16); color:#92400e;')
-                  .replace('rgba(248,113,113,.22); color:#fecaca;', 'rgba(220,38,38,.14); color:#991b1b;')
-                  .replace('rgba(192,132,252,.18); color:#e9d5ff;', 'rgba(147,51,234,.14); color:#6b21a8;')
-                  .replace('th:nth-child(-n+3) { background:#182b40; z-index:4; }', 'th:nth-child(-n+3) { background:#e2e8f0; z-index:4; }')
-                  .replace('tr:nth-child(odd) td:nth-child(-n+3) { background:#091521; }', 'tr:nth-child(odd) td:nth-child(-n+3) { background:#ffffff; }')
-                  .replace('tr:nth-child(even) td:nth-child(-n+3) { background:#122b40; }', 'tr:nth-child(even) td:nth-child(-n+3) { background:#f1f5f9; }'))
+    issue_status_styles = {
+        'good': THEME_STATUS_PALETTE['green'],
+        'soft-red': THEME_STATUS_PALETTE['soft_red'],
+        'warn': THEME_STATUS_PALETTE['yellow'],
+        'bad': THEME_STATUS_PALETTE['red'],
+        'recover': THEME_STATUS_PALETTE['purple']
+    }
+    issue_theme_colors = {
+        'color:#e5eef9; background:#091521;': f"color:{selected_theme['text']}; background:{selected_theme['navy950']};",
+        'border:1px solid #33475b;': f"border:1px solid {selected_theme['line']};",
+        'background:#182b40; color:#bdd1e5;': f"background:{selected_theme['navy800']}; color:{selected_theme['text']};",
+        'th:nth-child(-n+3) { background:#182b40; z-index:4; }': f"th:nth-child(-n+3) {{ background:{selected_theme['navy800']}; z-index:4; }}",
+        'border-bottom:1px solid #3b4c60;': f"border-bottom:1px solid {selected_theme['line']};",
+        'rgba(30,49,69,.44)': f"color-mix(in srgb,{selected_theme['navy800']} 70%,transparent)",
+        'rgba(148,163,184,.13)': f"color-mix(in srgb,{selected_theme['line']} 65%,transparent)",
+        'background:#091521;': f"background:{selected_theme['navy950']};",
+        'background:#122b40;': f"background:{selected_theme['navy800']};",
+        '#e2e8f0': selected_theme['navy800'],
+        '#64748b': selected_theme['muted'],
+        '#67e8f9': selected_theme['accent']
+    }
+    base_issue_status_styles = {
+        'good': 'rgba(52,211,153,.15); color:#a7f3d0;',
+        'soft-red': 'rgba(244,63,94,.18); color:#fda4af;',
+        'warn': 'rgba(250,204,21,.16); color:#fde68a;',
+        'bad': 'rgba(248,113,113,.22); color:#fecaca;',
+        'recover': 'rgba(192,132,252,.18); color:#e9d5ff;'
+    }
+    for issue_tone, (issue_bg, issue_text) in issue_status_styles.items():
+        issue_theme_colors[base_issue_status_styles[issue_tone]] = f"{issue_bg}; color:{issue_text};"
+    for old_color, new_color in issue_theme_colors.items():
+        markup = markup.replace(old_color, new_color)
     st.components.v1.html(markup, height=580, scrolling=False)
 
 def render_overall_issues(data):
@@ -4598,7 +4762,11 @@ elif choice == "📊 Operations Summary":
     st.markdown("<h2>Operations Exception Summary</h2>", unsafe_allow_html=True)
     
     if 'Legwise_Route_Summary' in data and 'Legwise_Processed_Data' in data:
-        df_raw_leg_full = data['Legwise_Processed_Data'].copy()
+        df_raw_leg_source = data['Legwise_Processed_Data']
+        if '_OpsRemarkOutcome' not in df_raw_leg_source.columns:
+            # This frame is held in the page cache, so the buckets survive RO selector reruns.
+            df_raw_leg_source['_OpsRemarkOutcome'] = ops_remark_outcome_series(df_raw_leg_source)
+        df_raw_leg_full = df_raw_leg_source.copy()
         if not st.session_state.get('all_vendors', True):
             df_raw_leg_full = filter_df_by_user_vendors(df_raw_leg_full, 'VendorName')
             
@@ -4667,7 +4835,10 @@ elif choice == "📊 Operations Summary":
             if key in raw_status.columns and key in df_leg_sum.columns
         ]
         if status_group_keys:
-            raw_status['_RemarkOutcome'] = ops_remark_outcome_series(raw_status)
+            if '_OpsRemarkOutcome' in raw_status.columns:
+                raw_status['_RemarkOutcome'] = raw_status['_OpsRemarkOutcome']
+            else:
+                raw_status['_RemarkOutcome'] = ops_remark_outcome_series(raw_status)
             status_counts = raw_status.groupby(
                 status_group_keys + ['_RemarkOutcome'], dropna=False, sort=False
             ).size().unstack('_RemarkOutcome', fill_value=0)
@@ -4695,14 +4866,24 @@ elif choice == "📊 Operations Summary":
         st.caption(f"{ops_total_trips:,} trips · {len(df_leg_sum):,} route legs")
 
         outcome_gauges = []
-        gauge_tones = {
-            'green': ('#16a34a', '#f0fdf4', '#bbf7d0'),
-            'soft_red': ('#f472b6', '#fff1f2', '#fecdd3'),
-            'red': ('#dc2626', '#fef2f2', '#fecaca'),
-            'yellow': ('#f59e0b', '#fffbeb', '#fde68a'),
-            'purple': ('#8b5cf6', '#f5f3ff', '#ddd6fe'),
-            'muted': ('#94a3b8', '#f8fafc', '#e2e8f0')
-        }
+        if THEME_IS_LIGHT:
+            gauge_tones = {
+                'green': ('#16a34a', '#f0fdf4', '#bbf7d0'),
+                'soft_red': ('#f472b6', '#fff1f2', '#fecdd3'),
+                'red': ('#dc2626', '#fef2f2', '#fecaca'),
+                'yellow': ('#f59e0b', '#fffbeb', '#fde68a'),
+                'purple': ('#8b5cf6', '#f5f3ff', '#ddd6fe'),
+                'muted': (selected_theme['muted'], selected_theme['card2'], selected_theme['line'])
+            }
+        else:
+            gauge_tones = {
+                'green': ('#34d399', 'rgba(34,197,94,.16)', 'rgba(52,211,153,.34)'),
+                'soft_red': ('#fb7185', 'rgba(244,63,94,.16)', 'rgba(251,113,133,.34)'),
+                'red': ('#f87171', 'rgba(248,113,113,.20)', 'rgba(248,113,113,.36)'),
+                'yellow': ('#facc15', 'rgba(234,179,8,.17)', 'rgba(250,204,21,.36)'),
+                'purple': ('#c084fc', 'rgba(168,85,247,.18)', 'rgba(192,132,252,.36)'),
+                'muted': (selected_theme['muted'], selected_theme['card2'], selected_theme['line'])
+            }
         for outcome_label, outcome_tone, outcome_icon in ops_outcome_labels:
             outcome_count = ops_outcome_counts[outcome_label]
             primary_outcome = outcome_label in {
@@ -4717,11 +4898,11 @@ elif choice == "📊 Operations Summary":
                 <div class="gauge-card" style="background:{gauge_surface};border-color:{gauge_border}">
                   <div class="gauge-label">{outcome_icon} {html_module.escape(outcome_label)}</div>
                   <svg viewBox="0 0 160 108" role="img" aria-label="{gauge_pct:.1f} percent">
-                    <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="#e6ebf1" stroke-width="11" stroke-linecap="round" pathLength="201.06"/>
+                    <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="{html_module.escape(selected_theme['line'])}" stroke-width="11" stroke-linecap="round" pathLength="201.06"/>
                     <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="{gauge_color}" stroke-width="11" stroke-linecap="round" stroke-dasharray="{gauge_dash:.2f} 201.06" pathLength="201.06"/>
-                    <text x="80" y="83" text-anchor="middle" font-size="22" font-weight="750" fill="#172033">{gauge_pct:.1f}%</text>
-                    <text x="16" y="104" text-anchor="middle" font-size="9" fill="#718096">0%</text>
-                    <text x="144" y="104" text-anchor="middle" font-size="9" fill="#718096">100%</text>
+                    <text x="80" y="83" text-anchor="middle" font-size="22" font-weight="750" fill="{html_module.escape(selected_theme['text'])}">{gauge_pct:.1f}%</text>
+                    <text x="16" y="104" text-anchor="middle" font-size="9" fill="{html_module.escape(selected_theme['muted'])}">0%</text>
+                    <text x="144" y="104" text-anchor="middle" font-size="9" fill="{html_module.escape(selected_theme['muted'])}">100%</text>
                   </svg>
                   <div class="gauge-caption">{outcome_count:,} of {ops_total_trips:,} trips</div>
                 </div>
@@ -4867,6 +5048,7 @@ elif choice == "📊 Operations Summary":
             st.markdown(f"### 📄 Remark-wise Raw Trip Data · `{selected_route}` · `{selected_leg}`")
             
             filtered_raw = df_raw_leg[(df_raw_leg['Route Path'] == selected_route) & (df_raw_leg['Legwise'] == selected_leg)].copy()
+            filtered_raw = filtered_raw.drop(columns=['_OpsRemarkOutcome'], errors='ignore')
             filtered_raw = clean_dataframe_for_excel(filtered_raw, sheet_type="ops_raw")
             st.caption("The Remark column is the trip outcome shown for each raw record.")
             st.dataframe(style_ui_dataframe(filtered_raw), use_container_width=True)
@@ -5680,7 +5862,7 @@ elif choice == "💰 Network Utilization":
                         fig1 = px.pie(
                             df_master, values='Total Trip Cost', names='Zone', 
                             title='Total Cost by Zone', hole=0.4, 
-                            color_discrete_sequence=px.colors.sequential.Teal
+                            color_discrete_sequence=[selected_theme['accent'], selected_theme['blue']]
                         )
                         fig1.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color=selected_theme["text"], margin=dict(t=30, b=0, l=0, r=0))
                         st.plotly_chart(fig1, use_container_width=True)
@@ -5692,7 +5874,7 @@ elif choice == "💰 Network Utilization":
                         fig2 = px.bar(
                             top_vendors, x=vendor_col, y='Total Trips', 
                             title='Top 5 Vendors by Volume', text_auto=True,
-                            color_discrete_sequence=['#3B82F6']
+                            color_discrete_sequence=[selected_theme['blue']]
                         )
                         fig2.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color=selected_theme["text"], margin=dict(t=30, b=0, l=0, r=0))
                         st.plotly_chart(fig2, use_container_width=True)
