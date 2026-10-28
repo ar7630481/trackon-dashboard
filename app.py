@@ -3729,6 +3729,25 @@ def render_duration_selector(df_raw, date_col_name, key_prefix):
     dur_label = f"{start_d.strftime('%d %b %Y')} to {end_d.strftime('%d %b %Y')} ({days_cnt} Days)"
     return filtered_df, is_custom, dur_label
 
+def render_powerbi_insights(title, metrics, insights, period_note=None):
+    """Render a consistent, filter-aware insight strip for each dashboard module."""
+    st.markdown(f"#### ✨ {title}")
+    if period_note:
+        st.caption(period_note)
+    metric_list = list(metrics or [])
+    for metric_start in range(0, len(metric_list), 4):
+        metric_specs = metric_list[metric_start:metric_start + 4]
+        metric_columns = st.columns(len(metric_specs))
+        for metric_column, metric_spec in zip(metric_columns, metric_specs):
+            label, value = metric_spec[:2]
+            delta = metric_spec[2] if len(metric_spec) > 2 else None
+            metric_column.metric(label, value, delta=delta)
+    insight_list = [str(item).strip() for item in (insights or []) if str(item).strip()]
+    if insight_list:
+        st.caption("Key signals")
+        for insight in insight_list:
+            st.markdown(f"- {insight}")
+
 def render_scheduled_route_master(data):
     st.markdown("## 🧭 Scheduled Route Master")
     st.caption("Each row is mapped to its own leg origin, destination, branch names, and ROs · Download a print-ready Excel poster")
@@ -3771,6 +3790,49 @@ def render_scheduled_route_master(data):
         visible = visible[visible.astype(str).apply(
             lambda col: col.str.contains(q, case=False, regex=False, na=False)
         ).any(axis=1)].copy()
+
+    route_path_col = get_col(visible, ['Route Path', 'Route'])
+    origin_branch_col = get_col(visible, ['Origin Branch', 'From Branch', 'Origin'])
+    origin_ro_col = get_col(visible, ['RO', 'Origin RO'])
+    destination_ro_col = get_col(visible, ['Destination RO'])
+    route_count = int(visible[route_path_col].nunique()) if route_path_col else 0
+    branch_count = int(visible[origin_branch_col].nunique()) if origin_branch_col else 0
+    unmapped_endpoints = 0
+    for ro_col in [origin_ro_col, destination_ro_col]:
+        if ro_col:
+            unmapped_endpoints += int(
+                visible[ro_col].fillna('').astype(str).str.strip().str.upper().isin(['RO NOT MAPPED', 'UNMAPPED']).sum()
+            )
+    schedule_fields = [col for col in ['Scheduled Departure Time', 'Scheduled Arrival Time'] if col in visible.columns]
+    complete_schedule_rows = 0
+    if schedule_fields:
+        schedule_present = pd.DataFrame({
+            col: visible[col].fillna('').astype(str).str.strip().str.upper().ne('')
+            & ~visible[col].fillna('').astype(str).str.strip().str.upper().isin(['-', 'NAN', 'NONE'])
+            for col in schedule_fields
+        }, index=visible.index)
+        complete_schedule_rows = int(schedule_present.all(axis=1).sum())
+    schedule_insights = []
+    if route_path_col and not visible.empty:
+        route_counts = visible[route_path_col].dropna().astype(str).value_counts()
+        if not route_counts.empty:
+            top_route = route_counts.index[0].replace('`', '')
+            schedule_insights.append(f"Highest leg volume: `{top_route}` has {int(route_counts.iloc[0]):,} visible legs.")
+    if unmapped_endpoints:
+        schedule_insights.append(f"{unmapped_endpoints:,} visible endpoints have no RO mapping and need a branch-list review.")
+    elif not visible.empty:
+        schedule_insights.append("All visible route endpoints have an RO mapping.")
+    if schedule_fields:
+        schedule_insights.append(
+            f"{complete_schedule_rows:,} of {len(visible):,} visible legs have all available scheduled time fields filled."
+        )
+    render_powerbi_insights(
+        'Scheduled Network Snapshot',
+        [('Visible route legs', f'{len(visible):,}'), ('Route paths', f'{route_count:,}'),
+         ('Origin branches', f'{branch_count:,}'), ('Unmapped endpoints', f'{unmapped_endpoints:,}')],
+        schedule_insights,
+        period_note='Signals follow the selected branch and route search.'
+    )
 
     branch_label = selected_branch if selected_branch != "ALL BRANCHES" else "All Branches"
     safe_branch = re.sub(r'[^A-Za-z0-9_-]+', '_', branch_label).strip('_') or 'all_branches'
@@ -4612,7 +4674,6 @@ def render_overall_issues(data):
         source_signature, payment_signature, branch_signature = None, None, None
     source_key = (source_signature, payment_signature, branch_signature,
                   st.session_state.get('username'), st.session_state.get('all_vendors', True))
-    today = get_ist_now().date()
     filter_options_cache = st.session_state.get('_overall_issues_filter_options_cache')
     if filter_options_cache and filter_options_cache[0] == source_key:
         all_start, all_end = filter_options_cache[1], filter_options_cache[2]
@@ -4629,13 +4690,7 @@ def render_overall_issues(data):
     date_key = 'overall_issues_date_range'
     if date_key not in st.session_state:
         st.session_state[date_key] = (all_start, all_end)
-    prev_col, current_col, all_col = st.columns([1, 1, 1.4])
-    if prev_col.button('◀ Previous 7 Days', use_container_width=True, help='The seven days immediately before the current seven-day window'):
-        st.session_state[date_key] = (today - datetime.timedelta(days=13), today - datetime.timedelta(days=7))
-        st.rerun()
-    if current_col.button('Current 7 Days ▶', use_container_width=True, help='Today plus the previous six calendar days'):
-        st.session_state[date_key] = (today - datetime.timedelta(days=6), today)
-        st.rerun()
+    all_col = st.columns([1, 3])[0]
     if all_col.button('All Available Days', use_container_width=True):
         st.session_state[date_key] = (all_start, all_end)
         st.rerun()
@@ -4728,6 +4783,37 @@ def render_overall_issues(data):
         ('Underutilized Routes', utilization_count, utilization_total, 'routes'),
         ('Efficiently Utilized Routes', efficient_count, utilization_total, 'routes')
     ]
+    ops_on_time = metric_specs[0][1] if metric_specs else 0
+    ops_late_arrivals = sum(
+        _overall_count_from_cell(v)
+        for label in ['Ontime Dep, Late Arr', 'Late Dep, Late Arr']
+        for v in summary.get(label, pd.Series(dtype=object))
+    )
+    draft_bills = next((count for label, count, _, _ in metric_specs if label == 'Draft Bills'), 0)
+    finance_followup = sum(count for label, count, _, _ in metric_specs if label in ['Finance Pending', 'Finance Hold'])
+    overall_on_time_pct = ops_on_time / trips * 100 if trips else 0
+    overall_issue_insights = []
+    if trips:
+        overall_issue_insights.append(
+            f"{overall_on_time_pct:.1f}% of scoped trips were on time for both departure and arrival."
+        )
+        overall_issue_insights.append(f"{ops_late_arrivals:,} scoped trips arrived late.")
+    if bills:
+        overall_issue_insights.append(
+            f"Finance follow-up covers {finance_followup:,} bills; {draft_bills:,} bills are in the draft bucket."
+        )
+    if utilization_total:
+        overall_issue_insights.append(
+            f"{utilization_count:,} of {utilization_total:,} scoped routes are underutilized."
+        )
+    render_powerbi_insights(
+        'Cross-Module Executive Brief',
+        [('Operations trips', f'{trips:,}'), ('On-time end-to-end', f'{overall_on_time_pct:.1f}%'),
+         ('Late arrivals', f'{ops_late_arrivals:,}'), ('Bills in scope', f'{bills:,}'),
+         ('Finance follow-up', f'{finance_followup:,}'), ('Underutilized routes', f'{utilization_count:,}')],
+        overall_issue_insights,
+        period_note='Signals follow the selected duration, zone, RO, and route. Use the date range for period selection.'
+    )
     render_overall_issues_metric_cards(
         metric_specs, selected_zone, start_date, end_date, selected_ro, selected_route
     )
@@ -4858,8 +4944,91 @@ elif choice == "📊 Operations Summary":
                     for count, total in zip(df_leg_sum[count_col], pd.to_numeric(df_leg_sum['Total_Trips'], errors='coerce').fillna(0))
                 ]
 
-        # Remark-wise gauges and route rates follow the current filter scope.
+        # Remark-wise gauges, insight cards, and route rates follow the current filter scope.
         ops_outcome_counts, ops_total_trips, ops_outcome_labels = summarize_ops_remark_outcomes(raw_status)
+        ops_on_time_count = ops_outcome_counts.get('Ontime Dep, Ontime Arr', 0)
+        ops_late_arrival_count = (
+            ops_outcome_counts.get('Ontime Dep, Late Arr', 0)
+            + ops_outcome_counts.get('Late Dep, Late Arr', 0)
+        )
+        ops_on_time_pct = ops_on_time_count / ops_total_trips * 100 if ops_total_trips else 0
+        ops_insights = []
+        if ops_total_trips:
+            ops_insights.append(f"{ops_on_time_pct:.1f}% of trips completed both departure and arrival on time.")
+            ops_insights.append(f"{ops_late_arrival_count:,} trips arrived late in the current filtered view.")
+        if not df_leg_sum.empty and 'Total_Trips' in df_leg_sum.columns:
+            top_ops_route = df_leg_sum.groupby('Route Path')['Total_Trips'].sum().sort_values(ascending=False) if 'Route Path' in df_leg_sum.columns else pd.Series(dtype=float)
+            if not top_ops_route.empty:
+                ops_insights.append(
+                    f"Highest trip volume: `{str(top_ops_route.index[0]).replace('`', '')}` with {int(top_ops_route.iloc[0]):,} trips."
+                )
+
+        ops_comparison_scope = df_raw_leg_full.copy()
+        if selected_zone != 'ALL' and 'Zone' in ops_comparison_scope.columns:
+            ops_comparison_scope = ops_comparison_scope[ops_comparison_scope['Zone'].eq(selected_zone)].copy()
+        if selected_ro != 'ALL' and 'Origin RO' in ops_comparison_scope.columns:
+            ops_comparison_scope = ops_comparison_scope[ops_comparison_scope['Origin RO'].eq(selected_ro)].copy()
+        if search_q.strip():
+            compare_search_columns = [
+                col for col in ['Origin RO', 'Route Path', 'Legwise', 'Legs', 'RouteCode', 'CD_FromBranch', 'CD_ToBranch']
+                if col in ops_comparison_scope.columns
+            ]
+            if compare_search_columns:
+                compare_match = pd.Series(False, index=ops_comparison_scope.index)
+                for compare_col in compare_search_columns:
+                    compare_match |= ops_comparison_scope[compare_col].fillna('').astype(str).str.contains(
+                        search_q.strip(), case=False, regex=False, na=False
+                    )
+                ops_comparison_scope = ops_comparison_scope.loc[compare_match].copy()
+        ops_period_note = 'Weekly comparison unavailable until dated trip rows are available.'
+        ops_weekly_metrics = []
+        ops_date_col = get_col(ops_comparison_scope, ['MCD_StartDate'])
+        if ops_date_col and not ops_comparison_scope.empty:
+            ops_compare_dates = pd.to_datetime(
+                ops_comparison_scope[ops_date_col], dayfirst=True, errors='coerce'
+            ).dt.date
+            latest_ops_day = ops_compare_dates.max()
+            if pd.notna(latest_ops_day):
+                current_ops_start = latest_ops_day - datetime.timedelta(days=6)
+                previous_ops_start = latest_ops_day - datetime.timedelta(days=13)
+                previous_ops_end = latest_ops_day - datetime.timedelta(days=7)
+                current_ops_mask = ops_compare_dates.between(current_ops_start, latest_ops_day)
+                previous_ops_mask = ops_compare_dates.between(previous_ops_start, previous_ops_end)
+                ops_compare_outcomes = (
+                    ops_comparison_scope['_OpsRemarkOutcome']
+                    if '_OpsRemarkOutcome' in ops_comparison_scope.columns
+                    else ops_remark_outcome_series(ops_comparison_scope)
+                )
+                current_ops_rows = int(current_ops_mask.sum())
+                previous_ops_rows = int(previous_ops_mask.sum())
+                current_ops_on_time = int(ops_compare_outcomes.loc[current_ops_mask].eq('Ontime Dep, Ontime Arr').sum())
+                previous_ops_on_time = int(ops_compare_outcomes.loc[previous_ops_mask].eq('Ontime Dep, Ontime Arr').sum())
+                current_ops_pct = current_ops_on_time / current_ops_rows * 100 if current_ops_rows else 0
+                previous_ops_pct = previous_ops_on_time / previous_ops_rows * 100 if previous_ops_rows else 0
+                volume_delta = current_ops_rows - previous_ops_rows
+                pct_delta = current_ops_pct - previous_ops_pct
+                ops_weekly_metrics = [
+                    ('Trips · latest 7 days', f'{current_ops_rows:,}', f'{volume_delta:+,} vs previous'),
+                    ('On-time · latest 7 days', f'{current_ops_pct:.1f}%', f'{pct_delta:+.1f} pp vs previous' if previous_ops_rows else None)
+                ]
+                ops_period_note = (
+                    f"Weekly comparison uses the latest available dates for the selected zone, RO, and route search: "
+                    f"{previous_ops_start:%d %b}–{previous_ops_end:%d %b} vs "
+                    f"{current_ops_start:%d %b}–{latest_ops_day:%d %b}."
+                )
+                if not previous_ops_rows:
+                    ops_insights.append('The previous seven-day window has no trip rows, so its comparison is not available.')
+                else:
+                    direction = 'up' if pct_delta > 0 else ('down' if pct_delta < 0 else 'unchanged')
+                    ops_insights.append(f"On-time end-to-end performance is {direction} {abs(pct_delta):.1f} percentage points vs the previous seven days.")
+        render_powerbi_insights(
+            'Operations Performance & 7-Day Trend',
+            [('Filtered trips', f'{ops_total_trips:,}'), ('On-time end-to-end', f'{ops_on_time_pct:.1f}%'),
+             ('Late arrivals', f'{ops_late_arrival_count:,}'), ('Route legs', f'{len(df_leg_sum):,}')]
+            + ops_weekly_metrics,
+            ops_insights,
+            period_note=ops_period_note
+        )
 
         st.markdown("### Remark-wise Trip Outcome")
         st.caption("🟢 Ontime Dep, Ontime Arr · 🌸 Ontime Dep, Late Arr · 🔴 Late Dep, Late Arr · 🟣 Late Dep, Ontime Arr · 🟡 Late Dep, In-Transit · 🟡 Ontime Dep, In-Transit · 🔴 No Departure · 🟡 Missing Schedule · 🟡 In-Transit · ⚪ Other. Each trip is counted once from its Remark; figures follow the selected date, zone, RO, and route search.")
@@ -5134,6 +5303,33 @@ elif choice == "🚚 Vendor Performance":
                 count_text.str.replace(',', '', regex=False), errors='coerce'
             ).fillna(0).sum())
 
+        vendor_ontime_count = _vendor_outcome_count('Ontime Arrival')
+        vendor_late_count = _vendor_outcome_count('Late Arrival')
+        vendor_ontime_pct = vendor_ontime_count / vendor_total_trips * 100 if vendor_total_trips else 0
+        vendor_insights = []
+        if vendor_total_trips:
+            vendor_insights.append(f"{vendor_ontime_pct:.1f}% of trips arrived on time in the current filtered view.")
+            vendor_insights.append(f"{vendor_late_count:,} trips are marked late on arrival.")
+        if not df_display.empty and 'VendorName' in df_display.columns:
+            vendor_volume = (
+                pd.to_numeric(df_display['Total_Trips'], errors='coerce').fillna(0)
+                if 'Total_Trips' in df_display.columns else pd.Series(0, index=df_display.index)
+            )
+            vendor_volume_by_name = vendor_volume.groupby(df_display['VendorName']).sum().sort_values(ascending=False)
+            if not vendor_volume_by_name.empty:
+                vendor_insights.append(
+                    f"Highest trip volume: `{str(vendor_volume_by_name.index[0]).replace('`', '')}` "
+                    f"with {int(vendor_volume_by_name.iloc[0]):,} trips."
+                )
+        render_powerbi_insights(
+            'Vendor Performance Insights',
+            [('Filtered trips', f'{vendor_total_trips:,}'), ('On-time arrivals', f'{vendor_ontime_pct:.1f}%'),
+             ('Late arrivals', f'{vendor_late_count:,}'),
+             ('Vendors in view', f"{df_display['VendorName'].nunique():,}" if 'VendorName' in df_display.columns else '—')],
+            vendor_insights,
+            period_note='Signals follow the selected date range, zone, RO, vendor, and route search.'
+        )
+
         vendor_gauge_specs = [
             ('Ontime Arrival', _vendor_outcome_count('Ontime Arrival'), '#16a34a', '#f0fdf4', '#bbf7d0'),
             ('Late Arrival', _vendor_outcome_count('Late Arrival'), '#dc2626', '#fef2f2', '#fecaca')
@@ -5208,11 +5404,12 @@ elif choice == "🚚 Vendor Performance":
         if selected_vendor_b != 'ALL' and 'VendorName' in compare_raw.columns:
             compare_raw = compare_raw[compare_raw['VendorName'].eq(selected_vendor_b)]
         compare_date_col = get_col(compare_raw, ['Date'])
-        today_compare = get_ist_now().date()
+        compare_dates = pd.to_datetime(compare_raw[compare_date_col], dayfirst=True, errors='coerce').dt.date if compare_date_col else pd.Series([None] * len(compare_raw), index=compare_raw.index)
+        valid_compare_dates = compare_dates.dropna()
+        today_compare = valid_compare_dates.max() if not valid_compare_dates.empty else get_ist_now().date()
         current_7_start = today_compare - datetime.timedelta(days=6)
         previous_7_start = today_compare - datetime.timedelta(days=13)
         previous_7_end = today_compare - datetime.timedelta(days=7)
-        compare_dates = pd.to_datetime(compare_raw[compare_date_col], dayfirst=True, errors='coerce').dt.date if compare_date_col else pd.Series([None] * len(compare_raw), index=compare_raw.index)
         compare_status_col = get_col(compare_raw, ['Remark with 15 min waiver'])
         compare_status = compare_raw[compare_status_col].fillna('').astype(str) if compare_status_col else pd.Series('', index=compare_raw.index)
         compare_rows = []
@@ -5334,6 +5531,36 @@ elif choice == "💳 Payment Dashboard":
             df_pay = df_pay[mask].copy()
 
         bucket_labels = ['Payment Pending / Paid', 'Finance Pending / Hold', 'Draft', 'Cost Control Pending', 'Other']
+        payment_counts = df_pay.get('Payment Group', pd.Series('', index=df_pay.index)).value_counts()
+        finance_bucket_count = int(payment_counts.get('Finance Pending / Hold', 0))
+        draft_bucket_count = int(payment_counts.get('Draft', 0))
+        cost_control_count = int(payment_counts.get('Cost Control Pending', 0))
+        payment_followup_count = finance_bucket_count + draft_bucket_count + cost_control_count
+        payment_insights = []
+        followup_by_bucket = {
+            'Finance Pending / Hold': finance_bucket_count,
+            'Draft': draft_bucket_count,
+            'Cost Control Pending': cost_control_count
+        }
+        if payment_followup_count:
+            priority_bucket = max(followup_by_bucket, key=followup_by_bucket.get)
+            payment_insights.append(
+                f"Largest follow-up bucket is `{priority_bucket}` with {followup_by_bucket[priority_bucket]:,} bills."
+            )
+        if len(df_pay) and 'RO Name' in df_pay.columns:
+            top_payment_ro = df_pay['RO Name'].dropna().astype(str).value_counts()
+            if not top_payment_ro.empty:
+                payment_insights.append(
+                    f"Highest invoice volume: `{top_payment_ro.index[0].replace('`', '')}` with {int(top_payment_ro.iloc[0]):,} bills."
+                )
+        render_powerbi_insights(
+            'Payment Workflow Insights',
+            [('Invoices in view', f'{len(df_pay):,}'), ('Finance follow-up', f'{finance_bucket_count:,}'),
+             ('Draft bills', f'{draft_bucket_count:,}'), ('Cost-control queue', f'{cost_control_count:,}')],
+            payment_insights,
+            period_note='Signals follow the selected zone, RO, and invoice search.'
+        )
+
         ro_col = get_col(df_pay, ['RO Name'])
         summary_rows = []
         if ro_col:
@@ -5420,6 +5647,44 @@ elif choice == "📱 Communication Hub":
         df_ops_sum_hub = data.get('Legwise_Route_Summary', pd.DataFrame()).copy()
         df_ven_sum_hub = build_vendor_summary_from_raw(df_ven_raw_hub)
         df_cpk_raw_hub = df_cpk_raw_base
+
+    hub_ops_outcomes = ops_remark_outcome_series(df_ops_raw_hub)
+    hub_ops_total = len(df_ops_raw_hub)
+    hub_ops_ontime = int(hub_ops_outcomes.eq('Ontime Dep, Ontime Arr').sum()) if hub_ops_total else 0
+    hub_ops_ontime_pct = hub_ops_ontime / hub_ops_total * 100 if hub_ops_total else 0
+    hub_vendor_status_col = get_col(df_ven_raw_hub, ['Remark with 15 min waiver'])
+    hub_vendor_status = (
+        df_ven_raw_hub[hub_vendor_status_col].fillna('').astype(str)
+        if hub_vendor_status_col else pd.Series('', index=df_ven_raw_hub.index)
+    )
+    hub_vendor_late = int(hub_vendor_status.str.contains('Late Arrival', case=False, na=False).sum())
+    hub_vendor_total = len(df_ven_raw_hub)
+    hub_vendor_late_pct = hub_vendor_late / hub_vendor_total * 100 if hub_vendor_total else 0
+    hub_payment_counts = df_pay_base.get('Payment Group', pd.Series('', index=df_pay_base.index)).value_counts()
+    hub_payment_followup = sum(
+        int(hub_payment_counts.get(bucket, 0))
+        for bucket in ['Finance Pending / Hold', 'Draft', 'Cost Control Pending']
+    )
+    hub_util_trips = (
+        int(pd.to_numeric(df_cpk_raw_hub['Trips'], errors='coerce').fillna(0).sum())
+        if 'Trips' in df_cpk_raw_hub.columns else len(df_cpk_raw_hub)
+    )
+    hub_util_label = 'Utilization trips' if 'Trips' in df_cpk_raw_hub.columns else 'Utilization rows'
+    hub_insights = []
+    if hub_ops_total:
+        hub_insights.append(f"Operations end-to-end on-time rate is {hub_ops_ontime_pct:.1f}% for the selected window.")
+    if hub_vendor_total:
+        hub_insights.append(f"Vendor late-arrival rate is {hub_vendor_late_pct:.1f}% for the selected window.")
+    if hub_payment_followup:
+        hub_insights.append(f"{hub_payment_followup:,} available payment records are in finance, draft, or cost-control follow-up buckets.")
+    render_powerbi_insights(
+        'Communication Hub Network Pulse',
+        [('Operations trips', f'{hub_ops_total:,}'), ('Ops on-time end-to-end', f'{hub_ops_ontime_pct:.1f}%'),
+         ('Vendor late arrivals', f'{hub_vendor_late:,}'), ('Payment follow-up records', f'{hub_payment_followup:,}'),
+         (hub_util_label, f'{hub_util_trips:,}')],
+        hub_insights,
+        period_note=f"Operational, vendor, and utilization signals use {hub_dur_str}; payment records show the available invoice set."
+    )
 
     hub_tab1, hub_tab2, hub_tab3 = st.tabs([
         "🛣️ 1. National Route Ops & Vendor Summary",
@@ -5909,6 +6174,40 @@ elif choice == "💰 Network Utilization":
             avg_cpk = (df_master['Total Trip Cost'].sum() / df_master['Total Carried Wt'].sum()) if df_master['Total Carried Wt'].sum() > 0 else 0
             m3.metric("Overall CPK", f"₹ {avg_cpk:.2f}")
 
+            util_values = pd.to_numeric(df_master.get('Overall Util %', pd.Series(dtype=float)), errors='coerce')
+            low_util_count = int(util_values.lt(0.50).sum()) if not util_values.empty else 0
+            high_util_count = int(util_values.ge(0.80).sum()) if not util_values.empty else 0
+            utilization_insights = []
+            if not util_values.empty:
+                utilization_insights.append(
+                    f"{low_util_count:,} of {len(util_values):,} visible records are below 50% utilization."
+                )
+                utilization_insights.append(
+                    f"{high_util_count:,} visible records are at or above 80% utilization."
+                )
+            volume_col = get_col(df_master, ['Total Trips'])
+            entity_candidates = {
+                'Route': ['Route Pair', 'Route Path'],
+                'Vehicle': ['Vehicle No'],
+                'Coloader': ['Vendor(s)', 'VendorName']
+            }.get(view_type, ['Route Pair', 'Vehicle No', 'Vendor(s)'])
+            entity_col = get_col(df_master, entity_candidates)
+            if volume_col and entity_col and not df_master.empty:
+                volume_frame = df_master[[entity_col, volume_col]].copy()
+                volume_frame[volume_col] = pd.to_numeric(volume_frame[volume_col], errors='coerce').fillna(0)
+                volume_frame = volume_frame.groupby(entity_col, dropna=True)[volume_col].sum().sort_values(ascending=False)
+                if not volume_frame.empty:
+                    utilization_insights.append(
+                        f"Highest volume: `{str(volume_frame.index[0]).replace('`', '')}` with {int(volume_frame.iloc[0]):,} trips."
+                    )
+            render_powerbi_insights(
+                f'{view_type} Utilization Signals',
+                [('Records in view', f'{len(df_master):,}'), ('Trips', f"{int(pd.to_numeric(df_master.get('Total Trips', pd.Series(0, index=df_master.index)), errors='coerce').fillna(0).sum()):,}"),
+                 ('Below 50% utilization', f'{low_util_count:,}'), ('At least 80% utilization', f'{high_util_count:,}')],
+                utilization_insights,
+                period_note=f'Signals follow the selected {view_type.lower()} zone, RO, type, and search.'
+            )
+
             df_cpk_view = df_master.sort_values(by='Overall Util %', ascending=True)
             disp_df = df_cpk_view.copy()
             
@@ -5944,7 +6243,11 @@ elif choice == "💰 Network Utilization":
             styled_view = view_df.style
             for col in ['Overall Util %', 'Overall CPK']:
                 if col in view_df.columns:
-                    styled_view = styled_view.map(lambda x, c=col: highlight_cpk_util(x, c), subset=[col])
+                    style_func = lambda x, c=col: highlight_cpk_util(x, c)
+                    if hasattr(styled_view, 'map'):
+                        styled_view = styled_view.map(style_func, subset=[col])
+                    else:
+                        styled_view = styled_view.applymap(style_func, subset=[col])
 
             disabled_cols = [c for c in view_df.columns if c not in ['Action Plan ✍️', 'Select 👁️']]
             editor_k = f"cpk_editor_{view_type}"
@@ -6106,7 +6409,12 @@ elif choice == "📝 Today's Call Action Plan":
             sr_no += 1
             
     if not records:
-        st.info("❌ Koi Action Plan save nahi hua hai. Dusre modules mein jakar tables mein apna 'Action Plan' type karein!")
+        render_powerbi_insights(
+            'Action Plan Coverage',
+            [('Saved action plans', '0'), ('Regional offices', '0'), ('Modules represented', '0')],
+            ['No saved plans are available yet; action plans entered in module tables will appear here.']
+        )
+        st.info("ℹ️ No action plans are saved yet. Add an Action Plan in another module to see it here.")
     else:
         df_ap = pd.DataFrame(records)
         
@@ -6116,6 +6424,24 @@ elif choice == "📝 Today's Call Action Plan":
         if filter_ro_ap != "ALL":
             df_ap = df_ap[df_ap['Origin RO'] == filter_ro_ap]
             df_ap['S.No.'] = range(1, len(df_ap) + 1)
+
+        action_module_counts = df_ap['Module Name'].value_counts() if 'Module Name' in df_ap.columns else pd.Series(dtype=int)
+        action_insights = []
+        if not action_module_counts.empty:
+            action_insights.append(
+                f"Most represented module: `{str(action_module_counts.index[0]).replace('`', '')}` "
+                f"with {int(action_module_counts.iloc[0]):,} action plans."
+            )
+        if filter_ro_ap != 'ALL':
+            action_insights.append(f"The current view is scoped to `{filter_ro_ap}`.")
+        render_powerbi_insights(
+            'Action Plan Portfolio',
+            [('Plans in view', f'{len(df_ap):,}'),
+             ('Regional offices', f"{df_ap['Origin RO'].nunique():,}" if 'Origin RO' in df_ap.columns else '—'),
+             ('Modules represented', f"{df_ap['Module Name'].nunique():,}" if 'Module Name' in df_ap.columns else '—')],
+            action_insights,
+            period_note='Counts reflect the selected RO filter and saved action plans.'
+        )
         
         st.dataframe(df_ap, use_container_width=True, hide_index=True)
         
@@ -6173,6 +6499,35 @@ elif choice == "🔐 User & Access Control":
         for v_item in u_d.get("vendors", []):
             known_vendors_set.add(normalize_vendor_name(v_item))
     known_vendors_list = sorted([v for v in known_vendors_set if v])
+    active_user_count = sum(1 for info in users_db_live.values() if info.get('active', True))
+    disabled_user_count = len(users_db_live) - active_user_count
+    admin_user_count = sum(1 for info in users_db_live.values() if str(info.get('role', 'User')).casefold() == 'admin')
+    restricted_user_count = sum(1 for info in users_db_live.values() if not info.get('all_vendors', True))
+    user_insights = []
+    if disabled_user_count:
+        user_insights.append(f"{disabled_user_count:,} accounts are disabled and cannot sign in.")
+    if restricted_user_count:
+        user_insights.append(f"{restricted_user_count:,} accounts have vendor-restricted access.")
+    active_non_admin = [
+        info for info in users_db_live.values()
+        if info.get('active', True) and str(info.get('role', 'User')).casefold() != 'admin'
+    ]
+    module_coverage = pd.Series(
+        [module for info in active_non_admin for module in info.get('modules', []) if module in ALL_PORTAL_MODULES]
+    ).value_counts()
+    if not module_coverage.empty:
+        user_insights.append(
+            f"Most assigned module among active non-admin users: `{str(module_coverage.index[0]).replace('`', '')}` "
+            f"({int(module_coverage.iloc[0]):,} assignments)."
+        )
+    render_powerbi_insights(
+        'Access & Adoption Snapshot',
+        [('Registered users', f'{len(users_db_live):,}'), ('Active users', f'{active_user_count:,}'),
+         ('Disabled users', f'{disabled_user_count:,}'), ('Admin accounts', f'{admin_user_count:,}'),
+         ('Vendor-restricted users', f'{restricted_user_count:,}'), ('Known vendors', f'{len(known_vendors_list):,}')],
+        user_insights,
+        period_note='Counts summarize account status, assigned modules, and vendor access settings.'
+    )
 
     # --- 1. LIVE USERS OVERVIEW TABLE ---
     st.markdown("### 📋 Registered Users & Current Permissions")
