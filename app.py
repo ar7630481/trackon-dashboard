@@ -4963,6 +4963,13 @@ elif choice == "📊 Operations Summary":
                     f"Highest trip volume: `{str(top_ops_route.index[0]).replace('`', '')}` with {int(top_ops_route.iloc[0]):,} trips."
                 )
 
+        # Render the top KPI cards (without the 7-day trend)
+        render_powerbi_insights(
+            'Operations Performance Insights',
+            [('Filtered trips', f'{ops_total_trips:,}'), ('On-time end-to-end', f'{ops_on_time_pct:.1f}%'),
+             ('Late arrivals', f'{ops_late_arrival_count:,}'), ('Route legs', f'{len(df_leg_sum):,}')],
+            ops_insights,
+            period_note='Signals follow the selected date range, zone, RO, and route search.'
         )
 
         st.markdown("### Remark-wise Trip Outcome")
