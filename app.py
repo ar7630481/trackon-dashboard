@@ -5069,6 +5069,11 @@ elif choice == "📊 Operations Summary":
                 df_display = df_display[mask]
 
         pct_cols = [c for c in df_display.columns if '%' in c and c != 'RowKey']
+
+        def _format_ops_status_badge(value, column):
+            pct = parse_pct_from_str(value)
+            text = format_ops_badge(value)
+            col = str(column).lower()
             if pct is None:
                 return text
             if 'ontime dep, ontime arr' in col:
@@ -5097,11 +5102,6 @@ elif choice == "📊 Operations Summary":
 
         for c in pct_cols:
             df_display[c] = df_display[c].apply(lambda value, col=c: _format_ops_status_badge(value, col))
-
-        # ==========================================
-        # UPGRADE: POWER BI-STYLE PLOTLY VISUALS (OPERATIONS)
-        # ==========================================
-        if PLOTLY_AVAILABLE and not df_leg_sum.empty:
             st.markdown("### 📈 Visual Analytics: Route Health")
             chart_c1, chart_c2 = st.columns(2)
             
