@@ -5156,6 +5156,61 @@ elif choice == "📊 Operations Summary":
         for c in pct_cols:
             df_display[c] = df_display[c].apply(lambda value, col=c: _format_ops_status_badge(value, col))
 
+        # ==========================================
+        # UPGRADE: POWER BI-STYLE PLOTLY VISUALS (OPERATIONS)
+        # ==========================================
+        if PLOTLY_AVAILABLE and not df_leg_sum.empty:
+            st.markdown("### 📈 Visual Analytics: Route Health")
+            chart_c1, chart_c2 = st.columns(2)
+            
+            # 1. E2E Performance Donut Chart
+            pie_data = pd.DataFrame({
+                'Status': ['On-Time E2E', 'Late Arrivals', 'Late Dep, On-Time Arr'],
+                'Count': [ops_on_time_count, ops_late_arrival_count, ops_outcome_counts.get('Late Dep, Ontime Arr', 0)]
+            })
+            # Filter out zero values for a cleaner chart
+            pie_data = pie_data[pie_data['Count'] > 0]
+            
+            if not pie_data.empty:
+                fig_pie = px.pie(
+                    pie_data, values='Count', names='Status', hole=0.45,
+                    color='Status',
+                    color_discrete_map={
+                        'On-Time E2E': '#10b981', 
+                        'Late Arrivals': '#ef4444', 
+                        'Late Dep, On-Time Arr': '#f59e0b'
+                    },
+                    title='Overall Trip Health'
+                )
+                fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+                fig_pie.update_layout(
+                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", 
+                    font_color=selected_theme["text"], margin=dict(t=40, b=10, l=10, r=10),
+                    showlegend=False
+                )
+                chart_c1.plotly_chart(fig_pie, use_container_width=True)
+
+            # 2. Top 5 Problematic Routes Bar Chart
+            if 'Late Dep, Late Arr %' in df_leg_sum.columns:
+                # Calculate actual late count per route for the bar chart
+                df_leg_sum['Late_Count_Temp'] = df_leg_sum['Total_Trips'] * (df_leg_sum['Late Dep, Late Arr %'].apply(extract_pct) / 100)
+                top_problem_routes = df_leg_sum.nlargest(5, 'Late_Count_Temp')
+                
+                if not top_problem_routes.empty and top_problem_routes['Late_Count_Temp'].sum() > 0:
+                    fig_bar = px.bar(
+                        top_problem_routes, x='Route Path', y='Late_Count_Temp',
+                        text_auto='.0f', title='Top 5 Routes by Late Arrivals',
+                        color_discrete_sequence=['#ef4444']
+                    )
+                    fig_bar.update_layout(
+                        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                        font_color=selected_theme["text"], margin=dict(t=40, b=10, l=10, r=10),
+                        xaxis_title="", yaxis_title="Late Trips"
+                    )
+                    chart_c2.plotly_chart(fig_bar, use_container_width=True)
+                
+                df_leg_sum = df_leg_sum.drop(columns=['Late_Count_Temp'], errors='ignore')
+        st.markdown("---")
         st.markdown("### Top Priority Routes Summary")
         st.caption("Every column is one exclusive Remark outcome with its trip count. Scroll horizontally to reach every outcome.")
         
@@ -5354,6 +5409,50 @@ elif choice == "🚚 Vendor Performance":
             with gauge_column:
                 st.markdown(gauge_html, unsafe_allow_html=True)
 
+        # ==========================================
+        # UPGRADE: POWER BI-STYLE PLOTLY VISUALS (VENDORS)
+        # ==========================================
+        if PLOTLY_AVAILABLE and not df_display.empty:
+            st.markdown("### 📊 Visual Analytics: Vendor Reliability")
+            v_chart1, v_chart2 = st.columns(2)
+            
+            # 1. Vendor Volume vs On-Time Scatter/Bubble
+            v_vol = df_display.groupby('VendorName').agg(
+                Total_Trips=('Total_Trips', 'sum'),
+                Ontime_Count=('Ontime Arrival', lambda x: sum(int(str(v).split('(')[-1].replace(')','')) if '(' in str(v) else 0 for v in x))
+            ).reset_index()
+            
+            v_vol['On-Time %'] = (v_vol['Ontime_Count'] / v_vol['Total_Trips'] * 100).round(1)
+            
+            fig_v_scatter = px.scatter(
+                v_vol, x='Total_Trips', y='On-Time %', size='Total_Trips', color='On-Time %',
+                hover_name='VendorName', title='Vendor Volume vs. Reliability',
+                color_continuous_scale=[(0, "#ef4444"), (0.8, "#f59e0b"), (1, "#10b981")]
+            )
+            fig_v_scatter.update_layout(
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                font_color=selected_theme["text"], margin=dict(t=40, b=10, l=10, r=10),
+                xaxis_title="Total Trips", yaxis_title="On-Time %"
+            )
+            v_chart1.plotly_chart(fig_v_scatter, use_container_width=True)
+
+            # 2. Bottom 5 Vendors by Late Count
+            v_vol['Late_Count'] = v_vol['Total_Trips'] - v_vol['Ontime_Count']
+            bottom_vendors = v_vol.nlargest(5, 'Late_Count')
+            
+            if bottom_vendors['Late_Count'].sum() > 0:
+                fig_v_bar = px.bar(
+                    bottom_vendors, x='VendorName', y='Late_Count',
+                    text_auto='.0f', title='Vendors with Most Late Arrivals',
+                    color_discrete_sequence=['#f97316']
+                )
+                fig_v_bar.update_layout(
+                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                    font_color=selected_theme["text"], margin=dict(t=40, b=10, l=10, r=10),
+                    xaxis_title="", yaxis_title="Late Trips"
+                )
+                v_chart2.plotly_chart(fig_v_bar, use_container_width=True)
+        st.markdown("---")
         st.markdown("#### Vendor Route / Leg Summary")
         ap_data = load_action_plans()
         mod_ap = ap_data.get("Vendor Performance", {})
