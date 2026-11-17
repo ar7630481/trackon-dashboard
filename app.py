@@ -4963,71 +4963,6 @@ elif choice == "📊 Operations Summary":
                     f"Highest trip volume: `{str(top_ops_route.index[0]).replace('`', '')}` with {int(top_ops_route.iloc[0]):,} trips."
                 )
 
-        ops_comparison_scope = df_raw_leg_full.copy()
-        if selected_zone != 'ALL' and 'Zone' in ops_comparison_scope.columns:
-            ops_comparison_scope = ops_comparison_scope[ops_comparison_scope['Zone'].eq(selected_zone)].copy()
-        if selected_ro != 'ALL' and 'Origin RO' in ops_comparison_scope.columns:
-            ops_comparison_scope = ops_comparison_scope[ops_comparison_scope['Origin RO'].eq(selected_ro)].copy()
-        if search_q.strip():
-            compare_search_columns = [
-                col for col in ['Origin RO', 'Route Path', 'Legwise', 'Legs', 'RouteCode', 'CD_FromBranch', 'CD_ToBranch']
-                if col in ops_comparison_scope.columns
-            ]
-            if compare_search_columns:
-                compare_match = pd.Series(False, index=ops_comparison_scope.index)
-                for compare_col in compare_search_columns:
-                    compare_match |= ops_comparison_scope[compare_col].fillna('').astype(str).str.contains(
-                        search_q.strip(), case=False, regex=False, na=False
-                    )
-                ops_comparison_scope = ops_comparison_scope.loc[compare_match].copy()
-        ops_period_note = 'Weekly comparison unavailable until dated trip rows are available.'
-        ops_weekly_metrics = []
-        ops_date_col = get_col(ops_comparison_scope, ['MCD_StartDate'])
-        if ops_date_col and not ops_comparison_scope.empty:
-            ops_compare_dates = pd.to_datetime(
-                ops_comparison_scope[ops_date_col], dayfirst=True, errors='coerce'
-            ).dt.date
-            latest_ops_day = ops_compare_dates.max()
-            if pd.notna(latest_ops_day):
-                current_ops_start = latest_ops_day - datetime.timedelta(days=6)
-                previous_ops_start = latest_ops_day - datetime.timedelta(days=13)
-                previous_ops_end = latest_ops_day - datetime.timedelta(days=7)
-                current_ops_mask = ops_compare_dates.between(current_ops_start, latest_ops_day)
-                previous_ops_mask = ops_compare_dates.between(previous_ops_start, previous_ops_end)
-                ops_compare_outcomes = (
-                    ops_comparison_scope['_OpsRemarkOutcome']
-                    if '_OpsRemarkOutcome' in ops_comparison_scope.columns
-                    else ops_remark_outcome_series(ops_comparison_scope)
-                )
-                current_ops_rows = int(current_ops_mask.sum())
-                previous_ops_rows = int(previous_ops_mask.sum())
-                current_ops_on_time = int(ops_compare_outcomes.loc[current_ops_mask].eq('Ontime Dep, Ontime Arr').sum())
-                previous_ops_on_time = int(ops_compare_outcomes.loc[previous_ops_mask].eq('Ontime Dep, Ontime Arr').sum())
-                current_ops_pct = current_ops_on_time / current_ops_rows * 100 if current_ops_rows else 0
-                previous_ops_pct = previous_ops_on_time / previous_ops_rows * 100 if previous_ops_rows else 0
-                volume_delta = current_ops_rows - previous_ops_rows
-                pct_delta = current_ops_pct - previous_ops_pct
-                ops_weekly_metrics = [
-                    ('Trips · latest 7 days', f'{current_ops_rows:,}', f'{volume_delta:+,} vs previous'),
-                    ('On-time · latest 7 days', f'{current_ops_pct:.1f}%', f'{pct_delta:+.1f} pp vs previous' if previous_ops_rows else None)
-                ]
-                ops_period_note = (
-                    f"Weekly comparison uses the latest available dates for the selected zone, RO, and route search: "
-                    f"{previous_ops_start:%d %b}–{previous_ops_end:%d %b} vs "
-                    f"{current_ops_start:%d %b}–{latest_ops_day:%d %b}."
-                )
-                if not previous_ops_rows:
-                    ops_insights.append('The previous seven-day window has no trip rows, so its comparison is not available.')
-                else:
-                    direction = 'up' if pct_delta > 0 else ('down' if pct_delta < 0 else 'unchanged')
-                    ops_insights.append(f"On-time end-to-end performance is {direction} {abs(pct_delta):.1f} percentage points vs the previous seven days.")
-        render_powerbi_insights(
-            'Operations Performance & 7-Day Trend',
-            [('Filtered trips', f'{ops_total_trips:,}'), ('On-time end-to-end', f'{ops_on_time_pct:.1f}%'),
-             ('Late arrivals', f'{ops_late_arrival_count:,}'), ('Route legs', f'{len(df_leg_sum):,}')]
-            + ops_weekly_metrics,
-            ops_insights,
-            period_note=ops_period_note
         )
 
         st.markdown("### Remark-wise Trip Outcome")
@@ -5116,17 +5051,24 @@ elif choice == "📊 Operations Summary":
                 except: return 0.0
             return 0.0
             
-        if 'Late Dep, Late Arr %' in df_display.columns:
-            df_display['SortKey_Temp'] = df_display['Late Dep, Late Arr %'].apply(extract_pct)
-            df_display['Is_Single_Trip'] = df_display['Total_Trips'] <= 1
-            df_display = df_display.sort_values(by=['Is_Single_Trip', 'SortKey_Temp', 'Route Path', 'Legwise'], ascending=[True, False, True, True]).drop(columns=['SortKey_Temp', 'Is_Single_Trip'])
+        # Natural sorting by Route Path and Legwise (No Z-to-A force sort)
+        df_display = df_display.sort_values(by=['Route Path', 'Legwise'])
+
+        # Dynamic Streamlit Filter for Badi Screen feel
+        st.markdown("---")
+        st.markdown("### 📋 Filter Detailed Operations Data")
+        selected_remark_filter = st.selectbox(
+            "🎯 Filter Table by Remark Outcome:", 
+            ["Show All"] + [label for label, _, _ in OPS_REMARK_OUTCOME_LABELS]
+        )
+        
+        if selected_remark_filter != "Show All":
+            filter_col_name = f"{selected_remark_filter} %"
+            if filter_col_name in df_display.columns:
+                mask = df_display[filter_col_name].apply(lambda x: extract_pct(x) > 0)
+                df_display = df_display[mask]
 
         pct_cols = [c for c in df_display.columns if '%' in c and c != 'RowKey']
-
-        def _format_ops_status_badge(value, column):
-            pct = parse_pct_from_str(value)
-            text = format_ops_badge(value)
-            col = str(column).lower()
             if pct is None:
                 return text
             if 'ontime dep, ontime arr' in col:
@@ -5164,23 +5106,14 @@ elif choice == "📊 Operations Summary":
             chart_c1, chart_c2 = st.columns(2)
             
             # 1. E2E Performance Donut Chart
-            pie_data = pd.DataFrame({
-                'Status': ['On-Time E2E', 'Late Arrivals', 'Late Dep, On-Time Arr'],
-                'Count': [ops_on_time_count, ops_late_arrival_count, ops_outcome_counts.get('Late Dep, Ontime Arr', 0)]
-            })
-            # Filter out zero values for a cleaner chart
+            # 1. E2E Performance Donut Chart (Based on Actual Remarks)
+            pie_data = pd.DataFrame(list(ops_outcome_counts.items()), columns=['Status', 'Count'])
             pie_data = pie_data[pie_data['Count'] > 0]
             
             if not pie_data.empty:
                 fig_pie = px.pie(
                     pie_data, values='Count', names='Status', hole=0.45,
-                    color='Status',
-                    color_discrete_map={
-                        'On-Time E2E': '#10b981', 
-                        'Late Arrivals': '#ef4444', 
-                        'Late Dep, On-Time Arr': '#f59e0b'
-                    },
-                    title='Overall Trip Health'
+                    title='Trip Health by Remark Outcome'
                 )
                 fig_pie.update_traces(textposition='inside', textinfo='percent+label')
                 fig_pie.update_layout(
