@@ -601,8 +601,35 @@ FILE_MAP = {
     "RATE_CORRECTIONS": os.path.join(DATA_DIR, "rate_corrections.json"),
     "VENDOR_MASTER": os.path.join(DATA_DIR, "vendor_master.json"),
     "ACTION_PLANS": os.path.join(DATA_DIR, "action_plans.json"),
-    "USERS_DB": os.path.join(DATA_DIR, "users_master.json")
+    "USERS_DB": os.path.join(DATA_DIR, "users_master.json"),
+    "VENDOR_CATEGORY_MAP": os.path.join(DATA_DIR, "vendor_category_mapping.json")
 }
+
+DEFAULT_VENDOR_CATEGORY_MAP = {
+    "Vehicle Vendors bill": [
+        "Contract - Feeder Connection vehicle charges",
+        "Contract Network Vehicle Hired - Regional",
+        "Contract Network Vehicle Hired - Zonal",
+        "Contract Network Vehicle Hired - National"
+    ]
+}
+
+def load_vendor_category_mapping():
+    path = FILE_MAP["VENDOR_CATEGORY_MAP"]
+    if os.path.exists(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                return loaded
+        except Exception:
+            pass
+    save_vendor_category_mapping(DEFAULT_VENDOR_CATEGORY_MAP)
+    return {k: list(v) for k, v in DEFAULT_VENDOR_CATEGORY_MAP.items()}
+
+def save_vendor_category_mapping(mapping_dict):
+    with open(FILE_MAP["VENDOR_CATEGORY_MAP"], 'w', encoding='utf-8') as f:
+        json.dump(mapping_dict, f, indent=4)
 
 SCHEDULED_ROUTE_MASTER_TSV = r"""Route Path	Legwise	Legs	Scheduled Departure Time	Scheduled Arrival Time	Given Driving Hours	Scheduled Halting	Scheduled TAT Till Destination
 BKLH-JPRBPH-DELAP	Leg1	BKLH to JPRBPH	01-09-2026 01:00	01-09-2026 16:00	15:00	Origin	23:01
@@ -2833,7 +2860,7 @@ def compact_detail_frame(frame, kind):
     preferred_by_kind = {
         'ven_raw': ['Date', 'Remark with 15 min waiver', 'Origin RO', 'Route Path', 'Legwise', 'VendorName', 'Actual Arrival Time', 'Delay Hours', 'MasterCDNo'],
         'ops_raw': ['MCD_StartDate', 'Remark', 'Operations Outcome', 'Zone', 'Origin RO', 'Route Path', 'Legwise', 'Legs', 'CD_FromBranch', 'CD_ToBranch', 'MasterCDNo'],
-        'pay_raw': ['Invoice Id', 'Invoice Date', 'RO Name', 'Zone', 'Vendor Name', 'Amount', 'Status', 'Payment Group', 'Pending With', 'Hold Name', 'Hold Key', 'Days Pending'],
+        'pay_raw': ['Invoice Id', 'Invoice Date', 'RO Name', 'Zone', 'Vendor Name', 'Vendor Mapping Category', 'Category', 'Amount', 'Status', 'Payment Group', 'Pending With', 'Pending Since', 'Days Pending', 'Hold Key'],
         'cpk_raw': ['Date', 'RO_Clean', 'Final_Route', 'Final_Type', 'VendorName', 'Vehicle No', 'Cap', 'Wt', 'Trips', 'Cost']
     }
     cols = [col for col in preferred_by_kind.get(kind, list(frame.columns)) if col in frame.columns]
@@ -3764,28 +3791,37 @@ def get_overall_issue_ro_zone_lookup(data=None):
     return lookup
 
 def normalize_overall_payment_raw(raw, data=None):
-    """Keep the payment source fields needed for counts and focused issue details."""
+    """Keep all payment source fields needed for accurate buckets, Pending With, and Days Pending."""
     if raw is None or raw.empty:
         return pd.DataFrame(columns=[
             'Invoice Id', 'Invoice Date', 'Base Date', 'RO Name', 'Zone', 'Vendor Name',
-            'Category', 'Amount', 'Status', 'Pending With'
+            'Category', 'Amount', 'Status', 'Pending With', 'Bill Uploader', 'Hold Name', 'Hold Time'
         ])
     source = raw.copy()
     source.columns = source.columns.astype(str).str.strip()
     aliases = {
         'Invoice Id': ['Invoice Id', 'InvoiceID', 'Invoice Id No', 'Invoice No'],
         'Invoice Date': ['Invoice Date', 'InvoiceDate'],
+        'Submitted At': ['Submitted At', 'SubmittedAt'],
         'RO Name': ['RO Name', 'ro_selection', 'ROSelection', 'RO'],
         'Vendor Name': ['Vendor Name', 'VendorName'],
         'Category': ['Category', 'Bill Category'],
         'Amount': ['Amount', 'Net Payable', 'net_payable'],
         'Status': ['Status', 'Invoice Status'],
         'Pending With': ['Pending With', 'PendingWith'],
+        'Bill Uploader': ['Name', 'Bill Uploader', 'Uploader Name', 'UploaderName'],
+        'Finance Name': ['Finance Name', 'FinanceName'],
         'Last Approved At': ['Last Approved At', 'LastApprovedAt'],
         'Finance Revert Remarks 1': ['Finance Revert Remarks 1', 'FinanceRevertRemarks1'],
         'Approver Revert Remarks': ['Approver Revert Remarks', 'ApproverRevertRemarks'],
         'Hold Name': ['hold.name', 'Hold Name', 'HoldName'],
         'Hold Key': ['hold-key', 'Hold Key', 'HoldKey'],
+        'Hold Time': ['hold.time', 'Hold Time', 'HoldTime'],
+        'Rev Action 1': ['approver_1_reverted_action'],
+        'Rev Action 2': ['approver_2_reverted_action'],
+        'Rev Action 3': ['approver_3_reverted_action'],
+        'Rev Action 4': ['approver_4_reverted_action'],
+        'Rev Action 5': ['approver_5_reverted_action'],
         'Partial Payment': ['Partial Payment', 'PartialPayment'],
         'Balance Payable Amount': ['Balance Payable Amount', 'BalancePayableAmount'],
         'Branch': ['branch_name', 'Branch Name', 'Branch'],
@@ -3796,61 +3832,123 @@ def normalize_overall_payment_raw(raw, data=None):
         col = get_col(source, candidates)
         if col:
             normalized[target] = source[col]
-    for col in ['Invoice Date', 'Last Approved At']:
+    for col in ['Invoice Date', 'Submitted At', 'Last Approved At', 'Hold Time',
+                'Rev Action 1', 'Rev Action 2', 'Rev Action 3', 'Rev Action 4', 'Rev Action 5']:
         if col in normalized.columns:
             normalized[col] = pd.to_datetime(normalized[col], dayfirst=True, errors='coerce')
     invoice_date = normalized.get('Invoice Date', pd.Series(pd.NaT, index=normalized.index))
+    submitted_date = normalized.get('Submitted At', pd.Series(pd.NaT, index=normalized.index))
     approved_date = normalized.get('Last Approved At', pd.Series(pd.NaT, index=normalized.index))
-    normalized['Base Date'] = approved_date.combine_first(invoice_date).fillna(pd.Timestamp(get_ist_now().date()))
-    for col in ['RO Name', 'Vendor Name', 'Category', 'Status', 'Pending With']:
+    normalized['Base Date'] = approved_date.combine_first(submitted_date).combine_first(invoice_date).fillna(pd.Timestamp(get_ist_now().date()))
+    for col in ['RO Name', 'Vendor Name', 'Category', 'Status', 'Pending With', 'Bill Uploader', 'Hold Name', 'Finance Name']:
         if col not in normalized.columns:
             normalized[col] = ''
     normalized['RO Name'] = _clean_ro_series(normalized['RO Name'])
     normalized['Status'] = normalized['Status'].fillna('').astype(str).str.strip().str.upper().str.replace(' ', '_', regex=False)
     normalized['Vendor Name'] = normalized['Vendor Name'].fillna('').apply(normalize_vendor_name)
+    normalized['Category'] = normalized['Category'].fillna('').astype(str).str.strip()
     ro_zone = get_overall_issue_ro_zone_lookup(data)
     normalized['Zone'] = normalized['RO Name'].map(ro_zone).fillna('UNKNOWN ZONE')
     return normalized.reset_index(drop=True)
 
 
 def prepare_payment_dashboard_frame(raw_frame):
-    """Keep active and paid payment rows, then assign the dashboard's five action buckets."""
+    """Keep all categories, exclude CANCELLED/DECLINED/FAILED, and compute exact buckets, Pending With, and Days Pending."""
     if not isinstance(raw_frame, pd.DataFrame) or raw_frame.empty:
         return pd.DataFrame()
     frame = raw_frame.copy()
-    valid_categories = {
-        'Contract - Feeder Connection vehicle charges',
-        'Market - Feeder Connection vehicle charges',
-        'Market Vehicle Hired -Linehaul',
-        'Contract Network Vehicle Hired - Regional',
-        'Contract Network Vehicle Hired - Zonal',
-        'Contract Network Vehicle Hired - National'
-    }
-    if 'Category' in frame.columns:
-        frame = frame[frame['Category'].fillna('').astype(str).str.strip().isin(valid_categories)].copy()
-    status = frame.get('Status', pd.Series('', index=frame.index)).fillna('').astype(str).str.upper().str.replace(' ', '_', regex=False)
-    pending_with = frame.get('Pending With', pd.Series('', index=frame.index)).fillna('').astype(str).str.upper()
-    revert = frame.get('Finance Revert Remarks 1', pd.Series('', index=frame.index)).fillna('').astype(str)
-    approver_revert = frame.get('Approver Revert Remarks', pd.Series('', index=frame.index)).fillna('').astype(str)
-    extra_revert = frame.get('Revert Remarks', pd.Series('', index=frame.index)).fillna('').astype(str)
-    has_revert = revert.ne('') | approver_revert.ne('') | extra_revert.ne('')
-    paid_or_payment = status.str.contains('PAID|PROCESSED|PAYMENT', na=False) | pending_with.str.contains('PAYMENT', na=False)
-    finance = status.str.contains('FINANCE|HOLD', na=False) | pending_with.str.contains(r'FINANCE|LEVEL\s*3', na=False)
-    draft = status.str.contains('DRAFT', na=False) | pending_with.str.contains('AJAY', na=False) | has_revert
-    cost_control = status.str.contains('PENDING', na=False) | pending_with.str.contains(r'COST\s*CONTROL|OPSACCTS|ACC', na=False)
+
+    status = frame.get('Status', pd.Series('', index=frame.index)).fillna('').astype(str).str.strip().str.upper().str.replace(' ', '_', regex=False)
+
+    # Exclude CANCELLED, DECLINED, FAILED completely from all calculations
+    drop_mask = status.str.contains(r'CANCEL|DECLIN|FAIL', regex=True, na=False)
+    frame = frame[~drop_mask].copy()
+    if frame.empty:
+        return frame
+
+    status = frame.get('Status', pd.Series('', index=frame.index)).fillna('').astype(str).str.strip().str.upper().str.replace(' ', '_', regex=False)
+    pending_with_raw = frame.get('Pending With', pd.Series('', index=frame.index)).fillna('').astype(str).str.strip()
+    pending_with_up = pending_with_raw.str.upper()
+    hold_name = frame.get('Hold Name', pd.Series('', index=frame.index)).fillna('').astype(str).str.strip()
+    uploader = frame.get('Bill Uploader', pd.Series('', index=frame.index)).fillna('').astype(str).str.strip()
+    fin_name = frame.get('Finance Name', pd.Series('', index=frame.index)).fillna('').astype(str).str.strip()
+
+    is_paid = status.isin(['PAID', 'PROCESSED'])
+    is_payment_pending = status.str.contains('PAYMENT', na=False) | pending_with_up.str.contains('PAYMENT', na=False)
+    is_finance_hold = status.str.contains('HOLD', na=False) | (hold_name.ne('') & ~is_paid & ~is_payment_pending)
+    is_finance_pending = (status.str.contains('FINANCE', na=False) | pending_with_up.str.contains(r'FINANCE|LEVEL\s*3', regex=True, na=False)) & ~is_finance_hold & ~is_paid & ~is_payment_pending
+    is_draft = status.str.contains('DRAFT', na=False) & ~is_finance_hold & ~is_finance_pending & ~is_paid & ~is_payment_pending
+    is_cost_control = (status.str.contains('PENDING', na=False) | pending_with_up.str.contains(r'COST\s*CONTROL|OPSACCTS|ACC', regex=True, na=False)) & ~is_finance_hold & ~is_finance_pending & ~is_paid & ~is_payment_pending & ~is_draft
+
     frame['Payment Group'] = np.select(
-        [paid_or_payment, finance, draft, cost_control],
-        ['Payment Pending / Paid', 'Finance Pending / Hold', 'Draft', 'Cost Control Pending'],
-        default='Other'
+        [is_paid | is_payment_pending, is_draft, is_cost_control, is_finance_pending, is_finance_hold],
+        ['Payment Pending / Paid', 'Draft', 'Cost Control Pending', 'Finance Pending', 'Finance Hold'],
+        default='Cost Control Pending'
     )
     frame['Department Bucket'] = frame['Payment Group'].map({
         'Payment Pending / Paid': '1. PAYMENT PENDING / PAID',
-        'Finance Pending / Hold': '2. FINANCE PENDING / HOLD',
-        'Draft': '3. DRAFT', 'Cost Control Pending': '4. COST CONTROL PENDING', 'Other': '5. OTHER'
+        'Draft': '2. DRAFT',
+        'Cost Control Pending': '3. COST CONTROL PENDING',
+        'Finance Pending': '4. FINANCE PENDING',
+        'Finance Hold': '5. FINANCE HOLD'
     })
-    if 'Base Date' in frame.columns:
-        base_date = pd.to_datetime(frame['Base Date'], dayfirst=True, errors='coerce')
-        frame['Days Pending'] = (pd.Timestamp(get_ist_now().date()) - base_date.dt.normalize()).dt.days
+
+    # Exact Pending With logic:
+    # 1. Draft -> Uploader (Name)
+    # 2. Finance Hold -> hold.name (fallback Pending With / Finance Name)
+    # 3. Paid -> Paid
+    # 4. Others -> Pending With (fallback Finance Name / Uploader)
+    fallback_pw = pending_with_raw.where(pending_with_raw.ne(''), fin_name.where(fin_name.ne(''), uploader))
+    hold_pw = hold_name.where(hold_name.ne(''), fallback_pw)
+    draft_pw = uploader.where(uploader.ne(''), fallback_pw)
+    frame['Pending With'] = np.select(
+        [is_paid, frame['Payment Group'].eq('Finance Hold'), frame['Payment Group'].eq('Draft')],
+        ['Paid', hold_pw, draft_pw],
+        default=fallback_pw
+    )
+
+    # Exact Days Pending calculation:
+    # - Finance Hold: Today - hold.time
+    # - Draft: Today - latest approver_*_reverted_action
+    # - Paid: 0
+    # - Others: Today - Last Approved At (fallback Submitted At -> Invoice Date)
+    today_ts = pd.Timestamp(get_ist_now().date())
+    inv_dt = pd.to_datetime(frame.get('Invoice Date', pd.Series(pd.NaT, index=frame.index)), dayfirst=True, errors='coerce')
+    sub_dt = pd.to_datetime(frame.get('Submitted At', pd.Series(pd.NaT, index=frame.index)), dayfirst=True, errors='coerce')
+    app_dt = pd.to_datetime(frame.get('Last Approved At', pd.Series(pd.NaT, index=frame.index)), dayfirst=True, errors='coerce')
+    hold_dt = pd.to_datetime(frame.get('Hold Time', pd.Series(pd.NaT, index=frame.index)), dayfirst=True, errors='coerce')
+
+    rev_cols = [c for c in ['Rev Action 1', 'Rev Action 2', 'Rev Action 3', 'Rev Action 4', 'Rev Action 5'] if c in frame.columns]
+    if rev_cols:
+        rev_df = pd.DataFrame({c: pd.to_datetime(frame[c], dayfirst=True, errors='coerce') for c in rev_cols}, index=frame.index)
+        latest_rev_dt = rev_df.max(axis=1)
+    else:
+        latest_rev_dt = pd.Series(pd.NaT, index=frame.index)
+
+    general_dt = app_dt.combine_first(sub_dt).combine_first(inv_dt)
+    eff_pending_dt = general_dt.copy()
+    hold_mask = frame['Payment Group'].eq('Finance Hold')
+    draft_mask = frame['Payment Group'].eq('Draft')
+    eff_pending_dt.loc[hold_mask] = hold_dt.loc[hold_mask].combine_first(general_dt.loc[hold_mask])
+    eff_pending_dt.loc[draft_mask] = latest_rev_dt.loc[draft_mask].combine_first(general_dt.loc[draft_mask])
+
+    days_series = (today_ts - eff_pending_dt.dt.normalize()).dt.days
+    days_series = days_series.where(~is_paid, 0).fillna(0).clip(lower=0).astype(int)
+    frame['Days Pending'] = days_series
+    frame['Pending Since'] = eff_pending_dt.dt.strftime('%d-%b-%Y').fillna('')
+    frame.loc[is_paid, 'Pending Since'] = 'Paid'
+
+    # Apply Vendor Category Mapping
+    cat_map = load_vendor_category_mapping()
+    cat_to_group = {}
+    for grp_name, cat_list in cat_map.items():
+        for c_item in (cat_list or []):
+            cat_to_group[str(c_item).strip().lower()] = grp_name
+    frame['Vendor Mapping Category'] = (
+        frame.get('Category', pd.Series('', index=frame.index))
+        .fillna('').astype(str).str.strip().str.lower()
+        .map(cat_to_group).fillna('Unmapped')
+    )
     return frame.reset_index(drop=True)
 
 def get_normalized_overall_payment(path, data=None, processed_signature=None):
@@ -6778,6 +6876,114 @@ def render_vendor_perf_raw_window(data, query):
 
     render_centered_html_table(breakdown_df, height=500)
 
+    # 7-Day & Overall Vendor Comparison (Inside Double-Click Window)
+    st.markdown("---")
+    st.markdown("### 📅 7-Day & Overall Vendor Comparison")
+    comp_base_df = df_source.copy()
+    if sel_zone_local != "ALL" and 'Zone' in comp_base_df.columns:
+        comp_base_df = comp_base_df[comp_base_df['Zone'].fillna('').astype(str).str.strip().eq(sel_zone_local)]
+    if sel_ro_local != "ALL" and 'Origin RO' in comp_base_df.columns:
+        comp_base_df = comp_base_df[comp_base_df['Origin RO'].astype(str).eq(sel_ro_local)]
+    if sel_ven_local != "ALL" and 'VendorName' in comp_base_df.columns:
+        comp_base_df = comp_base_df[comp_base_df['VendorName'].astype(str).eq(sel_ven_local)]
+    if sel_rt_local != "ALL" and 'Route Path' in comp_base_df.columns:
+        comp_base_df = comp_base_df[comp_base_df['Route Path'].astype(str).eq(sel_rt_local)]
+    if sel_leg_local != "ALL" and 'Legwise' in comp_base_df.columns:
+        comp_base_df = comp_base_df[comp_base_df['Legwise'].astype(str).str.strip().eq(sel_leg_local)]
+
+    c_date_col = get_col(comp_base_df, ['Date'])
+    c_dates = pd.to_datetime(comp_base_df[c_date_col], dayfirst=True, errors='coerce').dt.date if c_date_col else pd.Series([None] * len(comp_base_df), index=comp_base_df.index)
+    valid_c_dates = c_dates.dropna()
+    today_c = valid_c_dates.max() if not valid_c_dates.empty else get_ist_now().date()
+    curr_7_s = today_c - datetime.timedelta(days=6)
+    prev_7_s = today_c - datetime.timedelta(days=13)
+    prev_7_e = today_c - datetime.timedelta(days=7)
+
+    st.caption(
+        f"**Previous 7 Days:** {prev_7_s:%d %b %Y} – {prev_7_e:%d %b %Y}  ·  "
+        f"**Current 7 Days:** {curr_7_s:%d %b %Y} – {today_c:%d %b %Y}  ·  "
+        f"**Overall:** All available dates"
+    )
+
+    comp_vendors_w = sorted(comp_base_df.get('VendorName', pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
+    wc1, wc2 = st.columns([2.2, 1.4])
+    comp_scope_w = wc1.selectbox(
+        "Comparison Scope (All Vendors or Individual Vendor Route/Leg Breakdown):",
+        ["ALL VENDORS (Summary)"] + comp_vendors_w,
+        key="ven_win_comp_scope"
+    )
+    comp_sort_w = wc2.selectbox(
+        "Sort By:",
+        ["Worst Curr 7D On-Time First", "Highest Curr 7D Trips", "Biggest Drop First", "Best Improvement First"],
+        key="ven_win_comp_sort"
+    )
+
+    if st_col in comp_base_df.columns and not comp_base_df.empty:
+        cw = comp_base_df.copy()
+        cw['_dt'] = c_dates
+        cw['_is_prev'] = (cw['_dt'] >= prev_7_s) & (cw['_dt'] <= prev_7_e)
+        cw['_is_curr'] = (cw['_dt'] >= curr_7_s) & (cw['_dt'] <= today_c)
+        c_st = cw[st_col].fillna('').astype(str).str.strip()
+        cw['_ot'] = (c_st == 'Ontime Arrival').astype(int)
+        cw['_lt'] = (c_st == 'Late Arrival').astype(int)
+
+        if comp_scope_w == "ALL VENDORS (Summary)":
+            c_grp_cols = ['VendorName']
+        else:
+            cw = cw[cw['VendorName'].astype(str).eq(comp_scope_w)].copy()
+            c_grp_cols = [c for c in ['Origin RO', 'Route Path', 'Legwise', 'Legs'] if c in cw.columns]
+
+        c_rows = []
+        for keys, grp in cw.groupby(c_grp_cols, dropna=False):
+            if not isinstance(keys, tuple):
+                keys = (keys,)
+            rd = dict(zip(c_grp_cols, keys))
+            if 'VendorName' in rd:
+                rd['Vendor'] = rd.pop('VendorName')
+            pg, cg = grp[grp['_is_prev']], grp[grp['_is_curr']]
+            pt, po = len(pg), int(pg['_ot'].sum())
+            ct, co, cl = len(cg), int(cg['_ot'].sum()), int(cg['_lt'].sum())
+            at, ao, al = len(grp), int(grp['_ot'].sum()), int(grp['_lt'].sum())
+            pp = (po / pt * 100.0) if pt else None
+            cp = (co / ct * 100.0) if ct else None
+            ap = (ao / at * 100.0) if at else 0.0
+            if pp is not None and cp is not None:
+                diff = cp - pp
+                tr_s = f"▲ +{diff:.1f}%" if diff > 0.05 else (f"▼ {diff:.1f}%" if diff < -0.05 else "━ 0.0%")
+            elif cp is not None and pp is None:
+                diff, tr_s = 0.0, "New"
+            else:
+                diff, tr_s = 0.0, "—"
+            ref_p = cp if cp is not None else ap
+            st_tag = "🟢 Strong" if ref_p >= 85 else ("🟡 Watch" if ref_p >= 70 else "🔴 Action Needed")
+            rd.update({
+                'Prev 7D Trips': pt,
+                'Prev 7D On-Time': format_pct_cnt(po, pt) if pt else "—",
+                'Curr 7D Trips': ct,
+                'Curr 7D On-Time': format_pct_cnt(co, ct) if ct else "—",
+                'Curr 7D Late': format_pct_cnt(cl, ct) if ct else "—",
+                '7D Trend': tr_s,
+                'Overall Trips': at,
+                'Overall On-Time': format_pct_cnt(ao, at),
+                'Overall Late': format_pct_cnt(al, at),
+                'Status': st_tag,
+                '_sc': cp if cp is not None else 999.0,
+                '_sd': diff
+            })
+            c_rows.append(rd)
+        comp_df_w = pd.DataFrame(c_rows)
+        if not comp_df_w.empty:
+            if comp_sort_w == "Worst Curr 7D On-Time First":
+                comp_df_w = comp_df_w.sort_values(by=['_sc', 'Curr 7D Trips'], ascending=[True, False])
+            elif comp_sort_w == "Highest Curr 7D Trips":
+                comp_df_w = comp_df_w.sort_values(by=['Curr 7D Trips', 'Overall Trips'], ascending=[False, False])
+            elif comp_sort_w == "Biggest Drop First":
+                comp_df_w = comp_df_w.sort_values(by=['_sd', 'Curr 7D Trips'], ascending=[True, False])
+            else:
+                comp_df_w = comp_df_w.sort_values(by=['_sd', 'Curr 7D Trips'], ascending=[False, False])
+            comp_disp_w = comp_df_w.drop(columns=['_sc', '_sd'], errors='ignore').reset_index(drop=True)
+            render_centered_html_table(comp_disp_w, height=480)
+
     raw_clean = clean_dataframe_for_excel(view_df, sheet_type="ven_raw", preserve_order=False)
     st.markdown(f"### 📄 Detailed Raw Trip Records ({len(raw_clean):,} rows)")
     render_centered_html_table(raw_clean, height=580)
@@ -7079,265 +7285,12 @@ elif choice == "🚚 Vendor Performance":
                 key="ven_ready_download_btn"
             )
 
-        # 2. VENDOR ROUTE / LEG SUMMARY (Clean, Spacious + Inline Action Plan ✍️)
-        st.markdown("---")
-        st.markdown("### 📋 Vendor Route / Leg Summary")
-
-        ap_data = load_action_plans()
-        mod_ap = ap_data.get("Vendor Performance", {})
-
-        v_summary_df = df_display.copy().reset_index(drop=True)
-        v_summary_df = v_summary_df.rename(columns={'VendorName': 'Vendor', 'Total_Trips': 'Total Trips'})
-
-        v_summary_df['_leg_n'] = extract_leg_num_val(v_summary_df['Legwise']) if 'Legwise' in v_summary_df.columns else 999
-        v_summary_df = v_summary_df.sort_values(
-            by=[c for c in ['Origin RO', 'Route Path', '_leg_n', 'Vendor'] if c in v_summary_df.columns],
-            ascending=True
-        ).drop(columns=['_leg_n'], errors='ignore').reset_index(drop=True)
-
-        can_edit_ap = st.session_state.get('role') != 'Vendor'
-        if can_edit_ap:
-            v_summary_df['Action Plan ✍️'] = v_summary_df['RowKey'].map(mod_ap).fillna('')
-
-        show_v_cols = [c for c in ['Origin RO', 'Route Path', 'Legwise', 'Legs', 'Vendor', 'Total Trips', 'Ontime Arrival', 'Late Arrival', 'In-Transit', 'Action Plan ✍️'] if c in v_summary_df.columns]
-
-        def _style_vendor_summary(df_s):
-            pal = _ops_window_semantic_palette()
-            def pill(tone_k):
-                bg, fg, acc = pal[tone_k]
-                return f'background-color:{bg};color:{fg};font-weight:800;border-left:3px solid {acc};text-align:center;vertical-align:middle;'
-            def apply_s(frame):
-                styles = pd.DataFrame('', index=frame.index, columns=frame.columns)
-                for i, idx in enumerate(frame.index):
-                    bg = pal['row_even'] if i % 2 == 0 else pal['row_odd']
-                    styles.loc[idx, :] = f'background-color:{bg};color:{pal["text"]};text-align:center;vertical-align:middle;'
-                for col in frame.columns:
-                    if col == 'Total Trips':
-                        for idx in frame.index:
-                            styles.loc[idx, col] = f'background-color:{pal["num_bg"]};color:{pal["num_fg"]};font-weight:850;text-align:center;vertical-align:middle;'
-                    elif col == 'Ontime Arrival':
-                        for idx, val in frame[col].items():
-                            p = parse_pct_from_str(str(val))
-                            styles.loc[idx, col] = pill('good' if (p is not None and p >= 80) else ('warn' if (p is not None and p >= 55) else 'bad'))
-                    elif col == 'Late Arrival':
-                        for idx, val in frame[col].items():
-                            p = parse_pct_from_str(str(val))
-                            styles.loc[idx, col] = pill('bad' if (p is not None and p > 0) else 'neutral')
-                    elif col == 'In-Transit':
-                        for idx, val in frame[col].items():
-                            p = parse_pct_from_str(str(val))
-                            styles.loc[idx, col] = pill('warn' if (p is not None and p > 0) else 'neutral')
-                    elif col in ('Origin RO', 'Legwise', 'Vendor'):
-                        for idx in frame.index:
-                            styles.loc[idx, col] += ' font-weight:700;'
-                return styles
-            return (
-                df_s.style.apply(apply_s, axis=None)
-                .set_properties(**{'border-color': pal['border'], 'font-size': '13px', 'padding': '8px 10px', 'text-align': 'center', 'vertical-align': 'middle'})
-            )
-
-        if can_edit_ap:
-            st.caption("Edit **Action Plan ✍️** directly in the table below — changes save automatically.")
-            v_col_cfg = {
-                'Origin RO': st.column_config.TextColumn('Origin RO', width='small'),
-                'Route Path': st.column_config.TextColumn('Route Path', width='large'),
-                'Legwise': st.column_config.TextColumn('Legwise', width='small'),
-                'Legs': st.column_config.TextColumn('Legs', width='medium'),
-                'Vendor': st.column_config.TextColumn('Vendor', width='medium'),
-                'Total Trips': st.column_config.NumberColumn('Total Trips', width='small', format='%d'),
-                'Ontime Arrival': st.column_config.TextColumn('Ontime Arrival', width='medium'),
-                'Late Arrival': st.column_config.TextColumn('Late Arrival', width='medium'),
-                'In-Transit': st.column_config.TextColumn('In-Transit', width='small'),
-                'Action Plan ✍️': st.column_config.TextColumn('Action Plan ✍️', width='large'),
-            }
-            disabled_v_cols = [c for c in show_v_cols if c != 'Action Plan ✍️']
-            edited_v_sum = st.data_editor(
-                _style_vendor_summary(v_summary_df[show_v_cols]),
-                column_config=v_col_cfg,
-                disabled=disabled_v_cols,
-                use_container_width=True,
-                hide_index=True,
-                height=520,
-                key='vendor_summary_inline_ap_editor'
-            )
-            ap_changed = False
-            for idx, plan_row in edited_v_sum.iterrows():
-                r_key = str(v_summary_df.loc[idx, 'RowKey'])
-                new_val = str(plan_row['Action Plan ✍️']).strip()
-                if new_val != str(mod_ap.get(r_key, '')).strip():
-                    if new_val:
-                        mod_ap[r_key] = new_val
-                    else:
-                        mod_ap.pop(r_key, None)
-                    ap_changed = True
-            if ap_changed:
-                ap_data['Vendor Performance'] = mod_ap
-                save_action_plans(ap_data)
-        else:
-            render_centered_html_table(v_summary_df[show_v_cols], height=520)
-
-        v_drill_opts = ["Select a Route / Vendor to inspect raw trips..."] + [
-            f"{r['Origin RO']} | {r['Vendor']} | {r['Route Path']} | {r['Legwise']} ({r['Total Trips']} trips)"
-            for _, r in v_summary_df.iterrows()
-        ]
-        chosen_v_drill = st.selectbox("🔎 Inspect Raw Trips:", v_drill_opts, key="ven_sum_raw_inspector")
-        if chosen_v_drill != v_drill_opts[0]:
-            v_idx = v_drill_opts.index(chosen_v_drill) - 1
-            if 0 <= v_idx < len(v_summary_df):
-                sel_r = v_summary_df.iloc[v_idx]
-                f_raw = df_vperf_raw[
-                    df_vperf_raw['Origin RO'].astype(str).eq(str(sel_r['Origin RO']))
-                    & df_vperf_raw['VendorName'].astype(str).eq(str(sel_r['Vendor']))
-                    & df_vperf_raw['Route Path'].astype(str).eq(str(sel_r['Route Path']))
-                    & df_vperf_raw['Legwise'].astype(str).eq(str(sel_r['Legwise']))
-                ].copy()
-                f_raw_clean = compact_detail_frame(f_raw, 'ven_raw')
-                st.markdown(f"#### 📄 `{sel_r['Vendor']}` · `{sel_r['Route Path']}` · `{sel_r['Legwise']}` (**{len(f_raw_clean):,} trips**)")
-                render_centered_html_table(f_raw_clean, height=380)
-
-        # 3. UPGRADED 7-DAY & OVERALL VENDOR COMPARISON (All Vendors + Individual Vendor Route/Leg Mode)
-        st.markdown("---")
-        st.markdown("### 📅 7-Day & Overall Vendor Comparison")
-
-        compare_raw = df_vperf_raw_full.copy()
-        if selected_zone != 'ALL' and 'Zone' in compare_raw.columns:
-            compare_raw = compare_raw[compare_raw['Zone'].eq(selected_zone)]
-        if selected_ro != 'ALL' and 'Origin RO' in compare_raw.columns:
-            compare_raw = compare_raw[compare_raw['Origin RO'].eq(selected_ro)]
-        if selected_vendor_b != 'ALL' and 'VendorName' in compare_raw.columns:
-            compare_raw = compare_raw[compare_raw['VendorName'].eq(selected_vendor_b)]
-        if ven_filters.get("leg", "ALL") != 'ALL' and 'Legwise' in compare_raw.columns:
-            compare_raw = compare_raw[compare_raw['Legwise'].astype(str).str.strip().eq(ven_filters["leg"])]
-
-        compare_date_col = get_col(compare_raw, ['Date'])
-        compare_dates = pd.to_datetime(compare_raw[compare_date_col], dayfirst=True, errors='coerce').dt.date if compare_date_col else pd.Series([None] * len(compare_raw), index=compare_raw.index)
-        valid_compare_dates = compare_dates.dropna()
-        today_compare = valid_compare_dates.max() if not valid_compare_dates.empty else get_ist_now().date()
-        current_7_start = today_compare - datetime.timedelta(days=6)
-        previous_7_start = today_compare - datetime.timedelta(days=13)
-        previous_7_end = today_compare - datetime.timedelta(days=7)
-
-        st.caption(
-            f"**Previous 7 Days:** {previous_7_start:%d %b %Y} – {previous_7_end:%d %b %Y}  ·  "
-            f"**Current 7 Days:** {current_7_start:%d %b %Y} – {today_compare:%d %b %Y}  ·  "
-            f"**Overall:** All available dates"
-        )
-
-        comp_vendors = sorted(compare_raw.get('VendorName', pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
-        cc1, cc2 = st.columns([2.2, 1.4])
-        comp_scope_vendor = cc1.selectbox(
-            "Comparison Scope (All Vendors or Individual Vendor Route/Leg Breakdown):",
-            ["ALL VENDORS (Summary)"] + comp_vendors,
-            key="ven_comp_scope_select"
-        )
-        comp_sort_mode = cc2.selectbox(
-            "Sort By:",
-            ["Worst Curr 7D On-Time First", "Highest Curr 7D Trips", "Biggest Drop First", "Best Improvement First"],
-            key="ven_comp_sort_select"
-        )
-
-        compare_status_col = get_col(compare_raw, ['Remark with 15 min waiver'])
-        if compare_status_col and not compare_raw.empty:
-            c_work = compare_raw.copy()
-            c_work['_dt'] = compare_dates
-            c_work['_is_prev'] = (c_work['_dt'] >= previous_7_start) & (c_work['_dt'] <= previous_7_end)
-            c_work['_is_curr'] = (c_work['_dt'] >= current_7_start) & (c_work['_dt'] <= today_compare)
-            c_st = c_work[compare_status_col].fillna('').astype(str).str.strip()
-            c_work['_ot'] = (c_st == 'Ontime Arrival').astype(int)
-            c_work['_lt'] = (c_st == 'Late Arrival').astype(int)
-
-            if comp_scope_vendor == "ALL VENDORS (Summary)":
-                grp_cols = ['VendorName']
-            else:
-                c_work = c_work[c_work['VendorName'].astype(str).eq(comp_scope_vendor)].copy()
-                grp_cols = [c for c in ['Origin RO', 'Route Path', 'Legwise', 'Legs'] if c in c_work.columns]
-
-            comp_rows = []
-            for keys, grp in c_work.groupby(grp_cols, dropna=False):
-                if not isinstance(keys, tuple):
-                    keys = (keys,)
-                row_d = dict(zip(grp_cols, keys))
-                if 'VendorName' in row_d:
-                    row_d['Vendor'] = row_d.pop('VendorName')
-
-                prev_g = grp[grp['_is_prev']]
-                curr_g = grp[grp['_is_curr']]
-
-                p_tot, p_ot = len(prev_g), int(prev_g['_ot'].sum())
-                c_tot, c_ot, c_lt = len(curr_g), int(curr_g['_ot'].sum()), int(curr_g['_lt'].sum())
-                a_tot, a_ot, a_lt = len(grp), int(grp['_ot'].sum()), int(grp['_lt'].sum())
-
-                p_pct = (p_ot / p_tot * 100.0) if p_tot else None
-                c_pct = (c_ot / c_tot * 100.0) if c_tot else None
-                a_pct = (a_ot / a_tot * 100.0) if a_tot else 0.0
-
-                if p_pct is not None and c_pct is not None:
-                    diff = c_pct - p_pct
-                    if diff > 0.05:
-                        trend_str = f"▲ +{diff:.1f}%"
-                    elif diff < -0.05:
-                        trend_str = f"▼ {diff:.1f}%"
-                    else:
-                        trend_str = "━ 0.0%"
-                elif c_pct is not None and p_pct is None:
-                    diff = 0.0
-                    trend_str = "New"
-                else:
-                    diff = 0.0
-                    trend_str = "—"
-
-                ref_pct = c_pct if c_pct is not None else a_pct
-                status_tag = "🟢 Strong" if ref_pct >= 85 else ("🟡 Watch" if ref_pct >= 70 else "🔴 Action Needed")
-
-                row_d.update({
-                    'Prev 7D Trips': p_tot,
-                    'Prev 7D On-Time': format_pct_cnt(p_ot, p_tot) if p_tot else "—",
-                    'Curr 7D Trips': c_tot,
-                    'Curr 7D On-Time': format_pct_cnt(c_ot, c_tot) if c_tot else "—",
-                    'Curr 7D Late': format_pct_cnt(c_lt, c_tot) if c_tot else "—",
-                    '7D Trend': trend_str,
-                    'Overall Trips': a_tot,
-                    'Overall On-Time': format_pct_cnt(a_ot, a_tot),
-                    'Overall Late': format_pct_cnt(a_lt, a_tot),
-                    'Status': status_tag,
-                    '_sort_c_pct': c_pct if c_pct is not None else 999.0,
-                    '_sort_diff': diff
-                })
-                comp_rows.append(row_d)
-
-            comparison = pd.DataFrame(comp_rows)
-            if not comparison.empty:
-                if comp_sort_mode == "Worst Curr 7D On-Time First":
-                    comparison = comparison.sort_values(by=['_sort_c_pct', 'Curr 7D Trips'], ascending=[True, False])
-                elif comp_sort_mode == "Highest Curr 7D Trips":
-                    comparison = comparison.sort_values(by=['Curr 7D Trips', 'Overall Trips'], ascending=[False, False])
-                elif comp_sort_mode == "Biggest Drop First":
-                    comparison = comparison.sort_values(by=['_sort_diff', 'Curr 7D Trips'], ascending=[True, False])
-                else:
-                    comparison = comparison.sort_values(by=['_sort_diff', 'Curr 7D Trips'], ascending=[False, False])
-
-                comparison_disp = comparison.drop(columns=['_sort_c_pct', '_sort_diff'], errors='ignore').reset_index(drop=True)
-                render_centered_html_table(comparison_disp, height=500)
-
-                comp_buf = io.BytesIO()
-                with pd.ExcelWriter(comp_buf, engine='xlsxwriter') as writer:
-                    write_styled_sheet_to_excel(writer, comparison_disp, 'Vendor_7D_Comparison', sheet_type='generic', preserve_order=True)
-                st.download_button(
-                    "📥 Download 7-Day Comparison (Excel)",
-                    data=comp_buf.getvalue(),
-                    file_name=f"Vendor_7D_Comparison_{get_ist_now():%d_%b_%Y}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="ven_comp_excel_dl"
-                )
-            else:
-                st.info("No vendor comparison records found for the current filters.")
 
 # -------------------------------------------------------------
 # C. VENDOR PAYMENT DASHBOARD 
 # -------------------------------------------------------------
 elif choice == "💳 Payment Dashboard":
     st.markdown("<h2>Pending Payments Tracker</h2>", unsafe_allow_html=True)
-    st.caption('Each RO bucket shows count and share of bills. Click a count or percentage to open only those invoices.')
 
     if 'Master_Database' in data or 'Payment_Raw' in data:
         payment_source = data.get('Payment_Raw', data.get('Master_Database', pd.DataFrame()))
@@ -7348,9 +7301,65 @@ elif choice == "💳 Payment Dashboard":
             df_pay = filter_df_by_user_vendors(df_pay, 'Vendor Name')
 
         if df_pay.empty:
-            st.warning("No payment records found for your assigned vendor access.")
+            st.warning("No active payment records found for your assigned vendor access.")
             st.stop()
 
+        # Admin-only Vendor Mapping Category Manager
+        if st.session_state.get('role') == 'Admin':
+            with st.expander("🗂️ Vendor Mapping Category (Admin Only)", expanded=False):
+                st.caption("Group raw invoice categories into custom **Vendor Mapping Categories** (e.g. Vehicle Vendors bill). Changes apply immediately.")
+                cat_map_curr = load_vendor_category_mapping()
+                all_raw_cats = sorted(
+                    c for c in df_pay.get('Category', pd.Series(dtype=str)).dropna().astype(str).str.strip().unique().tolist()
+                    if c and c.upper() not in ('NAN', 'NONE')
+                )
+
+                mc1, mc2 = st.columns([1.4, 1.6])
+                with mc1:
+                    st.markdown("**Create / Update Mapping Group**")
+                    existing_groups = list(cat_map_curr.keys())
+                    sel_grp_edit = st.selectbox("Select Existing Group or Create New:", ["+ Create New Group"] + existing_groups, key="vcm_sel_grp")
+                    if sel_grp_edit == "+ Create New Group":
+                        grp_name_in = st.text_input("New Mapping Category Name:", placeholder="e.g. Vehicle Vendors bill", key="vcm_new_name").strip()
+                        default_cats = []
+                    else:
+                        grp_name_in = sel_grp_edit
+                        default_cats = [c for c in cat_map_curr.get(sel_grp_edit, []) if c in all_raw_cats]
+
+                    chosen_cats_in = st.multiselect(
+                        "Assign Raw Categories:",
+                        options=sorted(set(all_raw_cats) | set(default_cats)),
+                        default=default_cats,
+                        key=f"vcm_cats_{re.sub(r'[^A-Za-z0-9]+', '_', sel_grp_edit)}"
+                    )
+                    b_save, b_del = st.columns(2)
+                    if b_save.button("💾 Save Mapping", key="vcm_save_btn", type="primary", use_container_width=True):
+                        if not grp_name_in:
+                            st.error("Please enter a mapping category name.")
+                        else:
+                            cat_map_curr[grp_name_in] = chosen_cats_in
+                            save_vendor_category_mapping(cat_map_curr)
+                            st.success(f"Saved mapping for **{grp_name_in}** ({len(chosen_cats_in)} categories).")
+                            st.rerun()
+                    if sel_grp_edit != "+ Create New Group":
+                        if b_del.button("🗑️ Delete Group", key="vcm_del_btn", use_container_width=True):
+                            cat_map_curr.pop(sel_grp_edit, None)
+                            save_vendor_category_mapping(cat_map_curr)
+                            st.success(f"Deleted group **{sel_grp_edit}**.")
+                            st.rerun()
+
+                with mc2:
+                    st.markdown("**Current Saved Mappings**")
+                    if cat_map_curr:
+                        map_rows = [
+                            {"Vendor Mapping Category": g, "Mapped Categories Count": len(cs), "Categories": ", ".join(cs)}
+                            for g, cs in cat_map_curr.items()
+                        ]
+                        render_centered_html_table(pd.DataFrame(map_rows), height=240)
+                    else:
+                        st.info("No vendor mapping categories configured yet.")
+
+        # Top Unified Filter Bar
         pay_date_col = "Base Date" if "Base Date" in df_pay.columns else ("Invoice Date" if "Invoice Date" in df_pay.columns else None)
         df_pay, pay_filters = render_unified_filter_bar(
             df_pay,
@@ -7360,43 +7369,148 @@ elif choice == "💳 Payment Dashboard":
             ro_col="RO Name" if "RO Name" in df_pay.columns else None,
             vendor_col="Vendor Name" if "Vendor Name" in df_pay.columns else None,
             route_col=None,
-            search_placeholder="Search Invoice, Vendor, RO, Status..."
+            search_placeholder="Search Invoice, Vendor, RO, Pending With..."
         )
-        selected_zone = pay_filters["zone"]
-        selected_ro = pay_filters["ro"]
-        search_q = pay_filters["search"]
 
-        bucket_labels = ['Payment Pending / Paid', 'Finance Pending / Hold', 'Draft', 'Cost Control Pending', 'Other']
-        payment_counts = df_pay.get('Payment Group', pd.Series('', index=df_pay.index)).value_counts()
-        finance_bucket_count = int(payment_counts.get('Finance Pending / Hold', 0))
-        draft_bucket_count = int(payment_counts.get('Draft', 0))
-        cost_control_count = int(payment_counts.get('Cost Control Pending', 0))
-        payment_followup_count = finance_bucket_count + draft_bucket_count + cost_control_count
-        payment_insights = []
-        followup_by_bucket = {
-            'Finance Pending / Hold': finance_bucket_count,
-            'Draft': draft_bucket_count,
-            'Cost Control Pending': cost_control_count
+        # Vendor Mapping Category + Raw Category Filters
+        pf1, pf2 = st.columns([1.2, 1.8])
+        vmc_opts = ["ALL"] + sorted(
+            v for v in df_pay['Vendor Mapping Category'].dropna().astype(str).unique().tolist() if v
+        ) if 'Vendor Mapping Category' in df_pay.columns else ["ALL"]
+        sel_vmc = pf1.selectbox("Vendor Mapping Category:", vmc_opts, key="pay_vmc_filter")
+        if sel_vmc != "ALL":
+            df_pay = df_pay[df_pay['Vendor Mapping Category'].astype(str).eq(sel_vmc)].copy()
+
+        cat_opts = ["ALL"] + sorted(
+            v for v in df_pay['Category'].dropna().astype(str).unique().tolist() if v
+        ) if 'Category' in df_pay.columns else ["ALL"]
+        sel_cat = pf2.selectbox("Invoice Category:", cat_opts, key="pay_cat_filter")
+        if sel_cat != "ALL":
+            df_pay = df_pay[df_pay['Category'].astype(str).eq(sel_cat)].copy()
+
+        if df_pay.empty:
+            st.info("No payment records match the selected filters.")
+            st.stop()
+
+        # Exact 5-bucket sequence: Payment Pending / Paid -> Draft -> Cost Control Pending -> Finance Pending -> Finance Hold
+        bucket_labels = [
+            'Payment Pending / Paid',
+            'Draft',
+            'Cost Control Pending',
+            'Finance Pending',
+            'Finance Hold'
+        ]
+        pay_total_bills = len(df_pay)
+        payment_counts = df_pay['Payment Group'].value_counts().to_dict()
+
+        if "pay_gauge_bucket_filter" not in st.session_state:
+            st.session_state["pay_gauge_bucket_filter"] = "ALL"
+
+        def _pick_pay_gauge(chosen_b):
+            if st.session_state.get("pay_gauge_bucket_filter") == chosen_b:
+                st.session_state["pay_gauge_bucket_filter"] = "ALL"
+            else:
+                st.session_state["pay_gauge_bucket_filter"] = chosen_b
+
+        st.markdown("### Payment Status Overview")
+        st.caption("🟢 Payment Pending / Paid · 🔴 Draft · 🟡 Cost Control Pending · 🟡 Finance Pending · 🔴 Finance Hold. Cancelled/Declined excluded. Double-click any gauge to filter below.")
+        st.caption(f"**{pay_total_bills:,}** active bills")
+
+        pay_gauge_specs = [
+            ('Payment Pending / Paid', int(payment_counts.get('Payment Pending / Paid', 0)), '#16a34a', '#f0fdf4', '#bbf7d0', '🟢'),
+            ('Draft', int(payment_counts.get('Draft', 0)), '#dc2626', '#fef2f2', '#fecaca', '🔴'),
+            ('Cost Control Pending', int(payment_counts.get('Cost Control Pending', 0)), '#f59e0b', '#fffbeb', '#fde68a', '🟡'),
+            ('Finance Pending', int(payment_counts.get('Finance Pending', 0)), '#f59e0b', '#fffbeb', '#fde68a', '🟡'),
+            ('Finance Hold', int(payment_counts.get('Finance Hold', 0)), '#dc2626', '#fef2f2', '#fecaca', '🔴'),
+        ]
+
+        st.markdown("""
+        <style>
+        [data-testid="stVerticalBlock"]:has(> .element-container .pay-gauge-triggers) {
+            height: 0px !important; min-height: 0px !important; overflow: hidden !important;
+            opacity: 0 !important; margin: 0 !important; padding: 0 !important; pointer-events: none !important;
         }
-        if payment_followup_count:
-            priority_bucket = max(followup_by_bucket, key=followup_by_bucket.get)
-            payment_insights.append(
-                f"Largest follow-up bucket is `{priority_bucket}` with {followup_by_bucket[priority_bucket]:,} bills."
-            )
-        if len(df_pay) and 'RO Name' in df_pay.columns:
-            top_payment_ro = df_pay['RO Name'].dropna().astype(str).value_counts()
-            if not top_payment_ro.empty:
-                payment_insights.append(
-                    f"Highest invoice volume: `{top_payment_ro.index[0].replace('`', '')}` with {int(top_payment_ro.iloc[0]):,} bills."
+        </style>
+        """, unsafe_allow_html=True)
+        with st.container():
+            st.markdown('<div class="pay-gauge-triggers"></div>', unsafe_allow_html=True)
+            for p_idx, (p_lbl, _, _, _, _, _) in enumerate(pay_gauge_specs):
+                st.button(
+                    f"__PAY_GPICK__{p_lbl}",
+                    key=f"pay_gpick_{p_idx}_{re.sub(r'[^A-Za-z0-9]+', '_', p_lbl)}",
+                    on_click=_pick_pay_gauge,
+                    args=(p_lbl,)
                 )
-        render_powerbi_insights(
-            'Payment Workflow Insights',
-            [('Invoices in view', f'{len(df_pay):,}'), ('Finance follow-up', f'{finance_bucket_count:,}'),
-             ('Draft bills', f'{draft_bucket_count:,}'), ('Cost-control queue', f'{cost_control_count:,}')],
-            payment_insights,
-            period_note='Signals follow the selected zone, RO, and invoice search.'
-        )
 
+        p_track_c = '#e2e8f0' if THEME_IS_LIGHT else 'rgba(148,163,184,.22)'
+        p_text_c = '#0f172a' if THEME_IS_LIGHT else selected_theme['text']
+        p_muted_c = '#475569' if THEME_IS_LIGHT else selected_theme['muted']
+        active_pay_bkt = st.session_state.get("pay_gauge_bucket_filter", "ALL")
+
+        p_cards = []
+        for p_lbl, p_cnt, p_col, p_lbg, p_lbd, p_ico in pay_gauge_specs:
+            p_pct = (p_cnt / pay_total_bills * 100.0) if pay_total_bills else 0.0
+            p_dash = 201.06 * min(100.0, max(0.0, p_pct)) / 100.0
+            p_bg = p_lbg if THEME_IS_LIGHT else selected_theme['card1']
+            p_bd = p_lbd if THEME_IS_LIGHT else selected_theme['line']
+            p_ring = f'box-shadow: 0 0 0 2.5px {p_col}, 0 8px 20px rgba(15,23,42,.10);' if active_pay_bkt == p_lbl else 'box-shadow: 0 4px 14px rgba(15,23,42,.05);'
+            p_cards.append(
+                f'<div class="pg-card" role="button" tabindex="0" data-label="{html_module.escape(p_lbl, quote=True)}" '
+                f'title="Double-click to filter {html_module.escape(p_lbl)} below" '
+                f'style="background:{p_bg};border-color:{p_bd};{p_ring}">'
+                f'<div class="pg-label">{p_ico} {html_module.escape(p_lbl)}</div>'
+                f'<svg viewBox="0 0 180 108" role="img" aria-label="{p_pct:.1f} percent">'
+                f'<path d="M 18 90 A 72 72 0 0 1 162 90" fill="none" stroke="{p_track_c}" stroke-width="13" stroke-linecap="round" pathLength="201.06"/>'
+                f'<path d="M 18 90 A 72 72 0 0 1 162 90" fill="none" stroke="{p_col}" stroke-width="13" stroke-linecap="round" stroke-dasharray="{p_dash:.2f} 201.06" pathLength="201.06"/>'
+                f'<text x="90" y="75" text-anchor="middle" font-size="27" font-weight="850" fill="{p_text_c}">{p_pct:.1f}%</text>'
+                f'<text x="90" y="99" text-anchor="middle" font-size="14" font-weight="800" fill="{p_col}">{p_cnt:,} bills</text>'
+                f'</svg>'
+                f'<div class="pg-sub">out of <strong>{pay_total_bills:,}</strong> bills</div>'
+                f'<div class="pg-hint">Double-click to filter below</div>'
+                f'</div>'
+            )
+
+        p_html = (
+            f'<!doctype html><html><head><meta charset="utf-8"><style>'
+            f'* {{ box-sizing:border-box; }}'
+            f'body {{ margin:0; padding:3px 2px; font-family:Inter,system-ui,-apple-system,Arial,sans-serif; background:transparent; color:{p_text_c}; user-select:none; }}'
+            f'.grid {{ display:grid; grid-template-columns:repeat(5,minmax(145px,1fr)); gap:10px; }}'
+            f'.pg-card {{ border:1px solid; border-radius:15px; padding:10px 8px 8px; text-align:center; cursor:pointer; transition:transform .14s ease, box-shadow .14s ease; }}'
+            f'.pg-card:hover {{ transform:translateY(-2px); box-shadow:0 10px 22px rgba(15,23,42,.12) !important; }}'
+            f'.pg-label {{ font-size:12px; font-weight:800; color:{p_text_c}; min-height:22px; display:flex; align-items:center; justify-content:center; }}'
+            f'svg {{ display:block; width:min(100%,168px); height:auto; margin:0 auto; overflow:visible; }}'
+            f'.pg-sub {{ font-size:11px; font-weight:600; color:{p_muted_c}; margin-top:2px; }}'
+            f'.pg-sub strong {{ color:{p_text_c}; font-weight:800; }}'
+            f'.pg-hint {{ font-size:10px; font-weight:650; color:{selected_theme["blue"]}; margin-top:3px; opacity:.82; }}'
+            f'.pg-card:hover .pg-hint {{ opacity:1; text-decoration:underline; }}'
+            f'@media(max-width:1050px) {{ .grid {{ grid-template-columns:repeat(3,minmax(145px,1fr)); }} }}'
+            f'@media(max-width:650px) {{ .grid {{ grid-template-columns:repeat(2,minmax(140px,1fr)); }} }}'
+            f'</style></head><body><div class="grid">{"".join(p_cards)}</div><script>'
+            f'function pickPayGauge(card) {{'
+            f'  const targetLabel = "__PAY_GPICK__" + card.dataset.label;'
+            f'  try {{'
+            f'    const btns = window.parent.document.querySelectorAll("button");'
+            f'    for (const b of btns) {{'
+            f'      if ((b.innerText || b.textContent || "").trim() === targetLabel) {{ b.click(); return; }}'
+            f'    }}'
+            f'  }} catch (e) {{}}'
+            f'}}'
+            f'document.querySelectorAll(".pg-card").forEach((card) => {{'
+            f'  card.addEventListener("dblclick", (e) => {{ e.preventDefault(); pickPayGauge(card); }});'
+            f'  card.addEventListener("keydown", (e) => {{ if (e.key === "Enter") {{ e.preventDefault(); pickPayGauge(card); }} }});'
+            f'}});'
+            f'</script></body></html>'
+        )
+        st.components.v1.html(p_html, height=205, scrolling=False)
+
+        if active_pay_bkt != "ALL":
+            pb1, pb2 = st.columns([4.5, 1.2])
+            pb1.info(f"Gauge filter active: **{active_pay_bkt}** (double-click same gauge or click Reset to show all)")
+            if pb2.button("↺ Show All", key="pay_gauge_reset_btn", use_container_width=True):
+                st.session_state["pay_gauge_bucket_filter"] = "ALL"
+                st.rerun()
+
+        # RO-wise Payment Summary Table in exact 5-bucket sequence
         ro_col = get_col(df_pay, ['RO Name'])
         summary_rows = []
         if ro_col:
@@ -7404,39 +7518,54 @@ elif choice == "💳 Payment Dashboard":
                 total_bills = len(ro_rows)
                 row = {'RO': str(ro_name), 'Total Bills': total_bills}
                 for bucket in bucket_labels:
-                    count = int(ro_rows['Payment Group'].eq(bucket).sum())
-                    pct = count / total_bills * 100 if total_bills else 0
-                    row[bucket] = f'{count:,} · {pct:.1f}%'
+                    cnt = int(ro_rows['Payment Group'].eq(bucket).sum())
+                    row[bucket] = format_pct_cnt(cnt, total_bills)
                 summary_rows.append(row)
         payment_summary = pd.DataFrame(summary_rows, columns=['RO', 'Total Bills'] + bucket_labels)
-        st.markdown('### RO-wise payment summary')
-        st.caption('Green = Payment Pending / Paid achievement · orange = finance and cost-control follow-up · red = draft and other failures.')
+        if not payment_summary.empty:
+            payment_summary = payment_summary.sort_values(by='Total Bills', ascending=False).reset_index(drop=True)
+
+        st.markdown('### 📋 RO-wise Payment Summary')
         if payment_summary.empty:
             st.info('No payment rows match the selected filters.')
         else:
             render_centered_html_table(payment_summary, height=460)
+
+            # Focused Invoice Drill-Down (auto-filters if a gauge is active!)
+            st.markdown('### 📄 Detailed Invoice Records')
             pc1, pc2 = st.columns([1.4, 1.4])
-            pay_ro_pick = pc1.selectbox('🔎 Inspect Invoices by RO:', ['Select RO...'] + payment_summary['RO'].astype(str).tolist(), key='pay_ro_inspector')
-            pay_bkt_pick = pc2.selectbox('Payment Bucket:', ['All Buckets'] + bucket_labels, key='pay_bkt_inspector')
-            if pay_ro_pick != 'Select RO...':
-                detail = df_pay[df_pay['RO Name'].astype(str).eq(pay_ro_pick)].copy()
-                if pay_bkt_pick != 'All Buckets':
-                    detail = detail[detail['Payment Group'].eq(pay_bkt_pick)].copy()
-                count = len(detail)
-                denominator = len(df_pay[df_pay['RO Name'].astype(str).eq(pay_ro_pick)])
-                pct = count / denominator * 100 if denominator else 0
-                st.markdown(f"#### 📄 {pay_ro_pick} · {pay_bkt_pick} (**{count:,} invoices** · {pct:.1f}%)")
-                compact = compact_detail_frame(detail.sort_values('Amount', ascending=False) if 'Amount' in detail.columns else detail, 'pay_raw')
-                render_centered_html_table(compact, height=420)
-                pay_bytes = io.BytesIO()
-                with pd.ExcelWriter(pay_bytes, engine='xlsxwriter') as writer:
-                    write_styled_sheet_to_excel(writer, payment_summary, 'Payment_Summary', sheet_type='payment_summary')
-                    write_styled_sheet_to_excel(writer, compact, 'Focused_Invoices', sheet_type='pay_raw')
-                st.download_button(
-                    '📥 Download selected payment detail (formatted Excel)', data=pay_bytes.getvalue(),
-                    file_name=f"Payment_Detail_{re.sub(r'[^A-Za-z0-9_-]+', '_', str(pay_ro_pick))}.xlsx",
+            pay_ro_pick = pc1.selectbox('Filter Invoices by RO:', ['ALL ROS'] + payment_summary['RO'].astype(str).tolist(), key='pay_ro_inspector')
+            default_bkt_idx = (bucket_labels.index(active_pay_bkt) + 1) if active_pay_bkt in bucket_labels else 0
+            pay_bkt_pick = pc2.selectbox('Filter by Payment Bucket:', ['ALL BUCKETS'] + bucket_labels, index=default_bkt_idx, key='pay_bkt_inspector')
+
+            detail = df_pay.copy()
+            if pay_ro_pick != 'ALL ROS':
+                detail = detail[detail['RO Name'].astype(str).eq(pay_ro_pick)].copy()
+            if pay_bkt_pick != 'ALL BUCKETS':
+                detail = detail[detail['Payment Group'].eq(pay_bkt_pick)].copy()
+            elif active_pay_bkt != 'ALL':
+                detail = detail[detail['Payment Group'].eq(active_pay_bkt)].copy()
+
+            detail = detail.sort_values(by=['Days Pending', 'Amount'], ascending=[False, False]) if 'Days Pending' in detail.columns and 'Amount' in detail.columns else detail
+            compact = compact_detail_frame(detail, 'pay_raw')
+            st.caption(f"Showing **{len(compact):,}** invoices (sorted by highest Days Pending)")
+            render_centered_html_table(compact, height=520)
+
+            pay_dl1, pay_dl2 = st.columns([1.6, 3.4])
+            if pay_dl1.button('📥 Prepare Payment Report (Excel)', key='pay_prep_excel_btn', type='primary', use_container_width=True):
+                with st.spinner('Generating formatted Payment Excel...'):
+                    pay_bytes = io.BytesIO()
+                    with pd.ExcelWriter(pay_bytes, engine='xlsxwriter') as writer:
+                        write_styled_sheet_to_excel(writer, payment_summary, 'Payment_Summary', sheet_type='generic', preserve_order=True)
+                        write_styled_sheet_to_excel(writer, compact, 'Detailed_Invoices', sheet_type='pay_raw', preserve_order=True)
+                    st.session_state['_pay_excel_ready_bytes'] = pay_bytes.getvalue()
+            if st.session_state.get('_pay_excel_ready_bytes'):
+                pay_dl2.download_button(
+                    '⬇️ Download Payment Report (Excel)',
+                    data=st.session_state['_pay_excel_ready_bytes'],
+                    file_name=f"Payment_Dashboard_{get_ist_now():%d_%b_%Y}.xlsx",
                     mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                    type='primary', key='payment_detail_download'
+                    key='payment_detail_download'
                 )
 
 # -------------------------------------------------------------
