@@ -1146,6 +1146,51 @@ def verify_ops_remark_access_token(token):
     except Exception:
         return None
 
+def create_vendor_perf_access_token(username):
+    """Create a 15-minute signed token scoped to Vendor Performance raw drill-down."""
+    user = USERS_DB.get(username, {})
+    if not user or not user.get('active', True):
+        return ''
+    if username != 'admin' and '🚚 Vendor Performance' not in user.get('modules', []):
+        return ''
+    now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+    cached = st.session_state.get('_ven_perf_link_token')
+    if cached and cached[0] == username and cached[1] > now + 60:
+        return cached[2]
+    payload = json.dumps({
+        'user': username,
+        'scope': 'ven-perf-raw',
+        'expires': now + 900
+    }, separators=(',', ':')).encode('utf-8')
+    encoded = base64.urlsafe_b64encode(payload).decode('ascii').rstrip('=')
+    signature = hmac.new(_get_issue_link_key(), encoded.encode('ascii'), hashlib.sha256).hexdigest()
+    token = f'{encoded}.{signature}'
+    st.session_state['_ven_perf_link_token'] = (username, now + 900, token)
+    return token
+
+def verify_vendor_perf_access_token(token):
+    if not token or '.' not in token:
+        return None
+    encoded, supplied_signature = token.rsplit('.', 1)
+    expected_signature = hmac.new(_get_issue_link_key(), encoded.encode('ascii'), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(supplied_signature, expected_signature):
+        return None
+    try:
+        padded = encoded + ('=' * (-len(encoded) % 4))
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode('ascii')).decode('utf-8'))
+        username = str(payload.get('user', ''))
+        user = USERS_DB.get(username, {})
+        now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+        if payload.get('scope') != 'ven-perf-raw' or int(payload.get('expires', 0)) < now:
+            return None
+        if not user or not user.get('active', True):
+            return None
+        if username != 'admin' and '🚚 Vendor Performance' not in user.get('modules', []):
+            return None
+        return username
+    except Exception:
+        return None
+
 def rotate_overall_issue_link_key():
     """Revoke already-issued drill-down links when the user logs out."""
     try:
@@ -1154,6 +1199,7 @@ def rotate_overall_issue_link_key():
         _get_issue_link_key.clear()
         st.session_state.pop('_overall_issue_link_token', None)
         st.session_state.pop('_ops_remark_link_token', None)
+        st.session_state.pop('_ven_perf_link_token', None)
     except OSError:
         logging.warning('Could not rotate Overall Issues link key during logout.')
 
@@ -1178,6 +1224,8 @@ try:
     incoming_issue_token = str(early_params.get('issues_auth', ''))
     incoming_ops_raw_flag = str(early_params.get('ops_raw', ''))
     incoming_ops_token = str(early_params.get('ops_auth', ''))
+    incoming_ven_raw_flag = str(early_params.get('ven_raw', ''))
+    incoming_ven_token = str(early_params.get('ven_auth', ''))
 except Exception:
     try:
         early_params = st.experimental_get_query_params()
@@ -1185,15 +1233,20 @@ except Exception:
         incoming_issue_token = str((early_params.get('issues_auth') or [''])[0])
         incoming_ops_raw_flag = str((early_params.get('ops_raw') or [''])[0])
         incoming_ops_token = str((early_params.get('ops_auth') or [''])[0])
+        incoming_ven_raw_flag = str((early_params.get('ven_raw') or [''])[0])
+        incoming_ven_token = str((early_params.get('ven_auth') or [''])[0])
     except Exception:
         incoming_raw_flag, incoming_issue_token = '', ''
         incoming_ops_raw_flag, incoming_ops_token = '', ''
+        incoming_ven_raw_flag, incoming_ven_token = '', ''
 if not st.session_state['logged_in']:
     token_user = None
     if incoming_raw_flag == '1':
         token_user = verify_overall_issue_access_token(incoming_issue_token)
     elif incoming_ops_raw_flag == '1':
         token_user = verify_ops_remark_access_token(incoming_ops_token)
+    elif incoming_ven_raw_flag == '1':
+        token_user = verify_vendor_perf_access_token(incoming_ven_token)
     if token_user:
         token_user_data = USERS_DB[token_user]
         st.session_state['logged_in'] = True
@@ -3600,17 +3653,40 @@ def read_ops_remark_query_params():
         'ops_zone', 'ops_ro', 'ops_vendor', 'ops_route', 'ops_search'
     ]}
 
+def read_vendor_perf_query_params():
+    try:
+        params = st.query_params
+        def read_value(key):
+            value = params.get(key, '')
+            return str(value[0] if isinstance(value, (list, tuple)) and value else value or '')
+    except Exception:
+        try:
+            params = st.experimental_get_query_params()
+            def read_value(key):
+                value = params.get(key, [''])
+                return str(value[0] if isinstance(value, (list, tuple)) and value else value or '')
+        except Exception:
+            return {}
+    return {key: read_value(key) for key in [
+        'ven_raw', 'ven_auth', 'ven_status', 'ven_start', 'ven_end',
+        'ven_zone', 'ven_ro', 'ven_vendor', 'ven_route', 'ven_search'
+    ]}
+
 issue_query = read_overall_issue_query_params()
 overall_issue_raw_view = issue_query.get('issues_raw') == '1'
 ops_remark_query = read_ops_remark_query_params()
 ops_remark_raw_view = ops_remark_query.get('ops_raw') == '1'
+ven_perf_query = read_vendor_perf_query_params()
+ven_perf_raw_view = ven_perf_query.get('ven_raw') == '1'
 
-# Default sidebar radio to Operations Summary when opening ops_raw link,
-# but allow switching to ANY other module from the left panel!
 if ops_remark_raw_view and "_ops_win_nav_init" not in st.session_state:
     st.session_state["_ops_win_nav_init"] = True
     if "📊 Operations Summary" in menu:
         st.session_state["main_nav_radio"] = "📊 Operations Summary"
+elif ven_perf_raw_view and "_ven_win_nav_init" not in st.session_state:
+    st.session_state["_ven_win_nav_init"] = True
+    if "🚚 Vendor Performance" in menu:
+        st.session_state["main_nav_radio"] = "🚚 Vendor Performance"
 
 choice = st.sidebar.radio("Navigation:", menu, key="main_nav_radio")
 
@@ -3624,6 +3700,16 @@ if ops_remark_raw_view and choice != "📊 Operations Summary":
     ops_remark_raw_view = False
     st.rerun()
 
+if ven_perf_raw_view and choice != "🚚 Vendor Performance":
+    try:
+        st.query_params.clear()
+    except Exception:
+        pass
+    st.session_state.pop("_ven_win_nav_init", None)
+    st.session_state["ven_win_hide_sidebar"] = False
+    ven_perf_raw_view = False
+    st.rerun()
+
 if overall_issue_raw_view:
     if st.session_state.get('role') != 'Admin' and "⚠️ Overall Issues" not in st.session_state.get('allowed_modules', []):
         st.error('Your account does not have access to Overall Issues details.')
@@ -3634,6 +3720,11 @@ elif ops_remark_raw_view:
         st.error('Your account does not have access to Operations Summary details.')
         st.stop()
     choice = "📊 Operations Summary"
+elif ven_perf_raw_view:
+    if st.session_state.get('role') != 'Admin' and "🚚 Vendor Performance" not in st.session_state.get('allowed_modules', []):
+        st.error('Your account does not have access to Vendor Performance details.')
+        st.stop()
+    choice = "🚚 Vendor Performance"
 
 def file_version(path):
     stat = os.stat(path)
@@ -5373,6 +5464,147 @@ def render_ops_remark_gauges(ops_outcome_counts, ops_total_trips, ops_outcome_la
     </script></body></html>'''
     st.components.v1.html(markup, height=frame_height, scrolling=False)
 
+def render_centered_html_table(
+    df_in,
+    height=500,
+    num_cols=None,
+    bold_cols=None,
+    pill_cols=None,
+    max_rows=2000
+):
+    """Render a crisp Excel-style table with guaranteed 100% Center + Middle alignment on every cell & header."""
+    if df_in is None or df_in.empty:
+        st.info("No records match the selected filters.")
+        return
+
+    df_view = df_in.head(max_rows).reset_index(drop=True)
+    num_set = set(num_cols or []) | {'Total Trips', 'Trips', 'Count', 'Prev 7D Trips', 'Curr 7D Trips', 'Overall Trips', 'ROs', 'Routes', 'Vendors'}
+    bold_set = set(bold_cols or []) | {'Origin RO', 'Legwise', 'Zone', 'Vendor', 'VendorName'}
+    pill_set = set(pill_cols or []) | {
+        'Remark', 'Remark % (Count)', 'Ontime Dep, Ontime Arr',
+        'Ontime Arrival', 'Late Arrival', 'In-Transit', 'Missing Schedule',
+        'Remark with 15 min waiver', 'Status', 'Status % (Count)',
+        '7D Trend', 'Prev 7D On-Time', 'Curr 7D On-Time', 'Curr 7D Late',
+        'Overall On-Time', 'Overall Late'
+    }
+
+    pal = _ops_window_semantic_palette()
+
+    def _pill_tone(col_name, val_str, row_dict):
+        c = str(col_name).lower()
+        s = str(val_str).strip().lower()
+        if not s or s in ('-', '—', 'nan', 'none'):
+            return None
+        if 'trend' in c:
+            if '▲' in val_str or s.startswith('+'):
+                return 'good'
+            if '▼' in val_str or s.startswith('-'):
+                return 'bad'
+            return 'neutral'
+        if col_name in ('Remark', 'Remark with 15 min waiver', 'Status'):
+            if 'ontime dep, ontime arr' in s or 'ontime arrival' in s or 'strong' in s:
+                return 'good'
+            if 'late dep, late arr' in s or 'late arrival' in s or 'no dep' in s or 'action needed' in s:
+                return 'bad'
+            if 'ontime dep, late arr' in s:
+                return 'soft_bad'
+            if 'late dep, ontime arr' in s:
+                return 'recover'
+            if 'in-transit' in s or 'missing' in s or 'watch' in s:
+                return 'warn'
+            return 'neutral'
+        if 'remark %' in c or 'status %' in c:
+            ref_txt = str(row_dict.get('Remark', row_dict.get('Status', ''))).lower()
+            if 'ontime dep, ontime arr' in ref_txt or 'ontime arrival' in ref_txt:
+                return 'good'
+            if 'late dep, late arr' in ref_txt or 'late arrival' in ref_txt or 'no dep' in ref_txt:
+                return 'bad'
+            if 'ontime dep, late arr' in ref_txt:
+                return 'soft_bad'
+            if 'late dep, ontime arr' in ref_txt:
+                return 'recover'
+            if 'in-transit' in ref_txt or 'missing' in ref_txt:
+                return 'warn'
+            return 'neutral'
+        pct = parse_pct_from_str(val_str)
+        if 'ontime' in c or 'on-time' in c:
+            if pct is None:
+                return 'neutral'
+            if pct >= 80:
+                return 'good'
+            if pct >= 55:
+                return 'warn'
+            return 'bad'
+        if 'late' in c:
+            if pct is None or pct == 0:
+                return 'neutral'
+            return 'bad'
+        if 'in-transit' in c or 'missing' in c:
+            if pct is None or pct == 0:
+                return 'neutral'
+            return 'warn'
+        return None
+
+    headers = ''.join(f'<th>{html_module.escape(str(c))}</th>' for c in df_view.columns)
+    rows_html = []
+    cols_list = list(df_view.columns)
+
+    for row_dict in df_view.to_dict(orient='records'):
+        tds = []
+        for col in cols_list:
+            raw_v = row_dict.get(col, '')
+            if raw_v is None or (not isinstance(raw_v, (list, dict)) and pd.isna(raw_v)):
+                txt = ''
+            elif isinstance(raw_v, (int, np.integer)):
+                txt = f"{int(raw_v):,}"
+            elif isinstance(raw_v, (float, np.floating)) and float(raw_v).is_integer():
+                txt = f"{int(raw_v):,}"
+            else:
+                txt = str(raw_v).strip()
+
+            safe_txt = html_module.escape(txt)
+            cls = ''
+            style = ''
+            if col in num_set:
+                style = f'background:{pal["num_bg"]};color:{pal["num_fg"]};font-weight:850;'
+            elif col in pill_set:
+                tone = _pill_tone(col, txt, row_dict)
+                if tone and tone in pal:
+                    bg, fg, acc = pal[tone]
+                    style = f'background:{bg};color:{fg};font-weight:800;box-shadow:inset 3px 0 0 {acc};'
+            elif col in bold_set:
+                cls = ' class="c-bold"'
+            tds.append(f'<td{cls} style="{style}">{safe_txt}</td>' if style else f'<td{cls}>{safe_txt}</td>')
+        rows_html.append('<tr>' + ''.join(tds) + '</tr>')
+
+    scroll_thumb = '#94a3b8' if THEME_IS_LIGHT else '#475569'
+    scroll_track = '#f1f5f9' if THEME_IS_LIGHT else selected_theme['navy900']
+    actual_h = min(int(height), max(130, len(df_view) * 38 + 52))
+
+    doc = (
+        f'<!doctype html><html><head><meta charset="utf-8"><style>'
+        f'* {{ box-sizing:border-box; }}'
+        f'html, body {{ margin:0; padding:0; background:transparent; font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif; }}'
+        f'.tbl-wrap {{ width:100%; height:{actual_h}px; overflow:auto; border:1px solid {pal["border"]}; border-radius:12px; background:{pal["row_even"]}; scrollbar-color:{scroll_thumb} {scroll_track}; scrollbar-width:thin; }}'
+        f'.tbl-wrap::-webkit-scrollbar {{ width:10px; height:10px; }}'
+        f'.tbl-wrap::-webkit-scrollbar-track {{ background:{scroll_track}; border-radius:8px; }}'
+        f'.tbl-wrap::-webkit-scrollbar-thumb {{ background:{scroll_thumb}; border-radius:8px; border:2px solid {scroll_track}; }}'
+        f'table {{ width:100%; min-width:max-content; border-collapse:separate; border-spacing:0; font-size:12.8px; color:{pal["text"]}; }}'
+        f'thead th {{ position:sticky; top:0; z-index:4; background:{pal["header_bg"]}; color:{pal["header_text"]}; font-weight:800; text-align:center !important; vertical-align:middle !important; padding:10px 12px; border-bottom:2px solid {pal["border"]}; border-right:1px solid {pal["border"]}; white-space:nowrap; }}'
+        f'tbody td {{ text-align:center !important; vertical-align:middle !important; padding:8px 12px; border-bottom:1px solid {pal["border"]}; border-right:1px solid {pal["border"]}; white-space:nowrap; }}'
+        f'thead th:last-child, tbody td:last-child {{ border-right:none; }}'
+        f'tbody tr:nth-child(odd) {{ background:{pal["row_even"]}; }}'
+        f'tbody tr:nth-child(even) {{ background:{pal["row_odd"]}; }}'
+        f'tbody tr:hover td {{ filter:brightness(0.97); }}'
+        f'td.c-bold {{ font-weight:750; }}'
+        f'</style></head><body>'
+        f'<div class="tbl-wrap"><table><thead><tr>{headers}</tr></thead><tbody>{"".join(rows_html)}</tbody></table></div>'
+        f'</body></html>'
+    )
+    st.components.v1.html(doc, height=actual_h + 6, scrolling=False)
+    if len(df_in) > max_rows:
+        st.caption(f"Showing first {max_rows:,} of {len(df_in):,} rows for smooth performance. Download Excel for all rows.")
+
 def _sort_ops_window_df(df):
     """Sort strictly by Origin RO (A->Z), Route Path (A->Z), Legwise (A->Z), and Remark (Z->A)."""
     if df is None or df.empty:
@@ -5963,7 +6195,7 @@ def render_ops_remark_raw_window(data, query):
     narrowed_df = view_df.copy()
 
     if leg_keys and not view_df.empty:
-        st.markdown("### 📊 Route & Leg Breakdown (Click a row to narrow raw trips)")
+        st.markdown("### 📊 Route & Leg Breakdown")
 
         leg_totals = base_scope_df.groupby(leg_keys, dropna=False).agg(
             Total_Trips=('_OpsRemarkOutcome', 'size'),
@@ -5985,48 +6217,19 @@ def render_ops_remark_raw_window(data, query):
         final_piv_cols = leg_keys + ['Total Trips', 'Ontime Dep, Ontime Arr'] + (['Remark'] if 'Remark' in pivot_df.columns else []) + ['Remark % (Count)']
         pivot_df = _sort_ops_window_df(pivot_df[final_piv_cols])
 
-        pivot_col_config = {
-            'Origin RO': st.column_config.TextColumn('Origin RO', width='small'),
-            'Route Path': st.column_config.TextColumn('Route Path', width='large'),
-            'Legwise': st.column_config.TextColumn('Legwise', width='small'),
-            'Legs': st.column_config.TextColumn('Legs', width='medium'),
-            'Total Trips': st.column_config.NumberColumn('Total Trips', width='small', format='%d'),
-            'Ontime Dep, Ontime Arr': st.column_config.TextColumn('Ontime Dep, Ontime Arr', width='medium'),
-            'Remark': st.column_config.TextColumn('Remark', width='medium'),
-            'Remark % (Count)': st.column_config.TextColumn('Remark % (Count)', width='medium')
-        }
-        try:
-            piv_event = st.dataframe(
-                style_ops_window_dataframe(pivot_df),
-                column_config=pivot_col_config,
-                use_container_width=True,
-                hide_index=True,
-                height=460,
-                on_select='rerun',
-                selection_mode='single-row',
-                key='ops_win_pivot'
-            )
-            piv_sel = getattr(piv_event, 'selection', {})
-            piv_rows = getattr(piv_sel, 'rows', None) if not isinstance(piv_sel, dict) else piv_sel.get('rows')
-            if piv_rows:
-                p_idx = piv_rows[-1]
-                if isinstance(p_idx, int) and 0 <= p_idx < len(pivot_df):
-                    chosen_p = pivot_df.iloc[p_idx]
-                    for pc in pivot_cols:
-                        narrowed_df = narrowed_df[narrowed_df[pc].fillna('').astype(str).eq(str(chosen_p[pc]))].copy()
-                    st.info(
-                        f"Selected: `{chosen_p.get('Origin RO', '')}` · `{chosen_p.get('Route Path', '')}` · "
-                        f"`{chosen_p.get('Legwise', '')}` · `{chosen_p.get('Remark', '')}` (**{len(narrowed_df):,} trips**). "
-                        f"Uncheck the row above to show all {match_cnt:,} trips."
-                    )
-        except TypeError:
-            st.dataframe(
-                style_ops_window_dataframe(pivot_df),
-                column_config=pivot_col_config,
-                use_container_width=True,
-                hide_index=True,
-                height=460
-            )
+        render_centered_html_table(pivot_df, height=480)
+
+        drill_labels = ["Show All Matching Trips"] + [
+            f"{r.get('Origin RO', '')} | {r.get('Route Path', '')} | {r.get('Legwise', '')} | {r.get('Remark', '')} ({r.get('Remark % (Count)', '')})"
+            for _, r in pivot_df.iterrows()
+        ]
+        chosen_drill = st.selectbox("🎯 Narrow Raw Trips by Route & Leg:", drill_labels, key="ops_win_drill_select")
+        if chosen_drill != "Show All Matching Trips":
+            p_idx = drill_labels.index(chosen_drill) - 1
+            if 0 <= p_idx < len(pivot_df):
+                chosen_p = pivot_df.iloc[p_idx]
+                for pc in pivot_cols:
+                    narrowed_df = narrowed_df[narrowed_df[pc].fillna('').astype(str).eq(str(chosen_p[pc]))].copy()
     else:
         pivot_df = pd.DataFrame()
 
@@ -6055,28 +6258,7 @@ def render_ops_remark_raw_window(data, query):
         st.info("No records match the selected filters.")
         return
 
-    raw_col_config = {
-        'Origin RO': st.column_config.TextColumn('Origin RO', width='small'),
-        'Route Path': st.column_config.TextColumn('Route Path', width='large'),
-        'Legwise': st.column_config.TextColumn('Legwise', width='small'),
-        'Legs': st.column_config.TextColumn('Legs', width='medium'),
-        'Remark': st.column_config.TextColumn('Remark', width='medium'),
-        'MCD_StartDate': st.column_config.TextColumn('Start Date', width='small'),
-        'Scheduled Departure Time': st.column_config.TextColumn('Sch Dep', width='medium'),
-        'Actual Departure Time': st.column_config.TextColumn('Act Dep', width='medium'),
-        'Scheduled Arrival Time': st.column_config.TextColumn('Sch Arr', width='medium'),
-        'Actual Arrival Time': st.column_config.TextColumn('Act Arr', width='medium'),
-        'VendorName': st.column_config.TextColumn('Vendor', width='medium'),
-        'VehicleNo': st.column_config.TextColumn('Vehicle No', width='small'),
-        'MasterCDNo': st.column_config.TextColumn('Master CD No', width='medium'),
-    }
-    st.dataframe(
-        style_ops_window_dataframe(raw_clean),
-        column_config=raw_col_config,
-        use_container_width=True,
-        hide_index=True,
-        height=620
-    )
+    render_centered_html_table(raw_clean, height=580)
 
     # 2-Sheet Formatted Excel Export (Route_Leg_Breakdown + Detailed_Raw_Trips)
     excel_title = f"Operations Report · {title_label}"
@@ -6091,6 +6273,455 @@ def render_ops_remark_raw_window(data, query):
         type="primary",
         use_container_width=True,
         key="ops_win_download_btn"
+    )
+
+def render_vendor_perf_gauges_open_window(ven_counts, ven_total, gauge_context):
+    """Render Vendor Arrival Performance gauges on main page; double-clicking opens full-width ven_raw=1 window."""
+    items = [
+        ('Ontime Arrival', int(ven_counts.get('Ontime Arrival', 0)), '#16a34a', '#f0fdf4', '#bbf7d0', '🟢'),
+        ('Late Arrival', int(ven_counts.get('Late Arrival', 0)), '#dc2626', '#fef2f2', '#fecaca', '🔴'),
+        ('In-Transit', int(ven_counts.get('In-Transit', 0)), '#f59e0b', '#fffbeb', '#fde68a', '🟡'),
+    ]
+    if int(ven_counts.get('Missing Schedule', 0)) > 0:
+        items.append(('Missing Schedule', int(ven_counts.get('Missing Schedule', 0)), '#8b5cf6', '#f5f3ff', '#ddd6fe', '🟣'))
+
+    track_c = '#e2e8f0' if THEME_IS_LIGHT else 'rgba(148,163,184,.22)'
+    text_c = '#0f172a' if THEME_IS_LIGHT else selected_theme['text']
+    muted_c = '#475569' if THEME_IS_LIGHT else selected_theme['muted']
+
+    base_url_json = json.dumps(get_overall_issue_query_url(), ensure_ascii=True).replace('</', '<\/')
+    token = create_vendor_perf_access_token(st.session_state.get('username', ''))
+
+    cards = []
+    for label, cnt, color, light_bg, light_border, icon in items:
+        pct = (cnt / ven_total * 100.0) if ven_total else 0.0
+        dash = 201.06 * min(100.0, max(0.0, pct)) / 100.0
+        bg = light_bg if THEME_IS_LIGHT else selected_theme['card1']
+        border = light_border if THEME_IS_LIGHT else selected_theme['line']
+        params = {
+            'ven_raw': '1',
+            'ven_auth': token,
+            'ven_status': label,
+            'ven_start': gauge_context.get('start', ''),
+            'ven_end': gauge_context.get('end', ''),
+            'ven_zone': gauge_context.get('zone', 'ALL'),
+            'ven_ro': gauge_context.get('ro', 'ALL'),
+            'ven_vendor': gauge_context.get('vendor', 'ALL'),
+            'ven_route': gauge_context.get('route', 'ALL'),
+            'ven_search': gauge_context.get('search', '')
+        }
+        params_json = json.dumps(params, ensure_ascii=True).replace('</', '<\/')
+        cards.append(
+            f'<div class="vg-card" role="button" tabindex="0" title="Double-click to open full Vendor Performance window" '
+            f'data-params="{html_module.escape(params_json, quote=True)}" data-base="{html_module.escape(base_url_json, quote=True)}" '
+            f'style="background:{bg};border-color:{border}">'
+            f'<div class="vg-label">{icon} {html_module.escape(label)}</div>'
+            f'<svg viewBox="0 0 180 108" role="img" aria-label="{pct:.1f} percent">'
+            f'<path d="M 18 90 A 72 72 0 0 1 162 90" fill="none" stroke="{track_c}" stroke-width="13" stroke-linecap="round" pathLength="201.06"/>'
+            f'<path d="M 18 90 A 72 72 0 0 1 162 90" fill="none" stroke="{color}" stroke-width="13" stroke-linecap="round" stroke-dasharray="{dash:.2f} 201.06" pathLength="201.06"/>'
+            f'<text x="90" y="75" text-anchor="middle" font-size="27" font-weight="850" fill="{text_c}">{pct:.1f}%</text>'
+            f'<text x="90" y="99" text-anchor="middle" font-size="14" font-weight="800" fill="{color}">{cnt:,} trips</text>'
+            f'</svg>'
+            f'<div class="vg-sub">out of <strong>{ven_total:,}</strong> trips</div>'
+            f'<div class="vg-hint">Double-click for raw data ↗</div>'
+            f'</div>'
+        )
+
+    cols_cnt = min(len(cards), 4)
+    html_doc = (
+        f'<!doctype html><html><head><meta charset="utf-8"><style>'
+        f'* {{ box-sizing:border-box; }}'
+        f'body {{ margin:0; padding:4px 2px; font-family:Inter,system-ui,-apple-system,Arial,sans-serif; background:transparent; color:{text_c}; user-select:none; }}'
+        f'.grid {{ display:grid; grid-template-columns:repeat({cols_cnt},minmax(170px,1fr)); gap:12px; }}'
+        f'.vg-card {{ border:1px solid; border-radius:15px; padding:11px 10px 9px; text-align:center; cursor:pointer; box-shadow:0 6px 18px rgba(15,23,42,.06); transition:transform .14s ease, box-shadow .14s ease, border-color .14s ease; }}'
+        f'.vg-card:hover {{ transform:translateY(-3px); box-shadow:0 12px 26px rgba(15,23,42,.14); border-color:{selected_theme["blue"]} !important; }}'
+        f'.vg-label {{ font-size:12.5px; font-weight:800; color:{text_c}; min-height:22px; display:flex; align-items:center; justify-content:center; }}'
+        f'svg {{ display:block; width:min(100%,180px); height:auto; margin:0 auto; overflow:visible; }}'
+        f'.vg-sub {{ font-size:11.5px; font-weight:600; color:{muted_c}; margin-top:2px; }}'
+        f'.vg-sub strong {{ color:{text_c}; font-weight:800; }}'
+        f'.vg-hint {{ font-size:10.5px; font-weight:650; color:{selected_theme["blue"]}; margin-top:3px; opacity:.82; }}'
+        f'.vg-card:hover .vg-hint {{ opacity:1; text-decoration:underline; }}'
+        f'@media(max-width:860px) {{ .grid {{ grid-template-columns:repeat(2,minmax(150px,1fr)); }} }}'
+        f'@media(max-width:500px) {{ .grid {{ grid-template-columns:1fr; }} }}'
+        f'</style></head><body><div class="grid">{"".join(cards)}</div><script>'
+        f'let lastVenOpenAt = 0;'
+        f'function openVenRawWindow(card) {{'
+        f'  const now = Date.now();'
+        f'  if (now - lastVenOpenAt < 500) return;'
+        f'  lastVenOpenAt = now;'
+        f'  try {{'
+        f'    const base = JSON.parse(card.dataset.base) || document.referrer || window.location.href;'
+        f'    const target = new URL(base);'
+        f'    ["issues_raw","issues_auth","issues_ro","issues_route","issues_zone","issues_type","issues_start","issues_end","ops_raw","ops_auth","ops_outcome","ops_start","ops_end","ops_zone","ops_ro","ops_vendor","ops_route","ops_search"].forEach((k) => target.searchParams.delete(k));'
+        f'    Object.entries(JSON.parse(card.dataset.params)).forEach(([key, value]) => {{'
+        f'      if (value !== "" && value !== null && value !== undefined) target.searchParams.set(key, value);'
+        f'      else target.searchParams.delete(key);'
+        f'    }});'
+        f'    window.open(target.toString(), "_blank", "noopener,noreferrer");'
+        f'  }} catch (err) {{ window.alert("Could not open Vendor Performance window. Please allow pop-ups and try again."); }}'
+        f'}}'
+        f'document.querySelectorAll(".vg-card").forEach((card) => {{'
+        f'  card.addEventListener("dblclick", (e) => {{ e.preventDefault(); openVenRawWindow(card); }});'
+        f'  card.addEventListener("keydown", (e) => {{ if (e.key === "Enter") {{ e.preventDefault(); openVenRawWindow(card); }} }});'
+        f'}});'
+        f'</script></body></html>'
+    )
+    st.components.v1.html(html_doc, height=205, scrolling=False)
+
+
+def render_vendor_window_gauges(base_scope_df, active_statuses, status_state_key, available_statuses):
+    """Render interactive Vendor Arrival gauges inside ven_raw=1 window; double-click filters below in-place."""
+    scope_total = len(base_scope_df)
+    st_series = base_scope_df.get('Remark with 15 min waiver', pd.Series('', index=base_scope_df.index)).fillna('').astype(str).str.strip()
+    counts = st_series.value_counts().to_dict() if not base_scope_df.empty else {}
+
+    items = [
+        ('Ontime Arrival', int(counts.get('Ontime Arrival', 0)), '#16a34a', '#f0fdf4', '#bbf7d0', '🟢'),
+        ('Late Arrival', int(counts.get('Late Arrival', 0)), '#dc2626', '#fef2f2', '#fecaca', '🔴'),
+        ('In-Transit', int(counts.get('In-Transit', 0)), '#f59e0b', '#fffbeb', '#fde68a', '🟡'),
+    ]
+    if int(counts.get('Missing Schedule', 0)) > 0:
+        items.append(('Missing Schedule', int(counts.get('Missing Schedule', 0)), '#8b5cf6', '#f5f3ff', '#ddd6fe', '🟣'))
+
+    def _pick_ven_win_gauge(chosen_lbl):
+        if chosen_lbl in available_statuses:
+            st.session_state[status_state_key] = [chosen_lbl]
+
+    st.markdown("""
+    <style>
+    [data-testid="stVerticalBlock"]:has(> .element-container .ven-win-gtriggers) {
+        height: 0px !important; min-height: 0px !important; overflow: hidden !important;
+        opacity: 0 !important; margin: 0 !important; padding: 0 !important; pointer-events: none !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    with st.container():
+        st.markdown('<div class="ven-win-gtriggers"></div>', unsafe_allow_html=True)
+        for idx, (lbl, _, _, _, _, _) in enumerate(items):
+            st.button(
+                f"__VENWIN_GPICK__{lbl}",
+                key=f"ven_win_gpick_{idx}_{re.sub(r'[^A-Za-z0-9]+', '_', lbl)}",
+                on_click=_pick_ven_win_gauge,
+                args=(lbl,)
+            )
+
+    track_c = '#e2e8f0' if THEME_IS_LIGHT else 'rgba(148,163,184,.22)'
+    text_c = '#0f172a' if THEME_IS_LIGHT else selected_theme['text']
+    muted_c = '#475569' if THEME_IS_LIGHT else selected_theme['muted']
+
+    cards = []
+    for label, cnt, color, light_bg, light_border, icon in items:
+        pct = (cnt / scope_total * 100.0) if scope_total else 0.0
+        dash = 201.06 * min(100.0, max(0.0, pct)) / 100.0
+        bg = light_bg if THEME_IS_LIGHT else selected_theme['card1']
+        border = light_border if THEME_IS_LIGHT else selected_theme['line']
+        is_active = label in active_statuses
+        ring_css = f'box-shadow: 0 0 0 2.5px {color}, 0 8px 20px rgba(15,23,42,.10);' if is_active else 'box-shadow: 0 4px 14px rgba(15,23,42,.05);'
+        cards.append(
+            f'<div class="vg-card" role="button" tabindex="0" data-label="{html_module.escape(label, quote=True)}" '
+            f'title="Double-click to filter {html_module.escape(label)} below" '
+            f'style="background:{bg};border-color:{border};{ring_css}">'
+            f'<div class="vg-label">{icon} {html_module.escape(label)}</div>'
+            f'<svg viewBox="0 0 180 108" role="img" aria-label="{pct:.1f} percent">'
+            f'<path d="M 18 90 A 72 72 0 0 1 162 90" fill="none" stroke="{track_c}" stroke-width="13" stroke-linecap="round" pathLength="201.06"/>'
+            f'<path d="M 18 90 A 72 72 0 0 1 162 90" fill="none" stroke="{color}" stroke-width="13" stroke-linecap="round" stroke-dasharray="{dash:.2f} 201.06" pathLength="201.06"/>'
+            f'<text x="90" y="75" text-anchor="middle" font-size="27" font-weight="850" fill="{text_c}">{pct:.1f}%</text>'
+            f'<text x="90" y="99" text-anchor="middle" font-size="14" font-weight="800" fill="{color}">{cnt:,} trips</text>'
+            f'</svg>'
+            f'<div class="vg-sub">out of <strong>{scope_total:,}</strong> trips</div>'
+            f'<div class="vg-hint">Double-click to filter below</div>'
+            f'</div>'
+        )
+
+    cols_cnt = min(len(cards), 4)
+    html_doc = (
+        f'<!doctype html><html><head><meta charset="utf-8"><style>'
+        f'* {{ box-sizing:border-box; }}'
+        f'body {{ margin:0; padding:3px 2px; font-family:Inter,system-ui,-apple-system,Arial,sans-serif; background:transparent; color:{text_c}; user-select:none; }}'
+        f'.grid {{ display:grid; grid-template-columns:repeat({cols_cnt},minmax(170px,1fr)); gap:12px; }}'
+        f'.vg-card {{ border:1px solid; border-radius:15px; padding:10px 10px 8px; text-align:center; cursor:pointer; transition:transform .14s ease, box-shadow .14s ease; }}'
+        f'.vg-card:hover {{ transform:translateY(-2px); box-shadow:0 10px 22px rgba(15,23,42,.12) !important; }}'
+        f'.vg-label {{ font-size:12.5px; font-weight:800; color:{text_c}; min-height:22px; display:flex; align-items:center; justify-content:center; }}'
+        f'svg {{ display:block; width:min(100%,180px); height:auto; margin:0 auto; overflow:visible; }}'
+        f'.vg-sub {{ font-size:11.5px; font-weight:600; color:{muted_c}; margin-top:2px; }}'
+        f'.vg-sub strong {{ color:{text_c}; font-weight:800; }}'
+        f'.vg-hint {{ font-size:10.5px; font-weight:650; color:{selected_theme["blue"]}; margin-top:3px; opacity:.82; }}'
+        f'.vg-card:hover .vg-hint {{ opacity:1; text-decoration:underline; }}'
+        f'@media(max-width:860px) {{ .grid {{ grid-template-columns:repeat(2,minmax(150px,1fr)); }} }}'
+        f'@media(max-width:500px) {{ .grid {{ grid-template-columns:1fr; }} }}'
+        f'</style></head><body><div class="grid">{"".join(cards)}</div><script>'
+        f'function filterVenBelow(card) {{'
+        f'  const targetLabel = "__VENWIN_GPICK__" + card.dataset.label;'
+        f'  try {{'
+        f'    const btns = window.parent.document.querySelectorAll("button");'
+        f'    for (const b of btns) {{'
+        f'      if ((b.innerText || b.textContent || "").trim() === targetLabel) {{ b.click(); return; }}'
+        f'    }}'
+        f'  }} catch (e) {{}}'
+        f'}}'
+        f'document.querySelectorAll(".vg-card").forEach((card) => {{'
+        f'  card.addEventListener("dblclick", (e) => {{ e.preventDefault(); filterVenBelow(card); }});'
+        f'  card.addEventListener("keydown", (e) => {{ if (e.key === "Enter") {{ e.preventDefault(); filterVenBelow(card); }} }});'
+        f'}});'
+        f'</script></body></html>'
+    )
+    st.components.v1.html(html_doc, height=205, scrolling=False)
+
+
+def render_vendor_perf_raw_window(data, query):
+    """Full-width new-window view for Vendor Performance (RO-wise / Zone-wise / Vendor-wise / Route & Leg-wise)."""
+    status_label = query.get('ven_status', 'Ontime Arrival') or 'Ontime Arrival'
+    icon_map = {
+        'Ontime Arrival': '🟢', 'Late Arrival': '🔴',
+        'In-Transit': '🟡', 'Missing Schedule': '🟣'
+    }
+
+    if "ven_win_hide_sidebar" not in st.session_state:
+        st.session_state["ven_win_hide_sidebar"] = True
+
+    def _toggle_ven_win_sidebar():
+        st.session_state["ven_win_hide_sidebar"] = not st.session_state.get("ven_win_hide_sidebar", True)
+
+    if st.session_state.get("ven_win_hide_sidebar", True):
+        st.markdown("""
+        <style>
+        [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"] { display: none !important; }
+        [data-testid="stMainBlockContainer"], .block-container {
+            max-width: 99% !important;
+            padding-left: 1.4rem !important;
+            padding-right: 1.4rem !important;
+            padding-top: 1.1rem !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
+    df_source = data.get('Vendor_Perf_Raw', pd.DataFrame()).copy()
+    if df_source.empty:
+        st.warning("No processed Vendor Performance data available.")
+        return
+
+    if not st.session_state.get('all_vendors', True):
+        df_source = filter_df_by_user_vendors(df_source, 'VendorName')
+
+    scoped = df_source.copy()
+    start_str = query.get('ven_start', '').strip()
+    end_str = query.get('ven_end', '').strip()
+    if start_str and end_str and 'Date' in scoped.columns:
+        try:
+            sd = datetime.date.fromisoformat(start_str)
+            ed = datetime.date.fromisoformat(end_str)
+            if sd > ed:
+                sd, ed = ed, sd
+            parsed_d = pd.to_datetime(scoped['Date'], dayfirst=True, errors='coerce')
+            scoped = scoped[(parsed_d.dt.date >= sd) & (parsed_d.dt.date <= ed)].copy()
+        except Exception:
+            pass
+
+    init_sig = (
+        status_label, start_str, end_str,
+        query.get('ven_zone', 'ALL'), query.get('ven_ro', 'ALL'),
+        query.get('ven_vendor', 'ALL'), query.get('ven_route', 'ALL')
+    )
+    if st.session_state.get("_ven_win_seed_sig") != init_sig:
+        st.session_state["_ven_win_seed_sig"] = init_sig
+        st.session_state["ven_win_zone"] = query.get('ven_zone', 'ALL').strip() or "ALL"
+        st.session_state["ven_win_ro"] = query.get('ven_ro', 'ALL').strip() or "ALL"
+        st.session_state["ven_win_vendor"] = query.get('ven_vendor', 'ALL').strip() or "ALL"
+        st.session_state["ven_win_route"] = query.get('ven_route', 'ALL').strip() or "ALL"
+        st.session_state["ven_win_search"] = query.get('ven_search', '').strip()
+
+    available_statuses = ['Ontime Arrival', 'Late Arrival', 'In-Transit', 'Missing Schedule']
+    default_statuses = [status_label] if status_label in available_statuses else available_statuses
+    status_state_key = f"ven_win_status_{re.sub(r'[^A-Za-z0-9]+', '_', status_label)}"
+    if status_state_key not in st.session_state:
+        st.session_state[status_state_key] = default_statuses
+
+    def _reset_ven_win_filters():
+        st.session_state[status_state_key] = default_statuses
+        st.session_state["ven_win_zone"] = "ALL"
+        st.session_state["ven_win_ro"] = "ALL"
+        st.session_state["ven_win_vendor"] = "ALL"
+        st.session_state["ven_win_route"] = "ALL"
+        st.session_state["ven_win_search"] = ""
+
+    hdr_l, hdr_r = st.columns([5.2, 1.1])
+    with hdr_r:
+        toggle_lbl = "☰ Show Left Panel" if st.session_state.get("ven_win_hide_sidebar", True) else "✕ Hide Left Panel"
+        st.button(toggle_lbl, key="ven_win_sidebar_toggle", use_container_width=True, on_click=_toggle_ven_win_sidebar)
+
+    with st.container():
+        st.markdown('<div class="pbi-sticky-anchor"></div>', unsafe_allow_html=True)
+        r1_st, r1_btn = st.columns([5.3, 0.7])
+        selected_statuses = r1_st.multiselect(
+            "Filter Arrival Status:",
+            options=available_statuses,
+            key=status_state_key,
+            placeholder="All Statuses (select one or more)..."
+        )
+        r1_btn.markdown("<div style='height:1.72rem'></div>", unsafe_allow_html=True)
+        r1_btn.button("↺ Reset", key="ven_win_reset_btn", use_container_width=True, on_click=_reset_ven_win_filters)
+
+        base_scope_df = scoped.copy()
+        fc_z, fc1, fc2, fc3, fc4 = st.columns([0.9, 1.0, 1.25, 1.3, 1.35])
+
+        zone_opts = ["ALL"] + sorted(
+            z for z in base_scope_df['Zone'].dropna().astype(str).str.strip().unique().tolist()
+            if z and z.upper() not in ("NAN", "NONE")
+        ) if 'Zone' in base_scope_df.columns else ["ALL"]
+        if st.session_state.get("ven_win_zone") not in zone_opts:
+            st.session_state["ven_win_zone"] = "ALL"
+        sel_zone_local = fc_z.selectbox("Zone:", zone_opts, key="ven_win_zone")
+        if sel_zone_local != "ALL" and 'Zone' in base_scope_df.columns:
+            base_scope_df = base_scope_df[base_scope_df['Zone'].fillna('').astype(str).str.strip().eq(sel_zone_local)].copy()
+
+        ro_opts = ["ALL"] + sorted(base_scope_df['Origin RO'].dropna().astype(str).unique().tolist()) if 'Origin RO' in base_scope_df.columns else ["ALL"]
+        if st.session_state.get("ven_win_ro") not in ro_opts:
+            st.session_state["ven_win_ro"] = "ALL"
+        sel_ro_local = fc1.selectbox("RO:", ro_opts, key="ven_win_ro")
+        if sel_ro_local != "ALL" and 'Origin RO' in base_scope_df.columns:
+            base_scope_df = base_scope_df[base_scope_df['Origin RO'].astype(str).eq(sel_ro_local)].copy()
+
+        ven_opts = ["ALL"] + sorted(base_scope_df['VendorName'].dropna().astype(str).unique().tolist()) if 'VendorName' in base_scope_df.columns else ["ALL"]
+        if st.session_state.get("ven_win_vendor") not in ven_opts:
+            st.session_state["ven_win_vendor"] = "ALL"
+        sel_ven_local = fc2.selectbox("Vendor:", ven_opts, key="ven_win_vendor")
+        if sel_ven_local != "ALL" and 'VendorName' in base_scope_df.columns:
+            base_scope_df = base_scope_df[base_scope_df['VendorName'].astype(str).eq(sel_ven_local)].copy()
+
+        rt_opts = ["ALL"] + sorted(base_scope_df['Route Path'].dropna().astype(str).unique().tolist()) if 'Route Path' in base_scope_df.columns else ["ALL"]
+        if st.session_state.get("ven_win_route") not in rt_opts:
+            st.session_state["ven_win_route"] = "ALL"
+        sel_rt_local = fc3.selectbox("Route:", rt_opts, key="ven_win_route")
+        if sel_rt_local != "ALL" and 'Route Path' in base_scope_df.columns:
+            base_scope_df = base_scope_df[base_scope_df['Route Path'].astype(str).eq(sel_rt_local)].copy()
+
+        local_search = fc4.text_input("Search Vehicle, CD No, Branch:", key="ven_win_search").strip()
+        if local_search:
+            l_mask = base_scope_df.astype(str).apply(lambda c: c.str.contains(local_search, case=False, regex=False, na=False)).any(axis=1)
+            base_scope_df = base_scope_df[l_mask].copy()
+
+        active_statuses = selected_statuses if selected_statuses else available_statuses
+        st_col = 'Remark with 15 min waiver'
+        view_df = base_scope_df[base_scope_df[st_col].fillna('').astype(str).str.strip().isin(active_statuses)].copy() if st_col in base_scope_df.columns else base_scope_df.copy()
+
+        chips = []
+        if start_str and end_str:
+            chips.append(f'<span class="pbi-chip">📅 {html_module.escape(start_str)} to {html_module.escape(end_str)}</span>')
+        if selected_statuses:
+            chips.append(f'<span class="pbi-chip">Status: {html_module.escape(", ".join(selected_statuses))}</span>')
+        else:
+            chips.append('<span class="pbi-chip">Status: ALL</span>')
+        for lbl, val in [('Zone', sel_zone_local), ('RO', sel_ro_local), ('Vendor', sel_ven_local), ('Route', sel_rt_local)]:
+            if val != 'ALL':
+                chips.append(f'<span class="pbi-chip">{lbl}: {html_module.escape(val)}</span>')
+        if local_search:
+            chips.append(f'<span class="pbi-chip">🔍 “{html_module.escape(local_search)}”</span>')
+        st.markdown(
+            f'<div class="pbi-chip-bar"><span class="pbi-chip-title">Filters</span>{"".join(chips)}</div>',
+            unsafe_allow_html=True
+        )
+
+    if len(active_statuses) == 1:
+        title_label = active_statuses[0]
+        title_icon = icon_map.get(title_label, '🚚')
+    else:
+        title_label = "Vendor Performance Breakdown"
+        title_icon = "🚚"
+    with hdr_l:
+        st.markdown(f"<h2 style='margin:0'>{title_icon} {html_module.escape(title_label)}</h2>", unsafe_allow_html=True)
+
+    render_vendor_window_gauges(base_scope_df, active_statuses, status_state_key, available_statuses)
+
+    if view_df.empty:
+        st.info("No vendor trips match the selected filters.")
+        return
+
+    st.markdown("### 📊 Performance Breakdown")
+    view_mode = st.radio(
+        "Group By:",
+        ["Vendor-wise", "RO-wise", "Zone-wise", "Route & Leg-wise"],
+        horizontal=True,
+        key="ven_win_group_mode"
+    )
+
+    def _agg_vendor_group(df_g, grp_cols, extra_aggs=None):
+        g_cols = [c for c in grp_cols if c in df_g.columns]
+        if not g_cols:
+            return pd.DataFrame()
+        tmp = df_g.copy()
+        s_txt = tmp[st_col].fillna('').astype(str).str.strip()
+        tmp['_ot'] = (s_txt == 'Ontime Arrival').astype(int)
+        tmp['_lt'] = (s_txt == 'Late Arrival').astype(int)
+        tmp['_it'] = (s_txt == 'In-Transit').astype(int)
+        tmp['_ms'] = (s_txt == 'Missing Schedule').astype(int)
+        agg_spec = {
+            'Total Trips': (st_col, 'size'),
+            '_ot': ('_ot', 'sum'),
+            '_lt': ('_lt', 'sum'),
+            '_it': ('_it', 'sum'),
+            '_ms': ('_ms', 'sum'),
+        }
+        if extra_aggs:
+            agg_spec.update(extra_aggs)
+        res = tmp.groupby(g_cols, dropna=False).agg(**agg_spec).reset_index()
+        res['Ontime Arrival'] = [format_pct_cnt(o, t) for o, t in zip(res['_ot'], res['Total Trips'])]
+        res['Late Arrival'] = [format_pct_cnt(l, t) for l, t in zip(res['_lt'], res['Total Trips'])]
+        res['In-Transit'] = [format_pct_cnt(i, t) for i, t in zip(res['_it'], res['Total Trips'])]
+        if res['_ms'].sum() > 0:
+            res['Missing Schedule'] = [format_pct_cnt(m, t) for m, t in zip(res['_ms'], res['Total Trips'])]
+        res['_ot_pct'] = np.where(res['Total Trips'] > 0, res['_ot'] / res['Total Trips'] * 100.0, 0.0)
+        res['Status'] = np.where(res['_ot_pct'] >= 85, '🟢 Strong', np.where(res['_ot_pct'] >= 70, '🟡 Watch', '🔴 Action Needed'))
+        res = res.sort_values(by=['Total Trips', '_ot_pct'], ascending=[False, True])
+        drop_c = ['_ot', '_lt', '_it', '_ms', '_ot_pct']
+        return res.drop(columns=drop_c, errors='ignore').reset_index(drop=True)
+
+    if view_mode == "Vendor-wise":
+        breakdown_df = _agg_vendor_group(
+            base_scope_df, ['VendorName'],
+            {'ROs': ('Origin RO', 'nunique'), 'Routes': ('Route Path', 'nunique')}
+        ).rename(columns={'VendorName': 'Vendor'})
+        lead = ['Vendor', 'ROs', 'Routes', 'Total Trips', 'Ontime Arrival', 'Late Arrival', 'In-Transit', 'Missing Schedule', 'Status']
+        breakdown_df = breakdown_df[[c for c in lead if c in breakdown_df.columns]]
+    elif view_mode == "RO-wise":
+        breakdown_df = _agg_vendor_group(
+            base_scope_df, ['Zone', 'Origin RO'],
+            {'Vendors': ('VendorName', 'nunique'), 'Routes': ('Route Path', 'nunique')}
+        )
+        lead = ['Zone', 'Origin RO', 'Vendors', 'Routes', 'Total Trips', 'Ontime Arrival', 'Late Arrival', 'In-Transit', 'Missing Schedule', 'Status']
+        breakdown_df = breakdown_df[[c for c in lead if c in breakdown_df.columns]]
+    elif view_mode == "Zone-wise":
+        breakdown_df = _agg_vendor_group(
+            base_scope_df, ['Zone'],
+            {'ROs': ('Origin RO', 'nunique'), 'Vendors': ('VendorName', 'nunique')}
+        )
+        lead = ['Zone', 'ROs', 'Vendors', 'Total Trips', 'Ontime Arrival', 'Late Arrival', 'In-Transit', 'Missing Schedule', 'Status']
+        breakdown_df = breakdown_df[[c for c in lead if c in breakdown_df.columns]]
+    else:
+        breakdown_df = _agg_vendor_group(
+            base_scope_df, ['Origin RO', 'Route Path', 'Legwise', 'Legs', 'VendorName']
+        ).rename(columns={'VendorName': 'Vendor'})
+        lead = ['Origin RO', 'Route Path', 'Legwise', 'Legs', 'Vendor', 'Total Trips', 'Ontime Arrival', 'Late Arrival', 'In-Transit', 'Missing Schedule', 'Status']
+        breakdown_df = breakdown_df[[c for c in lead if c in breakdown_df.columns]]
+
+    render_centered_html_table(breakdown_df, height=500)
+
+    raw_clean = clean_dataframe_for_excel(view_df, sheet_type="ven_raw", preserve_order=False)
+    st.markdown(f"### 📄 Detailed Raw Trip Records ({len(raw_clean):,} rows)")
+    render_centered_html_table(raw_clean, height=580)
+
+    ven_win_buf = io.BytesIO()
+    with pd.ExcelWriter(ven_win_buf, engine='xlsxwriter') as writer:
+        write_styled_sheet_to_excel(writer, breakdown_df, f'{view_mode[:20]}_Summary', sheet_type='generic', preserve_order=True)
+        write_styled_sheet_to_excel(writer, raw_clean, 'Detailed_Raw_Trips', sheet_type='ven_raw')
+    safe_v_title = re.sub(r'[^A-Za-z0-9_-]+', '_', title_label).strip('_') or 'Vendor_Perf'
+    st.download_button(
+        f"📥 Download {title_label} ({view_mode}) Report (Excel)",
+        data=ven_win_buf.getvalue(),
+        file_name=f"Vendor_{safe_v_title}_{get_ist_now():%d_%b_%Y}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary",
+        use_container_width=True,
+        key="ven_win_download_btn"
     )
 
 # -------------------------------------------------------------
@@ -6203,210 +6834,20 @@ elif choice == "📊 Operations Summary":
         }
         render_ops_remark_gauges(ops_outcome_counts, ops_total_trips, ops_outcome_labels, ops_gauge_context)
 
-        # Route-level rates use the same exclusive Remark buckets as the gauges.
-        ops_totals_by_route = pd.to_numeric(
-            df_leg_sum.get("Total_Trips", pd.Series(0, index=df_leg_sum.index)), errors="coerce"
-        ).fillna(0).astype(int)
-
-        def _ops_rate_for_table(counts):
-            counts = counts.reindex(df_leg_sum.index).fillna(0).astype(int)
-            percentages = np.where(ops_totals_by_route.gt(0), counts.div(ops_totals_by_route.replace(0, np.nan)) * 100, 0)
-            return pd.Series(
-                [f"{pct:.1f}% ({count:,})" for pct, count in zip(percentages, counts)],
-                index=df_leg_sum.index
-            )
-
-        for status_label, _, _ in OPS_REMARK_OUTCOME_LABELS:
-            count_col = f'{status_label} Trips'
-            status_counts_for_table = pd.to_numeric(
-                df_leg_sum.get(count_col, pd.Series(0, index=df_leg_sum.index)), errors='coerce'
-            ).fillna(0).astype(int)
-            df_leg_sum[f'{status_label} %'] = _ops_rate_for_table(status_counts_for_table)
-
-        display_cols = [
-            'Origin RO', 'Route Path', 'Legwise', 'Legs', 'Total_Trips',
-            *[f'{label} %' for label, _, _ in OPS_REMARK_OUTCOME_LABELS]
-        ]
-        
-        df_display = df_leg_sum[[c for c in display_cols if c in df_leg_sum.columns]].copy()
-        df_display['RowKey'] = df_display['Origin RO'].astype(str) + " || " + df_display['Route Path'].astype(str) + " | " + df_display['Legwise'].astype(str)
-        
-        def extract_pct(x):
-            if isinstance(x, str) and '%' in x:
-                try: return float(x.split('%')[0].strip())
-                except: return 0.0
-            return 0.0
-            
-        # Natural sorting by Route Path and Legwise (No Z-to-A force sort)
-        df_display = df_display.sort_values(by=['Route Path', 'Legwise'])
-
-        # Dynamic Streamlit Filter for Badi Screen feel
-        st.markdown("---")
-        st.markdown("### 📋 Filter Detailed Operations Data")
-        selected_remark_filter = st.selectbox(
-            "🎯 Filter Table by Remark Outcome:", 
-            ["Show All"] + [label for label, _, _ in OPS_REMARK_OUTCOME_LABELS]
-        )
-        
-        if selected_remark_filter != "Show All":
-            filter_col_name = f"{selected_remark_filter} %"
-            if filter_col_name in df_display.columns:
-                mask = df_display[filter_col_name].apply(lambda x: extract_pct(x) > 0)
-                df_display = df_display[mask]
-
-        pct_cols = [c for c in df_display.columns if '%' in c and c != 'RowKey']
-
-        def _format_ops_status_badge(value, column):
-            pct = parse_pct_from_str(value)
-            text = format_ops_badge(value)
-            col = str(column).lower()
-            if pct is None:
-                return text
-            if 'ontime dep, ontime arr' in col:
-                icon = '🟢' if pct > 0 else '⚪'
-            elif 'ontime dep, late arr' in col:
-                icon = '🌸' if pct > 0 else '🟢'
-            elif 'late dep, in-transit' in col or 'ontime dep, in-transit' in col or 'in-transit' in col:
-                icon = '🟡' if pct > 0 else '🟢'
-            elif 'late dep, ontime arr' in col:
-                icon = '🟣' if pct > 0 else '🟢'
-            elif 'missing schedule' in col:
-                icon = '🟡' if pct > 0 else '🟢'
-            elif 'no departure' in col:
-                icon = '🔴' if pct > 0 else '🟢'
-            elif 'late dep' in col or 'late arrival' in col or 'late departure' in col or 'late arr' in col:
-                icon = '🔴' if pct > 0 else '🟢'
-            elif 'ontime' in col or 'on-time' in col:
-                icon = '🟢' if pct >= 95 else ('🟡' if pct >= 80 else '🔴')
-            elif 'other' in col:
-                icon = '⚪'
-            else:
-                icon = ''
-            if pct == 0:
-                icon = '⚪'
-            return f"{icon} {text}".strip()
-
-        for c in pct_cols:
-            df_display[c] = df_display[c].apply(lambda value, col=c: _format_ops_status_badge(value, col))
-
-        if PLOTLY_AVAILABLE:
-            st.markdown("### 📈 Visual Analytics: Route Health")
-            chart_c1, chart_c2 = st.columns(2)
-
-            # 1. E2E Performance Donut Chart (Based on Actual Remarks)
-            pie_data = pd.DataFrame(list(ops_outcome_counts.items()), columns=['Status', 'Count'])
-            pie_data = pie_data[pie_data['Count'] > 0]
-
-            if not pie_data.empty:
-                fig_pie = px.pie(
-                    pie_data, values='Count', names='Status', hole=0.45,
-                    title='Trip Health by Remark Outcome'
-                )
-                fig_pie.update_traces(textposition='inside', textinfo='percent+label')
-                fig_pie.update_layout(
-                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                    font_color=selected_theme["text"], margin=dict(t=40, b=10, l=10, r=10),
-                    showlegend=False
-                )
-                chart_c1.plotly_chart(fig_pie, use_container_width=True)
-
-            # 2. Top 5 Problematic Routes Bar Chart (Click bar to cross-filter Route)
-            if 'Late Dep, Late Arr %' in df_leg_sum.columns:
-                df_leg_sum['Late_Count_Temp'] = df_leg_sum['Total_Trips'] * (df_leg_sum['Late Dep, Late Arr %'].apply(extract_pct) / 100)
-                top_problem_routes = df_leg_sum.nlargest(5, 'Late_Count_Temp')
-
-                if not top_problem_routes.empty and top_problem_routes['Late_Count_Temp'].sum() > 0:
-                    fig_bar = px.bar(
-                        top_problem_routes, x='Route Path', y='Late_Count_Temp',
-                        text_auto='.0f', title='Top 5 Routes by Late Arrivals (Click bar to filter)',
-                        color_discrete_sequence=['#ef4444']
-                    )
-                    fig_bar.update_layout(
-                        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                        font_color=selected_theme["text"], margin=dict(t=40, b=10, l=10, r=10),
-                        xaxis_title="", yaxis_title="Late Trips"
-                    )
-                    render_crossfilter_plotly(chart_c2, fig_bar, key="ops_bar_cf", target_state_key="ops_main_route", point_field="x")
-
-                df_leg_sum = df_leg_sum.drop(columns=['Late_Count_Temp'], errors='ignore')
-        st.markdown("---")
-        st.markdown("### Top Priority Routes Summary")
-        st.caption("Every column is one exclusive Remark outcome with its trip count. Scroll horizontally to reach every outcome.")
-        
-        df_display.insert(0, 'Select 👁️', False)
-        ap_data = load_action_plans()
-        mod_ap = ap_data.get("Operations Summary", {})
-        df_display['Action Plan ✍️'] = df_display['RowKey'].map(mod_ap).fillna("")
-        
-        disp_cols = ['Select 👁️'] + [c for c in df_display.columns if c not in ['RowKey', 'Select 👁️']]
-        styled_df = style_ui_dataframe(df_display[disp_cols])
-            
-        disabled_cols = [c for c in disp_cols if c not in ['Action Plan ✍️', 'Select 👁️']]
-        
-        ops_column_config = {
-            'Origin RO': st.column_config.TextColumn('Origin RO', width='small'),
-            'Route Path': st.column_config.TextColumn('Route Path', width='large'),
-            'Legwise': st.column_config.TextColumn('Leg', width='small'),
-            'Legs': st.column_config.TextColumn('Leg Path', width='medium'),
-            'Total_Trips': st.column_config.NumberColumn('Trips', width='small', format='%d'),
-            'Action Plan ✍️': st.column_config.TextColumn('Action Plan ✍️', width='large')
-        }
-        for outcome_label, _, _ in OPS_REMARK_OUTCOME_LABELS:
-            outcome_column = f'{outcome_label} %'
-            if outcome_column in df_display.columns:
-                ops_column_config[outcome_column] = st.column_config.TextColumn(
-                    outcome_label, width='medium', help='Trips in this exclusive Remark category, as a percentage and count.'
-                )
-
-        edited_df = st.data_editor(
-            styled_df,
-            column_config=ops_column_config,
-            disabled=disabled_cols,
-            use_container_width=True,
-            height=420,
-            key="ops_editor"
-        )
-        
-        changes = False
-        for idx, row in edited_df.iterrows():
-            r_key = str(df_display.loc[idx, 'RowKey'])
-            new_val = str(row['Action Plan ✍️']).strip()
-            old_val = str(mod_ap.get(r_key, "")).strip()
-            if new_val != old_val:
-                if new_val: mod_ap[r_key] = new_val
-                else: mod_ap.pop(r_key, None)
-                changes = True
-        if changes:
-            ap_data["Operations Summary"] = mod_ap
-            save_action_plans(ap_data)
-        
-        selected_rows = edited_df[edited_df['Select 👁️'] == True].index.tolist()
-
-        if selected_rows:
-            selected_idx = selected_rows[0]
-            selected_route = df_display.loc[selected_idx, 'Route Path']
-            selected_leg = df_display.loc[selected_idx, 'Legwise']
-            
-            st.markdown("---")
-            st.markdown(f"### 📄 Remark-wise Raw Trip Data · `{selected_route}` · `{selected_leg}`")
-            
-            filtered_raw = df_raw_leg[(df_raw_leg['Route Path'] == selected_route) & (df_raw_leg['Legwise'] == selected_leg)].copy()
-            filtered_raw = filtered_raw.drop(columns=['_OpsRemarkOutcome'], errors='ignore')
-            filtered_raw = clean_dataframe_for_excel(filtered_raw, sheet_type="ops_raw")
-            st.caption("The Remark column is the trip outcome shown for each raw record.")
-            st.dataframe(style_ui_dataframe(filtered_raw), use_container_width=True)
-        else:
-            st.info("👆 Check the 'Select 👁️' box in the table above to view detailed trip records.")
 
 # -------------------------------------------------------------
 # B. VENDOR PERFORMANCE (With Dynamic User/Vendor Restriction)
 # -------------------------------------------------------------
 elif choice == "🚚 Vendor Performance":
+    if ven_perf_raw_view:
+        render_vendor_perf_raw_window(data, ven_perf_query)
+        st.stop()
+
     st.markdown("<h2>Vendor Performance (Routewise/Legwise)</h2>", unsafe_allow_html=True)
-    
+
     if 'Vendor_Perf_Summary' in data and 'Vendor_Perf_Raw' in data:
         df_vperf_raw_full = data['Vendor_Perf_Raw'].copy()
-        
+
         if not st.session_state.get('all_vendors', True):
             allowed_v = [normalize_vendor_name(v) for v in st.session_state.get('allowed_vendors', []) if v]
             allowed_v = list(dict.fromkeys([v for v in allowed_v if v]))
@@ -6423,8 +6864,6 @@ elif choice == "🚚 Vendor Performance":
             route_col="Route Path" if "Route Path" in df_vperf_raw_full.columns else None,
             search_placeholder="Search Route, Leg, Vehicle..."
         )
-        is_vdate_filtered = ven_filters["is_date_filtered"]
-        dur_str_ven = ven_filters["dur_label"]
         selected_zone = ven_filters["zone"]
         selected_ro = ven_filters["ro"]
         selected_vendor_b = ven_filters["vendor"]
@@ -6439,145 +6878,35 @@ elif choice == "🚚 Vendor Performance":
         df_display = df_vperf_sum[[c for c in display_cols if c in df_vperf_sum.columns]].copy()
         df_display = sort_by_route_and_leg(df_display)
         df_display['RowKey'] = df_display['Origin RO'].astype(str) + " || " + df_display['VendorName'].astype(str) + " | " + df_display['Route Path'].astype(str) + " | " + df_display['Legwise'].astype(str)
-        
+
         if search_q:
             mask = df_display.astype(str).apply(lambda x: x.str.contains(search_q, case=False, regex=False, na=False)).any(axis=1)
             df_display = df_display[mask]
 
+        # 1. VENDOR ARRIVAL PERFORMANCE GAUGES (Double-click opens ven_raw=1 full window)
         st.markdown("### Vendor Arrival Performance")
-        st.caption("🟢 Ontime Arrival · 🔴 Late Arrival · 🟡 In-Transit · 🟡 Missing Schedule. Double-click any gauge to filter the summary table below.")
+        st.caption("🟢 Ontime Arrival · 🔴 Late Arrival · 🟡 In-Transit · 🟣 Missing Schedule. Double-click any gauge to open full RO/Zone/Vendor breakdown in a new window.")
 
-        vendor_total_trips = int(pd.to_numeric(
-            df_display.get('Total_Trips', pd.Series(0, index=df_display.index)), errors='coerce'
-        ).fillna(0).sum())
+        st_col = 'Remark with 15 min waiver'
+        ven_status_series = df_vperf_raw.get(st_col, pd.Series('', index=df_vperf_raw.index)).fillna('').astype(str).str.strip()
+        ven_counts = ven_status_series.value_counts().to_dict()
+        ven_total = len(df_vperf_raw)
+        st.caption(f"**{ven_total:,}** trips · **{len(df_display):,}** vendor route legs")
 
-        def _vendor_outcome_count(column):
-            if column not in df_display.columns:
-                return 0
-            count_text = df_display[column].astype(str).str.extract(r"\(([,\d]+)\)", expand=False)
-            return int(pd.to_numeric(
-                count_text.str.replace(',', '', regex=False), errors='coerce'
-            ).fillna(0).sum())
-
-        vendor_ontime_count = _vendor_outcome_count('Ontime Arrival')
-        vendor_late_count = _vendor_outcome_count('Late Arrival')
-        vendor_transit_count = _vendor_outcome_count('In-Transit')
-        vendor_missing_count = int(
-            df_vperf_raw.get('Remark with 15 min waiver', pd.Series('', index=df_vperf_raw.index))
-            .fillna('').astype(str).str.strip().eq('Missing Schedule').sum()
-        )
-        vendor_ontime_pct = vendor_ontime_count / vendor_total_trips * 100 if vendor_total_trips else 0
-
-        # Interactive Vendor Gauges (double-click to filter below)
-        if "ven_gauge_status_filter" not in st.session_state:
-            st.session_state["ven_gauge_status_filter"] = "ALL"
-
-        def _pick_vendor_gauge(chosen_st):
-            if st.session_state.get("ven_gauge_status_filter") == chosen_st:
-                st.session_state["ven_gauge_status_filter"] = "ALL"
-            else:
-                st.session_state["ven_gauge_status_filter"] = chosen_st
-
-        ven_gauge_items = [
-            ('Ontime Arrival', vendor_ontime_count, '#16a34a', '#f0fdf4', '#bbf7d0', '🟢'),
-            ('Late Arrival', vendor_late_count, '#dc2626', '#fef2f2', '#fecaca', '🔴'),
-            ('In-Transit', vendor_transit_count, '#f59e0b', '#fffbeb', '#fde68a', '🟡'),
-        ]
-        if vendor_missing_count > 0:
-            ven_gauge_items.append(('Missing Schedule', vendor_missing_count, '#8b5cf6', '#f5f3ff', '#ddd6fe', '🟣'))
-
-        st.markdown("""
-        <style>
-        [data-testid="stVerticalBlock"]:has(> .element-container .ven-gauge-triggers-anchor) {
-            height: 0px !important; min-height: 0px !important; overflow: hidden !important;
-            opacity: 0 !important; margin: 0 !important; padding: 0 !important; pointer-events: none !important;
+        _ven_sd_val = st.session_state.get("ven_main_sd")
+        _ven_ed_val = st.session_state.get("ven_main_ed")
+        ven_gauge_context = {
+            "start": _ven_sd_val.isoformat() if hasattr(_ven_sd_val, "isoformat") else "",
+            "end": _ven_ed_val.isoformat() if hasattr(_ven_ed_val, "isoformat") else "",
+            "zone": ven_filters.get("zone", "ALL"),
+            "ro": ven_filters.get("ro", "ALL"),
+            "vendor": ven_filters.get("vendor", "ALL"),
+            "route": ven_filters.get("route", "ALL"),
+            "search": ven_filters.get("search", "")
         }
-        </style>
-        """, unsafe_allow_html=True)
-        with st.container():
-            st.markdown('<div class="ven-gauge-triggers-anchor"></div>', unsafe_allow_html=True)
-            for v_idx, (v_lbl, _, _, _, _, _) in enumerate(ven_gauge_items):
-                st.button(
-                    f"__VEN_GPICK__{v_lbl}",
-                    key=f"ven_gpick_{v_idx}_{re.sub(r'[^A-Za-z0-9]+', '_', v_lbl)}",
-                    on_click=_pick_vendor_gauge,
-                    args=(v_lbl,)
-                )
+        render_vendor_perf_gauges_open_window(ven_counts, ven_total, ven_gauge_context)
 
-        v_track_c = '#e2e8f0' if THEME_IS_LIGHT else 'rgba(148,163,184,.22)'
-        v_text_c = '#0f172a' if THEME_IS_LIGHT else selected_theme['text']
-        v_muted_c = '#475569' if THEME_IS_LIGHT else selected_theme['muted']
-        active_ven_st = st.session_state.get("ven_gauge_status_filter", "ALL")
-
-        v_cards = []
-        for v_lbl, v_cnt, v_col, v_lbg, v_lbd, v_ico in ven_gauge_items:
-            v_pct = (v_cnt / vendor_total_trips * 100.0) if vendor_total_trips else 0.0
-            v_dash = 201.06 * min(100.0, max(0.0, v_pct)) / 100.0
-            v_bg = v_lbg if THEME_IS_LIGHT else selected_theme['card1']
-            v_bd = v_lbd if THEME_IS_LIGHT else selected_theme['line']
-            v_ring = f'box-shadow: 0 0 0 2.5px {v_col}, 0 8px 20px rgba(15,23,42,.10);' if active_ven_st == v_lbl else 'box-shadow: 0 4px 14px rgba(15,23,42,.05);'
-            v_cards.append(
-                f'<div class="vg-card" role="button" tabindex="0" data-label="{html_module.escape(v_lbl, quote=True)}" '
-                f'title="Double-click to filter {html_module.escape(v_lbl)} below" '
-                f'style="background:{v_bg};border-color:{v_bd};{v_ring}">'
-                f'<div class="vg-label">{v_ico} {html_module.escape(v_lbl)}</div>'
-                f'<svg viewBox="0 0 180 108" role="img" aria-label="{v_pct:.1f} percent">'
-                f'<path d="M 18 90 A 72 72 0 0 1 162 90" fill="none" stroke="{v_track_c}" stroke-width="13" stroke-linecap="round" pathLength="201.06"/>'
-                f'<path d="M 18 90 A 72 72 0 0 1 162 90" fill="none" stroke="{v_col}" stroke-width="13" stroke-linecap="round" stroke-dasharray="{v_dash:.2f} 201.06" pathLength="201.06"/>'
-                f'<text x="90" y="75" text-anchor="middle" font-size="27" font-weight="850" fill="{v_text_c}">{v_pct:.1f}%</text>'
-                f'<text x="90" y="99" text-anchor="middle" font-size="14" font-weight="800" fill="{v_col}">{v_cnt:,} trips</text>'
-                f'</svg>'
-                f'<div class="vg-sub">out of <strong>{vendor_total_trips:,}</strong> trips</div>'
-                f'<div class="vg-hint">Double-click to filter below</div>'
-                f'</div>'
-            )
-
-        v_cols_cnt = min(len(v_cards), 4)
-        v_html = (
-            f'<!doctype html><html><head><meta charset="utf-8"><style>'
-            f'* {{ box-sizing:border-box; }}'
-            f'body {{ margin:0; padding:3px 2px; font-family:Inter,system-ui,-apple-system,Arial,sans-serif; background:transparent; color:{v_text_c}; user-select:none; }}'
-            f'.grid {{ display:grid; grid-template-columns:repeat({v_cols_cnt},minmax(170px,1fr)); gap:12px; }}'
-            f'.vg-card {{ border:1px solid; border-radius:15px; padding:10px 10px 8px; text-align:center; cursor:pointer; transition:transform .14s ease, box-shadow .14s ease; }}'
-            f'.vg-card:hover {{ transform:translateY(-2px); box-shadow:0 10px 22px rgba(15,23,42,.12) !important; }}'
-            f'.vg-label {{ font-size:12.5px; font-weight:800; color:{v_text_c}; min-height:22px; display:flex; align-items:center; justify-content:center; }}'
-            f'svg {{ display:block; width:min(100%,180px); height:auto; margin:0 auto; overflow:visible; }}'
-            f'.vg-sub {{ font-size:11.5px; font-weight:600; color:{v_muted_c}; margin-top:2px; }}'
-            f'.vg-sub strong {{ color:{v_text_c}; font-weight:800; }}'
-            f'.vg-hint {{ font-size:10.5px; font-weight:650; color:{selected_theme["blue"]}; margin-top:3px; opacity:.82; }}'
-            f'.vg-card:hover .vg-hint {{ opacity:1; text-decoration:underline; }}'
-            f'@media(max-width:860px) {{ .grid {{ grid-template-columns:repeat(2,minmax(150px,1fr)); }} }}'
-            f'@media(max-width:500px) {{ .grid {{ grid-template-columns:1fr; }} }}'
-            f'</style></head><body><div class="grid">{"".join(v_cards)}</div><script>'
-            f'function pickVenGauge(card) {{'
-            f'  const targetLabel = "__VEN_GPICK__" + card.dataset.label;'
-            f'  try {{'
-            f'    const btns = window.parent.document.querySelectorAll("button");'
-            f'    for (const b of btns) {{'
-            f'      if ((b.innerText || b.textContent || "").trim() === targetLabel) {{ b.click(); return; }}'
-            f'    }}'
-            f'  }} catch (e) {{}}'
-            f'}}'
-            f'document.querySelectorAll(".vg-card").forEach((card) => {{'
-            f'  card.addEventListener("dblclick", (e) => {{ e.preventDefault(); pickVenGauge(card); }});'
-            f'  card.addEventListener("keydown", (e) => {{ if (e.key === "Enter") {{ e.preventDefault(); pickVenGauge(card); }} }});'
-            f'}});'
-            f'</script></body></html>'
-        )
-        st.components.v1.html(v_html, height=205, scrolling=False)
-
-        if active_ven_st != "ALL":
-            vf_c1, vf_c2 = st.columns([4.5, 1.2])
-            vf_c1.info(f"Gauge filter active: **{active_ven_st}** (double-click same gauge or click Reset to show all)")
-            if vf_c2.button("↺ Show All", key="ven_gauge_reset_btn", use_container_width=True):
-                st.session_state["ven_gauge_status_filter"] = "ALL"
-                st.rerun()
-            if active_ven_st in df_display.columns:
-                df_display = df_display[
-                    df_display[active_ven_st].astype(str).apply(lambda v: (parse_pct_from_str(v) or 0) > 0)
-                ].copy()
-
-        # On-demand Styled Excel Export (keeps Vendor Performance load & module switch instant)
+        # On-demand Styled Excel Export
         ven_dl_col1, ven_dl_col2 = st.columns([1.6, 3.4])
         if ven_dl_col1.button("📥 Prepare Styled Excel Report", key="ven_prepare_excel_btn", type="primary", use_container_width=True):
             with st.spinner("Generating styled Vendor Performance Excel..."):
@@ -6595,116 +6924,126 @@ elif choice == "🚚 Vendor Performance":
                 key="ven_ready_download_btn"
             )
 
-        vendor_insights = []
-        if vendor_total_trips:
-            vendor_insights.append(f"{vendor_ontime_pct:.1f}% of trips arrived on time in the current filtered view.")
-            vendor_insights.append(f"{vendor_late_count:,} trips are marked late on arrival.")
-        if not df_display.empty and 'VendorName' in df_display.columns:
-            vendor_volume = (
-                pd.to_numeric(df_display['Total_Trips'], errors='coerce').fillna(0)
-                if 'Total_Trips' in df_display.columns else pd.Series(0, index=df_display.index)
-            )
-            vendor_volume_by_name = vendor_volume.groupby(df_display['VendorName']).sum().sort_values(ascending=False)
-            if not vendor_volume_by_name.empty:
-                vendor_insights.append(
-                    f"Highest trip volume: `{str(vendor_volume_by_name.index[0]).replace('`', '')}` "
-                    f"with {int(vendor_volume_by_name.iloc[0]):,} trips."
-                )
-        render_powerbi_insights(
-            'Vendor Performance Insights',
-            [('Filtered trips', f'{vendor_total_trips:,}'), ('On-time arrivals', f'{vendor_ontime_pct:.1f}%'),
-             ('Late arrivals', f'{vendor_late_count:,}'),
-             ('Vendors in view', f"{df_display['VendorName'].nunique():,}" if 'VendorName' in df_display.columns else '—')],
-            vendor_insights,
-            period_note='Signals follow the selected date range, zone, RO, vendor, and route search.'
-        )
-
-        # ==========================================
-        # UPGRADE: POWER BI-STYLE PLOTLY VISUALS (VENDORS)
-        # ==========================================
-        if PLOTLY_AVAILABLE and not df_display.empty:
-            st.markdown("### 📊 Visual Analytics: Vendor Reliability")
-            v_chart1, v_chart2 = st.columns(2)
-            
-            # 1. Vendor Volume vs On-Time Scatter/Bubble
-            v_vol = df_display.groupby('VendorName').agg(
-                Total_Trips=('Total_Trips', 'sum'),
-                Ontime_Count=('Ontime Arrival', lambda x: sum(int(str(v).split('(')[-1].replace(')','')) if '(' in str(v) else 0 for v in x))
-            ).reset_index()
-            
-            v_vol['On-Time %'] = (v_vol['Ontime_Count'] / v_vol['Total_Trips'] * 100).round(1)
-            
-            fig_v_scatter = px.scatter(
-                v_vol, x='Total_Trips', y='On-Time %', size='Total_Trips', color='On-Time %',
-                hover_name='VendorName', title='Vendor Volume vs. Reliability',
-                color_continuous_scale=[(0, "#ef4444"), (0.8, "#f59e0b"), (1, "#10b981")]
-            )
-            fig_v_scatter.update_layout(
-                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                font_color=selected_theme["text"], margin=dict(t=40, b=10, l=10, r=10),
-                xaxis_title="Total Trips", yaxis_title="On-Time %"
-            )
-            render_crossfilter_plotly(v_chart1, fig_v_scatter, key="ven_scatter_cf", target_state_key="ven_main_vendor", point_field="hovertext")
-
-            # 2. Bottom 5 Vendors by Late Count
-            v_vol['Late_Count'] = v_vol['Total_Trips'] - v_vol['Ontime_Count']
-            bottom_vendors = v_vol.nlargest(5, 'Late_Count')
-            
-            if bottom_vendors['Late_Count'].sum() > 0:
-                fig_v_bar = px.bar(
-                    bottom_vendors, x='VendorName', y='Late_Count',
-                    text_auto='.0f', title='Vendors with Most Late Arrivals',
-                    color_discrete_sequence=['#f97316']
-                )
-                fig_v_bar.update_layout(
-                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                    font_color=selected_theme["text"], margin=dict(t=40, b=10, l=10, r=10),
-                    xaxis_title="", yaxis_title="Late Trips"
-                )
-                render_crossfilter_plotly(v_chart2, fig_v_bar, key="ven_bar_cf", target_state_key="ven_main_vendor", point_field="x")
+        # 2. VENDOR ROUTE / LEG SUMMARY (Clean, Spacious + Inline Action Plan ✍️)
         st.markdown("---")
-        st.markdown("#### Vendor Route / Leg Summary")
+        st.markdown("### 📋 Vendor Route / Leg Summary")
+
         ap_data = load_action_plans()
         mod_ap = ap_data.get("Vendor Performance", {})
-        summary_cols = [c for c in display_cols if c in df_display.columns and c not in ['RowKey', 'Action Plan ✍️', 'Select 👁️']]
-        table_display = df_display[summary_cols].reset_index(drop=True)
-        st.caption('🟢 On-time arrival · 🔴 Late arrival · 🟡 In-transit. Click any trip count or rate to open matching trip records.')
-        try:
-            vendor_event = st.dataframe(
-                style_ui_dataframe(table_display), use_container_width=True, height=350, hide_index=True,
-                on_select='rerun', selection_mode='single-cell', key='vendor_performance_click'
-            )
-            selected_idx, selected_vendor_metric = get_selected_cell_from_event(vendor_event, table_display)
-        except TypeError:
-            st.dataframe(style_ui_dataframe(table_display), use_container_width=True, height=350, hide_index=True)
-            selected_idx = None
-            selected_vendor_metric = None
 
-        if selected_idx is not None and 0 <= selected_idx < len(table_display):
-            selected_row = df_display.iloc[selected_idx]
-            filtered_raw = df_vperf_raw.copy()
-            for match_col in ['Origin RO', 'VendorName', 'Route Path', 'Legwise']:
-                if match_col in selected_row.index and match_col in filtered_raw.columns:
-                    filtered_raw = filtered_raw[filtered_raw[match_col].fillna('').astype(str).eq(str(selected_row[match_col]))].copy()
-            vendor_metric_to_status = {'Ontime Arrival': 'Ontime Arrival', 'Late Arrival': 'Late Arrival', 'In-Transit': 'In-Transit'}
-            status_wanted = vendor_metric_to_status.get(selected_vendor_metric)
-            if status_wanted and 'Remark with 15 min waiver' in filtered_raw.columns:
-                filtered_raw = filtered_raw[filtered_raw['Remark with 15 min waiver'].fillna('').astype(str).str.strip().eq(status_wanted)].copy()
-            filtered_raw_clean = compact_detail_frame(filtered_raw, 'ven_raw')
-            st.markdown(f"#### 📄 `{selected_row['VendorName']}` · `{selected_row['Route Path']}` · `{selected_row['Legwise']}` · {selected_vendor_metric or 'All trip metrics'} · {len(filtered_raw_clean):,} trips")
-            st.dataframe(style_ui_dataframe(filtered_raw_clean), use_container_width=True, hide_index=True, height=330)
-            output_raw = io.BytesIO()
-            with pd.ExcelWriter(output_raw, engine='xlsxwriter') as writer:
-                write_styled_sheet_to_excel(writer, filtered_raw_clean, 'Focused_Trips', sheet_type='ven_raw')
-            st.download_button(
-                '📥 Download selected performance records (formatted Excel)', data=output_raw.getvalue(),
-                file_name=f"Vendor_Performance_{re.sub(r'[^A-Za-z0-9_-]+', '_', str(selected_row['VendorName']))}_{selected_idx + 1}.xlsx",
-                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', key='vendor_focused_raw_download'
+        v_summary_df = df_display.copy().reset_index(drop=True)
+        v_summary_df = v_summary_df.rename(columns={'VendorName': 'Vendor', 'Total_Trips': 'Total Trips'})
+
+        v_summary_df['_leg_n'] = extract_leg_num_val(v_summary_df['Legwise']) if 'Legwise' in v_summary_df.columns else 999
+        v_summary_df = v_summary_df.sort_values(
+            by=[c for c in ['Origin RO', 'Route Path', '_leg_n', 'Vendor'] if c in v_summary_df.columns],
+            ascending=True
+        ).drop(columns=['_leg_n'], errors='ignore').reset_index(drop=True)
+
+        can_edit_ap = st.session_state.get('role') != 'Vendor'
+        if can_edit_ap:
+            v_summary_df['Action Plan ✍️'] = v_summary_df['RowKey'].map(mod_ap).fillna('')
+
+        show_v_cols = [c for c in ['Origin RO', 'Route Path', 'Legwise', 'Legs', 'Vendor', 'Total Trips', 'Ontime Arrival', 'Late Arrival', 'In-Transit', 'Action Plan ✍️'] if c in v_summary_df.columns]
+
+        def _style_vendor_summary(df_s):
+            pal = _ops_window_semantic_palette()
+            def pill(tone_k):
+                bg, fg, acc = pal[tone_k]
+                return f'background-color:{bg};color:{fg};font-weight:800;border-left:3px solid {acc};text-align:center;vertical-align:middle;'
+            def apply_s(frame):
+                styles = pd.DataFrame('', index=frame.index, columns=frame.columns)
+                for i, idx in enumerate(frame.index):
+                    bg = pal['row_even'] if i % 2 == 0 else pal['row_odd']
+                    styles.loc[idx, :] = f'background-color:{bg};color:{pal["text"]};text-align:center;vertical-align:middle;'
+                for col in frame.columns:
+                    if col == 'Total Trips':
+                        for idx in frame.index:
+                            styles.loc[idx, col] = f'background-color:{pal["num_bg"]};color:{pal["num_fg"]};font-weight:850;text-align:center;vertical-align:middle;'
+                    elif col == 'Ontime Arrival':
+                        for idx, val in frame[col].items():
+                            p = parse_pct_from_str(str(val))
+                            styles.loc[idx, col] = pill('good' if (p is not None and p >= 80) else ('warn' if (p is not None and p >= 55) else 'bad'))
+                    elif col == 'Late Arrival':
+                        for idx, val in frame[col].items():
+                            p = parse_pct_from_str(str(val))
+                            styles.loc[idx, col] = pill('bad' if (p is not None and p > 0) else 'neutral')
+                    elif col == 'In-Transit':
+                        for idx, val in frame[col].items():
+                            p = parse_pct_from_str(str(val))
+                            styles.loc[idx, col] = pill('warn' if (p is not None and p > 0) else 'neutral')
+                    elif col in ('Origin RO', 'Legwise', 'Vendor'):
+                        for idx in frame.index:
+                            styles.loc[idx, col] += ' font-weight:700;'
+                return styles
+            return (
+                df_s.style.apply(apply_s, axis=None)
+                .set_properties(**{'border-color': pal['border'], 'font-size': '13px', 'padding': '8px 10px', 'text-align': 'center', 'vertical-align': 'middle'})
             )
+
+        if can_edit_ap:
+            st.caption("Edit **Action Plan ✍️** directly in the table below — changes save automatically.")
+            v_col_cfg = {
+                'Origin RO': st.column_config.TextColumn('Origin RO', width='small'),
+                'Route Path': st.column_config.TextColumn('Route Path', width='large'),
+                'Legwise': st.column_config.TextColumn('Legwise', width='small'),
+                'Legs': st.column_config.TextColumn('Legs', width='medium'),
+                'Vendor': st.column_config.TextColumn('Vendor', width='medium'),
+                'Total Trips': st.column_config.NumberColumn('Total Trips', width='small', format='%d'),
+                'Ontime Arrival': st.column_config.TextColumn('Ontime Arrival', width='medium'),
+                'Late Arrival': st.column_config.TextColumn('Late Arrival', width='medium'),
+                'In-Transit': st.column_config.TextColumn('In-Transit', width='small'),
+                'Action Plan ✍️': st.column_config.TextColumn('Action Plan ✍️', width='large'),
+            }
+            disabled_v_cols = [c for c in show_v_cols if c != 'Action Plan ✍️']
+            edited_v_sum = st.data_editor(
+                _style_vendor_summary(v_summary_df[show_v_cols]),
+                column_config=v_col_cfg,
+                disabled=disabled_v_cols,
+                use_container_width=True,
+                hide_index=True,
+                height=520,
+                key='vendor_summary_inline_ap_editor'
+            )
+            ap_changed = False
+            for idx, plan_row in edited_v_sum.iterrows():
+                r_key = str(v_summary_df.loc[idx, 'RowKey'])
+                new_val = str(plan_row['Action Plan ✍️']).strip()
+                if new_val != str(mod_ap.get(r_key, '')).strip():
+                    if new_val:
+                        mod_ap[r_key] = new_val
+                    else:
+                        mod_ap.pop(r_key, None)
+                    ap_changed = True
+            if ap_changed:
+                ap_data['Vendor Performance'] = mod_ap
+                save_action_plans(ap_data)
         else:
-            st.info('Click a count or percentage in the summary to open only those trip records.')
+            render_centered_html_table(v_summary_df[show_v_cols], height=520)
 
-        # Compare the same filtered vendors across the prior/current seven-day windows and all data.
+        v_drill_opts = ["Select a Route / Vendor to inspect raw trips..."] + [
+            f"{r['Origin RO']} | {r['Vendor']} | {r['Route Path']} | {r['Legwise']} ({r['Total Trips']} trips)"
+            for _, r in v_summary_df.iterrows()
+        ]
+        chosen_v_drill = st.selectbox("🔎 Inspect Raw Trips:", v_drill_opts, key="ven_sum_raw_inspector")
+        if chosen_v_drill != v_drill_opts[0]:
+            v_idx = v_drill_opts.index(chosen_v_drill) - 1
+            if 0 <= v_idx < len(v_summary_df):
+                sel_r = v_summary_df.iloc[v_idx]
+                f_raw = df_vperf_raw[
+                    df_vperf_raw['Origin RO'].astype(str).eq(str(sel_r['Origin RO']))
+                    & df_vperf_raw['VendorName'].astype(str).eq(str(sel_r['Vendor']))
+                    & df_vperf_raw['Route Path'].astype(str).eq(str(sel_r['Route Path']))
+                    & df_vperf_raw['Legwise'].astype(str).eq(str(sel_r['Legwise']))
+                ].copy()
+                f_raw_clean = compact_detail_frame(f_raw, 'ven_raw')
+                st.markdown(f"#### 📄 `{sel_r['Vendor']}` · `{sel_r['Route Path']}` · `{sel_r['Legwise']}` (**{len(f_raw_clean):,} trips**)")
+                render_centered_html_table(f_raw_clean, height=380)
+
+        # 3. UPGRADED 7-DAY & OVERALL VENDOR COMPARISON (All Vendors + Individual Vendor Route/Leg Mode)
+        st.markdown("---")
+        st.markdown("### 📅 7-Day & Overall Vendor Comparison")
+
         compare_raw = df_vperf_raw_full.copy()
         if selected_zone != 'ALL' and 'Zone' in compare_raw.columns:
             compare_raw = compare_raw[compare_raw['Zone'].eq(selected_zone)]
@@ -6712,6 +7051,7 @@ elif choice == "🚚 Vendor Performance":
             compare_raw = compare_raw[compare_raw['Origin RO'].eq(selected_ro)]
         if selected_vendor_b != 'ALL' and 'VendorName' in compare_raw.columns:
             compare_raw = compare_raw[compare_raw['VendorName'].eq(selected_vendor_b)]
+
         compare_date_col = get_col(compare_raw, ['Date'])
         compare_dates = pd.to_datetime(compare_raw[compare_date_col], dayfirst=True, errors='coerce').dt.date if compare_date_col else pd.Series([None] * len(compare_raw), index=compare_raw.index)
         valid_compare_dates = compare_dates.dropna()
@@ -6719,92 +7059,121 @@ elif choice == "🚚 Vendor Performance":
         current_7_start = today_compare - datetime.timedelta(days=6)
         previous_7_start = today_compare - datetime.timedelta(days=13)
         previous_7_end = today_compare - datetime.timedelta(days=7)
-        compare_status_col = get_col(compare_raw, ['Remark with 15 min waiver'])
-        compare_status = compare_raw[compare_status_col].fillna('').astype(str) if compare_status_col else pd.Series('', index=compare_raw.index)
-        compare_rows = []
-        compare_vendors = sorted(compare_raw.get('VendorName', pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
-        for vendor_name in compare_vendors:
-            vendor_rows = compare_raw[compare_raw['VendorName'].astype(str).eq(vendor_name)].copy()
-            vendor_dates = compare_dates.loc[vendor_rows.index]
-            vendor_status = compare_status.loc[vendor_rows.index]
-            result = {'Vendor': vendor_name}
-            windows = [
-                ('Previous 7 Days', (vendor_dates >= previous_7_start) & (vendor_dates <= previous_7_end)),
-                ('Current 7 Days', (vendor_dates >= current_7_start) & (vendor_dates <= today_compare)),
-                ('All Available', pd.Series(True, index=vendor_rows.index))
-            ]
-            for window_name, window_mask in windows:
-                window_status = vendor_status.loc[window_mask.index[window_mask]]
-                window_count = int(window_mask.sum())
-                ontime_count = int(window_status.eq('Ontime Arrival').sum())
-                late_count = int(window_status.eq('Late Arrival').sum())
-                result[f'{window_name} Trips'] = window_count
-                result[f'{window_name} On-time'] = f'{ontime_count:,} · {(ontime_count / window_count * 100 if window_count else 0):.1f}%'
-                result[f'{window_name} Late'] = f'{late_count:,} · {(late_count / window_count * 100 if window_count else 0):.1f}%'
-            compare_rows.append(result)
-        comparison = pd.DataFrame(compare_rows)
-        if not comparison.empty:
-            st.markdown('### 7-day and overall vendor comparison')
-            st.caption(f'Previous 7 days: {previous_7_start:%d %b}–{previous_7_end:%d %b} · Current 7 days: {current_7_start:%d %b}–{today_compare:%d %b}')
-            try:
-                comparison_event = st.dataframe(
-                    style_ui_dataframe(comparison), use_container_width=True, hide_index=True,
-                    on_select='rerun', selection_mode='single-cell', key='vendor_7day_comparison_click'
-                )
-                comparison_idx, comparison_col = get_selected_cell_from_event(comparison_event, comparison)
-            except TypeError:
-                st.dataframe(style_ui_dataframe(comparison), use_container_width=True, hide_index=True)
-                comparison_idx, comparison_col = None, None
-            if comparison_idx is not None and 0 <= comparison_idx < len(comparison):
-                compare_vendor = str(comparison.iloc[comparison_idx]['Vendor'])
-                compare_detail = compare_raw[compare_raw['VendorName'].astype(str).eq(compare_vendor)].copy()
-                if comparison_col and comparison_col.startswith('Previous 7 Days'):
-                    selected_period = (previous_7_start, previous_7_end)
-                    compare_detail = compare_detail[compare_dates.loc[compare_detail.index].between(*selected_period)].copy()
-                elif comparison_col and comparison_col.startswith('Current 7 Days'):
-                    compare_detail = compare_detail[compare_dates.loc[compare_detail.index].between(current_7_start, today_compare)].copy()
-                comparison_metric_lower = str(comparison_col or '').lower()
-                if 'on-time' in comparison_metric_lower and compare_status_col:
-                    compare_detail = compare_detail[compare_detail[compare_status_col].fillna('').astype(str).eq('Ontime Arrival')].copy()
-                elif 'late' in comparison_metric_lower and compare_status_col:
-                    compare_detail = compare_detail[compare_detail[compare_status_col].fillna('').astype(str).eq('Late Arrival')].copy()
-                st.markdown(f'#### `{compare_vendor}` · {comparison_col or "All available period"}')
-                compare_detail_compact = compact_detail_frame(compare_detail, 'ven_raw')
-                st.dataframe(style_ui_dataframe(compare_detail_compact), use_container_width=True, hide_index=True, height=300)
-                compare_excel = io.BytesIO()
-                with pd.ExcelWriter(compare_excel, engine='xlsxwriter') as writer:
-                    write_styled_sheet_to_excel(writer, comparison.iloc[[comparison_idx]], 'Period_Summary', sheet_type='ven_sum')
-                    write_styled_sheet_to_excel(writer, compare_detail_compact, 'Focused_Trips', sheet_type='ven_raw')
-                st.download_button(
-                    '📥 Download selected comparison trips (formatted Excel)', data=compare_excel.getvalue(),
-                    file_name=f"Vendor_Comparison_{re.sub(r'[^A-Za-z0-9_-]+', '_', compare_vendor)}.xlsx",
-                    mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                    key='vendor_comparison_raw_download'
-                )
 
-        if st.session_state.get('role') != 'Vendor' and not df_display.empty:
-            with st.expander('✍️ Vendor action plans', expanded=False):
-                ap_editor = df_display[['RowKey']].copy()
-                ap_editor['Action Plan ✍️'] = ap_editor['RowKey'].map(mod_ap).fillna('')
-                edited_ap = st.data_editor(
-                    ap_editor, disabled=['RowKey'], use_container_width=True, hide_index=True,
-                    column_config={'RowKey': st.column_config.TextColumn('RO · Vendor · Route · Leg', width='large'),
-                                   'Action Plan ✍️': st.column_config.TextColumn('Action Plan ✍️', width='large')},
-                    key='vendor_action_plan_editor'
+        st.caption(
+            f"**Previous 7 Days:** {previous_7_start:%d %b %Y} – {previous_7_end:%d %b %Y}  ·  "
+            f"**Current 7 Days:** {current_7_start:%d %b %Y} – {today_compare:%d %b %Y}  ·  "
+            f"**Overall:** All available dates"
+        )
+
+        comp_vendors = sorted(compare_raw.get('VendorName', pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
+        cc1, cc2 = st.columns([2.2, 1.4])
+        comp_scope_vendor = cc1.selectbox(
+            "Comparison Scope (All Vendors or Individual Vendor Route/Leg Breakdown):",
+            ["ALL VENDORS (Summary)"] + comp_vendors,
+            key="ven_comp_scope_select"
+        )
+        comp_sort_mode = cc2.selectbox(
+            "Sort By:",
+            ["Worst Curr 7D On-Time First", "Highest Curr 7D Trips", "Biggest Drop First", "Best Improvement First"],
+            key="ven_comp_sort_select"
+        )
+
+        compare_status_col = get_col(compare_raw, ['Remark with 15 min waiver'])
+        if compare_status_col and not compare_raw.empty:
+            c_work = compare_raw.copy()
+            c_work['_dt'] = compare_dates
+            c_work['_is_prev'] = (c_work['_dt'] >= previous_7_start) & (c_work['_dt'] <= previous_7_end)
+            c_work['_is_curr'] = (c_work['_dt'] >= current_7_start) & (c_work['_dt'] <= today_compare)
+            c_st = c_work[compare_status_col].fillna('').astype(str).str.strip()
+            c_work['_ot'] = (c_st == 'Ontime Arrival').astype(int)
+            c_work['_lt'] = (c_st == 'Late Arrival').astype(int)
+
+            if comp_scope_vendor == "ALL VENDORS (Summary)":
+                grp_cols = ['VendorName']
+            else:
+                c_work = c_work[c_work['VendorName'].astype(str).eq(comp_scope_vendor)].copy()
+                grp_cols = [c for c in ['Origin RO', 'Route Path', 'Legwise', 'Legs'] if c in c_work.columns]
+
+            comp_rows = []
+            for keys, grp in c_work.groupby(grp_cols, dropna=False):
+                if not isinstance(keys, tuple):
+                    keys = (keys,)
+                row_d = dict(zip(grp_cols, keys))
+                if 'VendorName' in row_d:
+                    row_d['Vendor'] = row_d.pop('VendorName')
+
+                prev_g = grp[grp['_is_prev']]
+                curr_g = grp[grp['_is_curr']]
+
+                p_tot, p_ot = len(prev_g), int(prev_g['_ot'].sum())
+                c_tot, c_ot, c_lt = len(curr_g), int(curr_g['_ot'].sum()), int(curr_g['_lt'].sum())
+                a_tot, a_ot, a_lt = len(grp), int(grp['_ot'].sum()), int(grp['_lt'].sum())
+
+                p_pct = (p_ot / p_tot * 100.0) if p_tot else None
+                c_pct = (c_ot / c_tot * 100.0) if c_tot else None
+                a_pct = (a_ot / a_tot * 100.0) if a_tot else 0.0
+
+                if p_pct is not None and c_pct is not None:
+                    diff = c_pct - p_pct
+                    if diff > 0.05:
+                        trend_str = f"▲ +{diff:.1f}%"
+                    elif diff < -0.05:
+                        trend_str = f"▼ {diff:.1f}%"
+                    else:
+                        trend_str = "━ 0.0%"
+                elif c_pct is not None and p_pct is None:
+                    diff = 0.0
+                    trend_str = "New"
+                else:
+                    diff = 0.0
+                    trend_str = "—"
+
+                ref_pct = c_pct if c_pct is not None else a_pct
+                status_tag = "🟢 Strong" if ref_pct >= 85 else ("🟡 Watch" if ref_pct >= 70 else "🔴 Action Needed")
+
+                row_d.update({
+                    'Prev 7D Trips': p_tot,
+                    'Prev 7D On-Time': format_pct_cnt(p_ot, p_tot) if p_tot else "—",
+                    'Curr 7D Trips': c_tot,
+                    'Curr 7D On-Time': format_pct_cnt(c_ot, c_tot) if c_tot else "—",
+                    'Curr 7D Late': format_pct_cnt(c_lt, c_tot) if c_tot else "—",
+                    '7D Trend': trend_str,
+                    'Overall Trips': a_tot,
+                    'Overall On-Time': format_pct_cnt(a_ot, a_tot),
+                    'Overall Late': format_pct_cnt(a_lt, a_tot),
+                    'Status': status_tag,
+                    '_sort_c_pct': c_pct if c_pct is not None else 999.0,
+                    '_sort_diff': diff
+                })
+                comp_rows.append(row_d)
+
+            comparison = pd.DataFrame(comp_rows)
+            if not comparison.empty:
+                if comp_sort_mode == "Worst Curr 7D On-Time First":
+                    comparison = comparison.sort_values(by=['_sort_c_pct', 'Curr 7D Trips'], ascending=[True, False])
+                elif comp_sort_mode == "Highest Curr 7D Trips":
+                    comparison = comparison.sort_values(by=['Curr 7D Trips', 'Overall Trips'], ascending=[False, False])
+                elif comp_sort_mode == "Biggest Drop First":
+                    comparison = comparison.sort_values(by=['_sort_diff', 'Curr 7D Trips'], ascending=[True, False])
+                else:
+                    comparison = comparison.sort_values(by=['_sort_diff', 'Curr 7D Trips'], ascending=[False, False])
+
+                comparison_disp = comparison.drop(columns=['_sort_c_pct', '_sort_diff'], errors='ignore').reset_index(drop=True)
+                render_centered_html_table(comparison_disp, height=500)
+
+                comp_buf = io.BytesIO()
+                with pd.ExcelWriter(comp_buf, engine='xlsxwriter') as writer:
+                    write_styled_sheet_to_excel(writer, comparison_disp, 'Vendor_7D_Comparison', sheet_type='generic', preserve_order=True)
+                st.download_button(
+                    "📥 Download 7-Day Comparison (Excel)",
+                    data=comp_buf.getvalue(),
+                    file_name=f"Vendor_7D_Comparison_{get_ist_now():%d_%b_%Y}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="ven_comp_excel_dl"
                 )
-                changes = False
-                for idx, plan_row in edited_ap.iterrows():
-                    r_key = str(ap_editor.loc[idx, 'RowKey'])
-                    new_val = str(plan_row['Action Plan ✍️']).strip()
-                    if new_val != str(mod_ap.get(r_key, '')).strip():
-                        if new_val:
-                            mod_ap[r_key] = new_val
-                        else:
-                            mod_ap.pop(r_key, None)
-                        changes = True
-                if changes:
-                    ap_data['Vendor Performance'] = mod_ap
-                    save_action_plans(ap_data)
+            else:
+                st.info("No vendor comparison records found for the current filters.")
 
 # -------------------------------------------------------------
 # C. VENDOR PAYMENT DASHBOARD 
