@@ -1034,6 +1034,51 @@ def verify_overall_issue_access_token(token):
     except Exception:
         return None
 
+def create_ops_remark_access_token(username):
+    """Create a 15-minute signed token scoped to Operations Summary Remark raw drill-down."""
+    user = USERS_DB.get(username, {})
+    if not user or not user.get('active', True):
+        return ''
+    if username != 'admin' and '📊 Operations Summary' not in user.get('modules', []):
+        return ''
+    now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+    cached = st.session_state.get('_ops_remark_link_token')
+    if cached and cached[0] == username and cached[1] > now + 60:
+        return cached[2]
+    payload = json.dumps({
+        'user': username,
+        'scope': 'ops-remark-raw',
+        'expires': now + 900
+    }, separators=(',', ':')).encode('utf-8')
+    encoded = base64.urlsafe_b64encode(payload).decode('ascii').rstrip('=')
+    signature = hmac.new(_get_issue_link_key(), encoded.encode('ascii'), hashlib.sha256).hexdigest()
+    token = f'{encoded}.{signature}'
+    st.session_state['_ops_remark_link_token'] = (username, now + 900, token)
+    return token
+
+def verify_ops_remark_access_token(token):
+    if not token or '.' not in token:
+        return None
+    encoded, supplied_signature = token.rsplit('.', 1)
+    expected_signature = hmac.new(_get_issue_link_key(), encoded.encode('ascii'), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(supplied_signature, expected_signature):
+        return None
+    try:
+        padded = encoded + ('=' * (-len(encoded) % 4))
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode('ascii')).decode('utf-8'))
+        username = str(payload.get('user', ''))
+        user = USERS_DB.get(username, {})
+        now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+        if payload.get('scope') != 'ops-remark-raw' or int(payload.get('expires', 0)) < now:
+            return None
+        if not user or not user.get('active', True):
+            return None
+        if username != 'admin' and '📊 Operations Summary' not in user.get('modules', []):
+            return None
+        return username
+    except Exception:
+        return None
+
 def rotate_overall_issue_link_key():
     """Revoke already-issued drill-down links when the user logs out."""
     try:
@@ -1041,6 +1086,7 @@ def rotate_overall_issue_link_key():
             key_file.write(os.urandom(32))
         _get_issue_link_key.clear()
         st.session_state.pop('_overall_issue_link_token', None)
+        st.session_state.pop('_ops_remark_link_token', None)
     except OSError:
         logging.warning('Could not rotate Overall Issues link key during logout.')
 
@@ -1063,15 +1109,24 @@ try:
     early_params = st.query_params
     incoming_raw_flag = str(early_params.get('issues_raw', ''))
     incoming_issue_token = str(early_params.get('issues_auth', ''))
+    incoming_ops_raw_flag = str(early_params.get('ops_raw', ''))
+    incoming_ops_token = str(early_params.get('ops_auth', ''))
 except Exception:
     try:
         early_params = st.experimental_get_query_params()
         incoming_raw_flag = str((early_params.get('issues_raw') or [''])[0])
         incoming_issue_token = str((early_params.get('issues_auth') or [''])[0])
+        incoming_ops_raw_flag = str((early_params.get('ops_raw') or [''])[0])
+        incoming_ops_token = str((early_params.get('ops_auth') or [''])[0])
     except Exception:
         incoming_raw_flag, incoming_issue_token = '', ''
-if not st.session_state['logged_in'] and incoming_raw_flag == '1':
-    token_user = verify_overall_issue_access_token(incoming_issue_token)
+        incoming_ops_raw_flag, incoming_ops_token = '', ''
+if not st.session_state['logged_in']:
+    token_user = None
+    if incoming_raw_flag == '1':
+        token_user = verify_overall_issue_access_token(incoming_issue_token)
+    elif incoming_ops_raw_flag == '1':
+        token_user = verify_ops_remark_access_token(incoming_ops_token)
     if token_user:
         token_user_data = USERS_DB[token_user]
         st.session_state['logged_in'] = True
@@ -3450,14 +3505,40 @@ if st.session_state.get('username') == 'admin' and "🔐 User & Access Control" 
 if not menu:
     menu = ["🚚 Vendor Performance"]
 
+def read_ops_remark_query_params():
+    try:
+        params = st.query_params
+        def read_value(key):
+            value = params.get(key, '')
+            return str(value[0] if isinstance(value, (list, tuple)) and value else value or '')
+    except Exception:
+        try:
+            params = st.experimental_get_query_params()
+            def read_value(key):
+                value = params.get(key, [''])
+                return str(value[0] if isinstance(value, (list, tuple)) and value else value or '')
+        except Exception:
+            return {}
+    return {key: read_value(key) for key in [
+        'ops_raw', 'ops_auth', 'ops_outcome', 'ops_start', 'ops_end',
+        'ops_zone', 'ops_ro', 'ops_vendor', 'ops_route', 'ops_search'
+    ]}
+
 choice = st.sidebar.radio("Navigation:", menu)
 issue_query = read_overall_issue_query_params()
 overall_issue_raw_view = issue_query.get('issues_raw') == '1'
+ops_remark_query = read_ops_remark_query_params()
+ops_remark_raw_view = ops_remark_query.get('ops_raw') == '1'
 if overall_issue_raw_view:
     if st.session_state.get('role') != 'Admin' and "⚠️ Overall Issues" not in st.session_state.get('allowed_modules', []):
         st.error('Your account does not have access to Overall Issues details.')
         st.stop()
     choice = "⚠️ Overall Issues"
+elif ops_remark_raw_view:
+    if st.session_state.get('role') != 'Admin' and "📊 Operations Summary" not in st.session_state.get('allowed_modules', []):
+        st.error('Your account does not have access to Operations Summary details.')
+        st.stop()
+    choice = "📊 Operations Summary"
 
 def file_version(path):
     stat = os.stat(path)
@@ -5060,6 +5141,288 @@ def render_overall_issues(data):
         mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', key='overall_issues_summary_excel'
     )
 
+def render_ops_remark_gauges(ops_outcome_counts, ops_total_trips, ops_outcome_labels, gauge_context):
+    """Render interactive Remark-wise gauges; double-clicking any gauge opens its full raw data in a new window."""
+    if THEME_IS_LIGHT:
+        gauge_tones = {
+            'green': ('#16a34a', '#f0fdf4', '#bbf7d0'),
+            'soft_red': ('#f472b6', '#fff1f2', '#fecdd3'),
+            'red': ('#dc2626', '#fef2f2', '#fecaca'),
+            'yellow': ('#f59e0b', '#fffbeb', '#fde68a'),
+            'purple': ('#8b5cf6', '#f5f3ff', '#ddd6fe'),
+            'muted': (selected_theme['muted'], selected_theme['card2'], selected_theme['line'])
+        }
+    else:
+        gauge_tones = {
+            'green': ('#34d399', 'rgba(34,197,94,.16)', 'rgba(52,211,153,.34)'),
+            'soft_red': ('#fb7185', 'rgba(244,63,94,.16)', 'rgba(251,113,133,.34)'),
+            'red': ('#f87171', 'rgba(248,113,113,.20)', 'rgba(248,113,113,.36)'),
+            'yellow': ('#facc15', 'rgba(234,179,8,.17)', 'rgba(250,204,21,.36)'),
+            'purple': ('#c084fc', 'rgba(168,85,247,.18)', 'rgba(192,132,252,.36)'),
+            'muted': (selected_theme['muted'], selected_theme['card2'], selected_theme['line'])
+        }
+
+    base_url_json = json.dumps(get_overall_issue_query_url(), ensure_ascii=True).replace('</', '<\/')
+    token = create_ops_remark_access_token(st.session_state.get('username', ''))
+    cards = []
+
+    for outcome_label, outcome_tone, outcome_icon in ops_outcome_labels:
+        outcome_count = ops_outcome_counts[outcome_label]
+        primary_outcome = outcome_label in {
+            'Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr',
+            'Late Dep, Late Arr', 'Late Dep, Ontime Arr'
+        }
+        if not (primary_outcome or outcome_count > 0):
+            continue
+        gauge_pct = min(100, max(0, outcome_count / ops_total_trips * 100)) if ops_total_trips else 0
+        gauge_color, gauge_surface, gauge_border = gauge_tones.get(outcome_tone, gauge_tones['muted'])
+        gauge_dash = 201.06 * gauge_pct / 100
+        params = {
+            'ops_raw': '1',
+            'ops_auth': token,
+            'ops_outcome': outcome_label,
+            'ops_start': gauge_context.get('start', ''),
+            'ops_end': gauge_context.get('end', ''),
+            'ops_zone': gauge_context.get('zone', 'ALL'),
+            'ops_ro': gauge_context.get('ro', 'ALL'),
+            'ops_vendor': gauge_context.get('vendor', 'ALL'),
+            'ops_route': gauge_context.get('route', 'ALL'),
+            'ops_search': gauge_context.get('search', '')
+        }
+        params_json = json.dumps(params, ensure_ascii=True).replace('</', '<\/')
+        cards.append(f'''<div class="ops-gauge-card" role="button" tabindex="0" title="Double-click to open raw trip data in a new window"
+          data-params="{html_module.escape(params_json, quote=True)}" data-base="{html_module.escape(base_url_json, quote=True)}"
+          style="background:{gauge_surface};border-color:{gauge_border}">
+          <div class="gauge-label">{outcome_icon} {html_module.escape(outcome_label)}</div>
+          <svg viewBox="0 0 160 108" role="img" aria-label="{gauge_pct:.1f} percent">
+            <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="{html_module.escape(selected_theme['line'])}" stroke-width="11" stroke-linecap="round" pathLength="201.06"/>
+            <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="{gauge_color}" stroke-width="11" stroke-linecap="round" stroke-dasharray="{gauge_dash:.2f} 201.06" pathLength="201.06"/>
+            <text x="80" y="83" text-anchor="middle" font-size="22" font-weight="750" fill="{html_module.escape(selected_theme['text'])}">{gauge_pct:.1f}%</text>
+            <text x="16" y="104" text-anchor="middle" font-size="9" fill="{html_module.escape(selected_theme['muted'])}">0%</text>
+            <text x="144" y="104" text-anchor="middle" font-size="9" fill="{html_module.escape(selected_theme['muted'])}">100%</text>
+          </svg>
+          <div class="gauge-caption">{outcome_count:,} of {ops_total_trips:,} trips</div>
+          <div class="gauge-hint">Double-click for raw data ↗</div>
+        </div>''')
+
+    if not cards:
+        return
+
+    row_count = (len(cards) + 3) // 4
+    frame_height = row_count * 176 + 18
+    markup = f'''<!doctype html><html><head><meta charset="utf-8"><style>
+    * {{ box-sizing:border-box; }}
+    body {{ margin:0; padding:4px 2px; font:12px/1.35 Inter,Arial,sans-serif; background:transparent; color:{selected_theme['text']}; user-select:none; }}
+    .grid {{ display:grid; grid-template-columns:repeat(4,minmax(160px,1fr)); gap:12px; }}
+    .ops-gauge-card {{
+        min-width:0; min-height:162px; text-align:center; border:1px solid {selected_theme['line']};
+        border-radius:15px; padding:.72rem .55rem .6rem; cursor:pointer;
+        box-shadow:0 6px 18px rgba(15,23,42,.06);
+        transition:transform .15s ease, box-shadow .15s ease, border-color .15s ease;
+    }}
+    .ops-gauge-card:hover {{
+        transform:translateY(-3px);
+        box-shadow:0 12px 26px rgba(15,23,42,.14);
+        border-color:{selected_theme['blue']} !important;
+    }}
+    .ops-gauge-card:active {{ transform:translateY(-1px) scale(.99); }}
+    .gauge-label {{ min-height:2.25rem; color:{selected_theme['text']}; font-size:.82rem; font-weight:700; display:flex; justify-content:center; align-items:center; }}
+    svg {{ display:block; width:min(100%,164px); height:auto; margin:.05rem auto -.12rem; overflow:visible; }}
+    .gauge-caption {{ color:{selected_theme['muted']}; font-size:.73rem; font-weight:600; }}
+    .gauge-hint {{ color:{selected_theme['blue']}; font-size:.66rem; font-weight:650; margin-top:.22rem; opacity:.82; }}
+    .ops-gauge-card:hover .gauge-hint {{ opacity:1; text-decoration:underline; }}
+    @media(max-width:960px) {{ .grid {{ grid-template-columns:repeat(2,minmax(150px,1fr)); }} }}
+    @media(max-width:520px) {{ .grid {{ grid-template-columns:1fr; }} }}
+    </style></head><body><div class="grid">{''.join(cards)}</div><script>
+    let lastOpsOpenAt = 0;
+    function openOpsRawWindow(card) {{
+      const now = Date.now();
+      if (now - lastOpsOpenAt < 500) return;
+      lastOpsOpenAt = now;
+      try {{
+        const base = JSON.parse(card.dataset.base) || document.referrer || window.location.href;
+        const target = new URL(base);
+        ['issues_raw','issues_auth','issues_ro','issues_route','issues_zone','issues_type','issues_start','issues_end'].forEach((k) => target.searchParams.delete(k));
+        Object.entries(JSON.parse(card.dataset.params)).forEach(([key, value]) => {{
+          if (value !== '' && value !== null && value !== undefined) target.searchParams.set(key, value);
+          else target.searchParams.delete(key);
+        }});
+        window.open(target.toString(), '_blank', 'noopener,noreferrer');
+      }} catch (error) {{
+        window.alert('Could not open raw data window. Please allow pop-ups for this dashboard and try again.');
+      }}
+    }}
+    document.querySelectorAll('.ops-gauge-card').forEach((card) => {{
+      card.addEventListener('dblclick', (event) => {{
+        event.preventDefault();
+        openOpsRawWindow(card);
+      }});
+      card.addEventListener('keydown', (event) => {{
+        if (event.key === 'Enter') {{
+          event.preventDefault();
+          openOpsRawWindow(card);
+        }}
+      }});
+    }});
+    </script></body></html>'''
+    st.components.v1.html(markup, height=frame_height, scrolling=False)
+
+def render_ops_remark_raw_window(data, query):
+    """Dedicated clean new-window view for a double-clicked Remark-wise Trip Outcome gauge."""
+    outcome_label = query.get('ops_outcome', 'Ontime Dep, Ontime Arr') or 'Ontime Dep, Ontime Arr'
+    icon_lookup = {label: icon for label, _, icon in OPS_REMARK_OUTCOME_LABELS}
+    outcome_icon = icon_lookup.get(outcome_label, '📄')
+
+    st.markdown(f"<h2>{outcome_icon} {html_module.escape(outcome_label)} — Raw Trip Data</h2>", unsafe_allow_html=True)
+
+    df_source = data.get('Legwise_Processed_Data', pd.DataFrame()).copy()
+    if df_source.empty:
+        st.warning("No processed Operations data available.")
+        return
+
+    if not st.session_state.get('all_vendors', True):
+        df_source = filter_df_by_user_vendors(df_source, 'VendorName')
+
+    if '_OpsRemarkOutcome' not in df_source.columns:
+        df_source['_OpsRemarkOutcome'] = ops_remark_outcome_series(df_source)
+
+    # Apply the exact scope passed from the parent Operations Summary window
+    scoped = df_source.copy()
+    start_str = query.get('ops_start', '').strip()
+    end_str = query.get('ops_end', '').strip()
+    if start_str and end_str and 'MCD_StartDate' in scoped.columns:
+        try:
+            sd = datetime.date.fromisoformat(start_str)
+            ed = datetime.date.fromisoformat(end_str)
+            if sd > ed:
+                sd, ed = ed, sd
+            parsed_d = pd.to_datetime(scoped['MCD_StartDate'], dayfirst=True, errors='coerce')
+            scoped = scoped[(parsed_d.dt.date >= sd) & (parsed_d.dt.date <= ed)].copy()
+        except Exception:
+            pass
+
+    for q_key, col_name in [
+        ('ops_zone', 'Zone'),
+        ('ops_ro', 'Origin RO'),
+        ('ops_vendor', 'VendorName'),
+        ('ops_route', 'Route Path')
+    ]:
+        val = query.get(q_key, 'ALL').strip()
+        if val and val != 'ALL' and col_name in scoped.columns:
+            scoped = scoped[scoped[col_name].fillna('').astype(str).str.strip().eq(val)].copy()
+
+    q_search = query.get('ops_search', '').strip()
+    if q_search:
+        mask = scoped.astype(str).apply(lambda c: c.str.contains(q_search, case=False, regex=False, na=False)).any(axis=1)
+        scoped = scoped[mask].copy()
+
+    scope_total = len(scoped)
+    focused = scoped[scoped['_OpsRemarkOutcome'].eq(outcome_label)].copy()
+
+    # Show active context chips from the parent window
+    context_chips = []
+    if start_str and end_str:
+        context_chips.append(f'<span class="pbi-chip">📅 {html_module.escape(start_str)} to {html_module.escape(end_str)}</span>')
+    for lbl, qk in [('Zone', 'ops_zone'), ('RO', 'ops_ro'), ('Vendor', 'ops_vendor'), ('Route', 'ops_route')]:
+        v = query.get(qk, 'ALL').strip()
+        if v and v != 'ALL':
+            context_chips.append(f'<span class="pbi-chip">{lbl}: {html_module.escape(v)}</span>')
+    if q_search:
+        context_chips.append(f'<span class="pbi-chip">🔍 “{html_module.escape(q_search)}”</span>')
+    if context_chips:
+        st.markdown(
+            f'<div class="pbi-chip-bar"><span class="pbi-chip-title">Parent Scope</span>{"".join(context_chips)}</div>',
+            unsafe_allow_html=True
+        )
+
+    # Top KPI Strip
+    match_cnt = len(focused)
+    share_pct = (match_cnt / scope_total * 100) if scope_total else 0.0
+    uniq_routes = int(focused['Route Path'].nunique()) if 'Route Path' in focused.columns else 0
+    uniq_vendors = int(focused['VendorName'].nunique()) if 'VendorName' in focused.columns else 0
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Matching Trips", f"{match_cnt:,}")
+    k2.metric("Share of Filtered Scope", f"{share_pct:.1f}%", delta=f"out of {scope_total:,} trips", delta_color="off")
+    k3.metric("Affected Routes", f"{uniq_routes:,}")
+    k4.metric("Vendors Involved", f"{uniq_vendors:,}")
+
+    if focused.empty:
+        st.info(f"No raw trips found for '{outcome_label}' in the selected scope.")
+        return
+
+    # Quick local refinement filters inside the new window
+    st.markdown("---")
+    fc1, fc2, fc3, fc4 = st.columns([1, 1.2, 1.2, 1.4])
+    ro_opts = ["ALL"] + sorted(focused['Origin RO'].dropna().astype(str).unique().tolist()) if 'Origin RO' in focused.columns else ["ALL"]
+    sel_ro_local = fc1.selectbox("Filter RO:", ro_opts, key="ops_win_ro")
+    view_df = focused.copy()
+    if sel_ro_local != "ALL" and 'Origin RO' in view_df.columns:
+        view_df = view_df[view_df['Origin RO'].astype(str).eq(sel_ro_local)].copy()
+
+    rt_opts = ["ALL"] + sorted(view_df['Route Path'].dropna().astype(str).unique().tolist()) if 'Route Path' in view_df.columns else ["ALL"]
+    sel_rt_local = fc2.selectbox("Filter Route:", rt_opts, key="ops_win_route")
+    if sel_rt_local != "ALL" and 'Route Path' in view_df.columns:
+        view_df = view_df[view_df['Route Path'].astype(str).eq(sel_rt_local)].copy()
+
+    ven_opts = ["ALL"] + sorted(view_df['VendorName'].dropna().astype(str).unique().tolist()) if 'VendorName' in view_df.columns else ["ALL"]
+    sel_ven_local = fc3.selectbox("Filter Vendor:", ven_opts, key="ops_win_vendor")
+    if sel_ven_local != "ALL" and 'VendorName' in view_df.columns:
+        view_df = view_df[view_df['VendorName'].astype(str).eq(sel_ven_local)].copy()
+
+    local_search = fc4.text_input("🔍 Search Vehicle, CD No, Branch...", key="ops_win_search").strip()
+    if local_search:
+        l_mask = view_df.astype(str).apply(lambda c: c.str.contains(local_search, case=False, regex=False, na=False)).any(axis=1)
+        view_df = view_df[l_mask].copy()
+
+    # Route / Leg Breakdown Pivot (Click a row to narrow raw records)
+    pivot_cols = [c for c in ['Origin RO', 'Route Path', 'Legwise', 'Legs'] if c in view_df.columns]
+    if pivot_cols and not view_df.empty:
+        st.markdown("### 📊 Route & Leg Breakdown (Click a row to narrow raw trips)")
+        pivot_df = view_df.groupby(pivot_cols, dropna=False).size().reset_index(name='Trips').sort_values('Trips', ascending=False).reset_index(drop=True)
+        try:
+            piv_event = st.dataframe(
+                style_ui_dataframe(pivot_df), use_container_width=True, hide_index=True, height=230,
+                on_select='rerun', selection_mode='single-row', key='ops_win_pivot'
+            )
+            piv_sel = getattr(piv_event, 'selection', {})
+            piv_rows = getattr(piv_sel, 'rows', None) if not isinstance(piv_sel, dict) else piv_sel.get('rows')
+            if piv_rows:
+                p_idx = piv_rows[-1]
+                if isinstance(p_idx, int) and 0 <= p_idx < len(pivot_df):
+                    chosen_p = pivot_df.iloc[p_idx]
+                    for pc in pivot_cols:
+                        view_df = view_df[view_df[pc].fillna('').astype(str).eq(str(chosen_p[pc]))].copy()
+                    st.caption(f"🎯 Narrowed to `{chosen_p.get('Route Path', '')}` · `{chosen_p.get('Legwise', '')}` ({len(view_df):,} trips)")
+        except TypeError:
+            st.dataframe(style_ui_dataframe(pivot_df), use_container_width=True, hide_index=True, height=230)
+    else:
+        pivot_df = pd.DataFrame()
+
+    # Full Cleaned & Styled Raw Trip Table
+    raw_clean = clean_dataframe_for_excel(view_df.drop(columns=['_OpsRemarkOutcome'], errors='ignore'), sheet_type="ops_raw")
+    st.markdown(f"### 📄 Detailed Raw Trip Records ({len(raw_clean):,} rows)")
+    if raw_clean.empty:
+        st.info("No records match the local filters.")
+        return
+
+    st.dataframe(style_ui_dataframe(raw_clean), use_container_width=True, hide_index=True, height=480)
+
+    # Styled Excel Export (Summary + Raw Data)
+    dl_buf = io.BytesIO()
+    with pd.ExcelWriter(dl_buf, engine='xlsxwriter') as writer:
+        if not pivot_df.empty:
+            write_styled_sheet_to_excel(writer, pivot_df, 'Route_Leg_Summary', sheet_type="generic")
+        write_styled_sheet_to_excel(writer, raw_clean, 'Raw_Trip_Data', sheet_type="ops_raw")
+    safe_name = re.sub(r'[^A-Za-z0-9_-]+', '_', outcome_label).strip('_') or 'Remark_Raw'
+    st.download_button(
+        f"📥 Download {outcome_label} Raw Data (Formatted Excel)",
+        data=dl_buf.getvalue(),
+        file_name=f"Ops_{safe_name}_Raw_Data_{get_ist_now():%d_%b_%Y}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary",
+        key="ops_win_download_btn"
+    )
+
 # -------------------------------------------------------------
 # A. DAILY STANDUP (Operations Summary)
 # -------------------------------------------------------------
@@ -5068,6 +5431,9 @@ if choice == "🧭 Scheduled Route Master":
 elif choice == "⚠️ Overall Issues":
     render_overall_issues(data)
 elif choice == "📊 Operations Summary":
+    if ops_remark_raw_view:
+        render_ops_remark_raw_window(data, ops_remark_query)
+        st.stop()
     st.markdown("<h2>Operations Exception Summary</h2>", unsafe_allow_html=True)
     
     if 'Legwise_Route_Summary' in data and 'Legwise_Processed_Data' in data:
@@ -5147,85 +5513,25 @@ elif choice == "📊 Operations Summary":
                     for count, total in zip(df_leg_sum[count_col], pd.to_numeric(df_leg_sum['Total_Trips'], errors='coerce').fillna(0))
                 ]
 
-        # Remark-wise gauges, insight cards, and route rates follow the current filter scope.
+        # Remark-wise gauges and route rates follow the current filter scope.
         ops_outcome_counts, ops_total_trips, ops_outcome_labels = summarize_ops_remark_outcomes(raw_status)
-        ops_on_time_count = ops_outcome_counts.get('Ontime Dep, Ontime Arr', 0)
-        ops_late_arrival_count = (
-            ops_outcome_counts.get('Ontime Dep, Late Arr', 0)
-            + ops_outcome_counts.get('Late Dep, Late Arr', 0)
-        )
-        ops_on_time_pct = ops_on_time_count / ops_total_trips * 100 if ops_total_trips else 0
-        ops_insights = []
-        if ops_total_trips:
-            ops_insights.append(f"{ops_on_time_pct:.1f}% of trips completed both departure and arrival on time.")
-            ops_insights.append(f"{ops_late_arrival_count:,} trips arrived late in the current filtered view.")
-        if not df_leg_sum.empty and 'Total_Trips' in df_leg_sum.columns:
-            top_ops_route = df_leg_sum.groupby('Route Path')['Total_Trips'].sum().sort_values(ascending=False) if 'Route Path' in df_leg_sum.columns else pd.Series(dtype=float)
-            if not top_ops_route.empty:
-                ops_insights.append(
-                    f"Highest trip volume: `{str(top_ops_route.index[0]).replace('`', '')}` with {int(top_ops_route.iloc[0]):,} trips."
-                )
-
-        # Render the top KPI cards (without the 7-day trend)
-        render_powerbi_insights(
-            'Operations Performance Insights',
-            [('Filtered trips', f'{ops_total_trips:,}'), ('On-time end-to-end', f'{ops_on_time_pct:.1f}%'),
-             ('Late arrivals', f'{ops_late_arrival_count:,}'), ('Route legs', f'{len(df_leg_sum):,}')],
-            ops_insights,
-            period_note='Signals follow the selected date range, zone, RO, and route search.'
-        )
 
         st.markdown("### Remark-wise Trip Outcome")
-        st.caption("🟢 Ontime Dep, Ontime Arr · 🌸 Ontime Dep, Late Arr · 🔴 Late Dep, Late Arr · 🟣 Late Dep, Ontime Arr · 🟡 Late Dep, In-Transit · 🟡 Ontime Dep, In-Transit · 🔴 No Departure · 🟡 Missing Schedule · 🟡 In-Transit · ⚪ Other. Each trip is counted once from its Remark; figures follow the selected date, zone, RO, and route search.")
+        st.caption("🟢 Ontime Dep, Ontime Arr · 🌸 Ontime Dep, Late Arr · 🔴 Late Dep, Late Arr · 🟣 Late Dep, Ontime Arr · 🟡 Late Dep, In-Transit · 🟡 Ontime Dep, In-Transit · 🔴 No Departure · 🟡 Missing Schedule · 🟡 In-Transit · ⚪ Other. Each trip is counted once from its Remark; double-click any gauge to open its raw trip data in a new window.")
         st.caption(f"{ops_total_trips:,} trips · {len(df_leg_sum):,} route legs")
 
-        outcome_gauges = []
-        if THEME_IS_LIGHT:
-            gauge_tones = {
-                'green': ('#16a34a', '#f0fdf4', '#bbf7d0'),
-                'soft_red': ('#f472b6', '#fff1f2', '#fecdd3'),
-                'red': ('#dc2626', '#fef2f2', '#fecaca'),
-                'yellow': ('#f59e0b', '#fffbeb', '#fde68a'),
-                'purple': ('#8b5cf6', '#f5f3ff', '#ddd6fe'),
-                'muted': (selected_theme['muted'], selected_theme['card2'], selected_theme['line'])
-            }
-        else:
-            gauge_tones = {
-                'green': ('#34d399', 'rgba(34,197,94,.16)', 'rgba(52,211,153,.34)'),
-                'soft_red': ('#fb7185', 'rgba(244,63,94,.16)', 'rgba(251,113,133,.34)'),
-                'red': ('#f87171', 'rgba(248,113,113,.20)', 'rgba(248,113,113,.36)'),
-                'yellow': ('#facc15', 'rgba(234,179,8,.17)', 'rgba(250,204,21,.36)'),
-                'purple': ('#c084fc', 'rgba(168,85,247,.18)', 'rgba(192,132,252,.36)'),
-                'muted': (selected_theme['muted'], selected_theme['card2'], selected_theme['line'])
-            }
-        for outcome_label, outcome_tone, outcome_icon in ops_outcome_labels:
-            outcome_count = ops_outcome_counts[outcome_label]
-            primary_outcome = outcome_label in {
-                'Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr',
-                'Late Dep, Late Arr', 'Late Dep, Ontime Arr'
-            }
-            if primary_outcome or outcome_count > 0:
-                gauge_pct = min(100, max(0, outcome_count / ops_total_trips * 100)) if ops_total_trips else 0
-                gauge_color, gauge_surface, gauge_border = gauge_tones.get(outcome_tone, gauge_tones['muted'])
-                gauge_dash = 201.06 * gauge_pct / 100
-                outcome_gauges.append(textwrap.dedent(f"""
-                <div class="gauge-card" style="background:{gauge_surface};border-color:{gauge_border}">
-                  <div class="gauge-label">{outcome_icon} {html_module.escape(outcome_label)}</div>
-                  <svg viewBox="0 0 160 108" role="img" aria-label="{gauge_pct:.1f} percent">
-                    <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="{html_module.escape(selected_theme['line'])}" stroke-width="11" stroke-linecap="round" pathLength="201.06"/>
-                    <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="{gauge_color}" stroke-width="11" stroke-linecap="round" stroke-dasharray="{gauge_dash:.2f} 201.06" pathLength="201.06"/>
-                    <text x="80" y="83" text-anchor="middle" font-size="22" font-weight="750" fill="{html_module.escape(selected_theme['text'])}">{gauge_pct:.1f}%</text>
-                    <text x="16" y="104" text-anchor="middle" font-size="9" fill="{html_module.escape(selected_theme['muted'])}">0%</text>
-                    <text x="144" y="104" text-anchor="middle" font-size="9" fill="{html_module.escape(selected_theme['muted'])}">100%</text>
-                  </svg>
-                  <div class="gauge-caption">{outcome_count:,} of {ops_total_trips:,} trips</div>
-                </div>
-                """).strip())
-        for gauge_start in range(0, len(outcome_gauges), 4):
-            outcome_columns = st.columns(4, gap='small')
-            for outcome_column, gauge_html in zip(outcome_columns, outcome_gauges[gauge_start:gauge_start + 4]):
-                with outcome_column:
-                    st.markdown(gauge_html, unsafe_allow_html=True)
+        _ops_sd_val = st.session_state.get("ops_main_sd")
+        _ops_ed_val = st.session_state.get("ops_main_ed")
+        ops_gauge_context = {
+            "start": _ops_sd_val.isoformat() if hasattr(_ops_sd_val, "isoformat") else "",
+            "end": _ops_ed_val.isoformat() if hasattr(_ops_ed_val, "isoformat") else "",
+            "zone": ops_filters.get("zone", "ALL"),
+            "ro": ops_filters.get("ro", "ALL"),
+            "vendor": ops_filters.get("vendor", "ALL"),
+            "route": ops_filters.get("route", "ALL"),
+            "search": ops_filters.get("search", "")
+        }
+        render_ops_remark_gauges(ops_outcome_counts, ops_total_trips, ops_outcome_labels, ops_gauge_context)
 
         # Route-level rates use the same exclusive Remark buckets as the gauges.
         ops_totals_by_route = pd.to_numeric(
