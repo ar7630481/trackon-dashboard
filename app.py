@@ -458,6 +458,53 @@ hr {{ border-color:var(--theme-line) !important; }}
 .app-eyebrow,.section-kicker {{ color:var(--theme-accent) !important; }}
 .theme-preview {{ display:flex; align-items:center; gap:.38rem; margin:-.15rem 0 .7rem; color:var(--theme-muted); font-size:.73rem; font-weight:650; }}
 .theme-swatch {{ width:.68rem; height:.68rem; border-radius:50%; border:1px solid var(--theme-line); }}
+/* Power BI Sticky Unified Filter Strip & Active Filter Chips */
+[data-testid="stVerticalBlock"]:has(> .element-container .pbi-sticky-anchor) {{
+    position: sticky;
+    top: 3.2rem;
+    z-index: 95;
+    background: color-mix(in srgb, var(--theme-surface) 94%, transparent);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid var(--theme-line);
+    border-radius: 14px;
+    padding: .75rem .9rem .55rem;
+    margin: 0 0 1rem;
+    box-shadow: 0 10px 26px rgba(15, 23, 42, .12);
+}}
+.pbi-chip-bar {{
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .4rem;
+    margin: .35rem 0 .15rem;
+}}
+.pbi-chip-title {{
+    color: var(--theme-muted);
+    font-size: .72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    margin-right: .2rem;
+}}
+.pbi-chip {{
+    display: inline-flex;
+    align-items: center;
+    gap: .3rem;
+    padding: .22rem .62rem;
+    border-radius: 999px;
+    font-size: .74rem;
+    font-weight: 650;
+    border: 1px solid color-mix(in srgb, var(--theme-blue) 40%, var(--theme-line));
+    background: color-mix(in srgb, var(--theme-blue) 14%, var(--theme-surface));
+    color: var(--theme-text);
+}}
+.pbi-chip-muted {{
+    opacity: .8;
+    border-color: var(--theme-line);
+    background: var(--theme-surface-alt);
+    color: var(--theme-muted);
+}}
 </style>
 """
 st.markdown(theme_override_css, unsafe_allow_html=True)
@@ -3700,34 +3747,210 @@ except ImportError:
     PLOTLY_AVAILABLE = False
 
 # ==========================================
-# 7B. DURATION (DATE RANGE) FILTER HELPER
+# 7B. UNIFIED FILTER BAR, DATE PRESETS & CROSS-FILTER ENGINE
 # ==========================================
+def _clamp_date(val, min_d, max_d):
+    if val is None or val < min_d:
+        return min_d
+    if val > max_d:
+        return max_d
+    return val
+
+def _set_date_preset(key_prefix, start_val, end_val):
+    st.session_state[f"{key_prefix}_sd"] = start_val
+    st.session_state[f"{key_prefix}_ed"] = end_val
+
+def _reset_unified_filters(key_prefix, min_d=None, max_d=None):
+    if min_d is not None and max_d is not None:
+        st.session_state[f"{key_prefix}_sd"] = min_d
+        st.session_state[f"{key_prefix}_ed"] = max_d
+    for suffix in ("zone", "ro", "vendor", "route"):
+        st.session_state[f"{key_prefix}_{suffix}"] = "ALL"
+    st.session_state[f"{key_prefix}_search"] = ""
+
 def render_duration_selector(df_raw, date_col_name, key_prefix):
+    """Upgraded date selector with Power BI presets (Last 7D, Last 14D, MTD, All)."""
     if df_raw is None or df_raw.empty or date_col_name not in df_raw.columns:
         return df_raw, False, "All Available Days"
-    
+
     parsed_dates = pd.to_datetime(df_raw[date_col_name], dayfirst=True, errors='coerce')
     valid_dates = parsed_dates.dropna()
     if valid_dates.empty:
         return df_raw, False, "All Available Days"
-        
+
     min_d = valid_dates.min().date()
     max_d = valid_dates.max().date()
-    
-    with st.container():
-        dc1, dc2, dc3 = st.columns([1, 1, 2])
-        start_d = dc1.date_input("📅 Start Date (MCD_StartDate):", value=min_d, min_value=min_d, max_value=max_d, key=f"{key_prefix}_sd")
-        end_d = dc2.date_input("📅 End Date (MCD_StartDate):", value=max_d, min_value=min_d, max_value=max_d, key=f"{key_prefix}_ed")
-        if start_d > end_d:
-            start_d, end_d = end_d, start_d
-        days_cnt = (end_d - start_d).days + 1
-        dc3.info(f"⏱️ **Selected Duration:** `{start_d.strftime('%d %b %Y')}` to `{end_d.strftime('%d %b %Y')}` (**{days_cnt} Days**)")
-        
+
+    sd_key, ed_key = f"{key_prefix}_sd", f"{key_prefix}_ed"
+    st.session_state[sd_key] = _clamp_date(st.session_state.get(sd_key, min_d), min_d, max_d)
+    st.session_state[ed_key] = _clamp_date(st.session_state.get(ed_key, max_d), min_d, max_d)
+
+    last_7_start = max(min_d, max_d - datetime.timedelta(days=6))
+    last_14_start = max(min_d, max_d - datetime.timedelta(days=13))
+    mtd_start = max(min_d, max_d.replace(day=1))
+
+    p1, p2, p3, p4, dc1, dc2 = st.columns([0.75, 0.8, 0.7, 0.7, 1.25, 1.25])
+    p1.button("Last 7D", key=f"{key_prefix}_p7", use_container_width=True,
+              on_click=_set_date_preset, args=(key_prefix, last_7_start, max_d))
+    p2.button("Last 14D", key=f"{key_prefix}_p14", use_container_width=True,
+              on_click=_set_date_preset, args=(key_prefix, last_14_start, max_d))
+    p3.button("MTD", key=f"{key_prefix}_pmtd", use_container_width=True,
+              on_click=_set_date_preset, args=(key_prefix, mtd_start, max_d))
+    p4.button("All", key=f"{key_prefix}_pall", use_container_width=True,
+              on_click=_set_date_preset, args=(key_prefix, min_d, max_d))
+
+    start_d = dc1.date_input("Start Date", min_value=min_d, max_value=max_d, key=sd_key, label_visibility="collapsed")
+    end_d = dc2.date_input("End Date", min_value=min_d, max_value=max_d, key=ed_key, label_visibility="collapsed")
+    if start_d > end_d:
+        start_d, end_d = end_d, start_d
+
+    days_cnt = (end_d - start_d).days + 1
     is_custom = (start_d != min_d) or (end_d != max_d)
     mask = (parsed_dates.dt.date >= start_d) & (parsed_dates.dt.date <= end_d)
     filtered_df = df_raw[mask].copy()
     dur_label = f"{start_d.strftime('%d %b %Y')} to {end_d.strftime('%d %b %Y')} ({days_cnt} Days)"
     return filtered_df, is_custom, dur_label
+
+def render_unified_filter_bar(
+    df_raw,
+    key_prefix,
+    date_col=None,
+    zone_col=None,
+    ro_col=None,
+    vendor_col=None,
+    route_col=None,
+    search_placeholder="Search Route, Vendor, Invoice..."
+):
+    """Sticky Power BI-style filter strip with Date Presets, cascading dropdowns & Active Filter Chips."""
+    state = {
+        "is_date_filtered": False,
+        "dur_label": "All Available Days",
+        "zone": "ALL",
+        "ro": "ALL",
+        "vendor": "ALL",
+        "route": "ALL",
+        "search": ""
+    }
+    if df_raw is None or df_raw.empty:
+        return df_raw, state
+
+    for suffix in ("zone", "ro", "vendor", "route"):
+        pending_key = f"_pending_{key_prefix}_{suffix}"
+        if pending_key in st.session_state:
+            st.session_state[f"{key_prefix}_{suffix}"] = st.session_state.pop(pending_key)
+
+    df_work = df_raw.copy()
+    min_d = max_d = None
+
+    with st.container():
+        st.markdown('<div class="pbi-sticky-anchor"></div>', unsafe_allow_html=True)
+
+        if date_col and date_col in df_work.columns:
+            parsed_dates = pd.to_datetime(df_work[date_col], dayfirst=True, errors='coerce')
+            valid_dates = parsed_dates.dropna()
+            if not valid_dates.empty:
+                min_d = valid_dates.min().date()
+                max_d = valid_dates.max().date()
+                sd_key, ed_key = f"{key_prefix}_sd", f"{key_prefix}_ed"
+                st.session_state[sd_key] = _clamp_date(st.session_state.get(sd_key, min_d), min_d, max_d)
+                st.session_state[ed_key] = _clamp_date(st.session_state.get(ed_key, max_d), min_d, max_d)
+
+                last_7_start = max(min_d, max_d - datetime.timedelta(days=6))
+                last_14_start = max(min_d, max_d - datetime.timedelta(days=13))
+                mtd_start = max(min_d, max_d.replace(day=1))
+
+                r1c1, r1c2, r1c3, r1c4, r1c5, r1c6, r1c7 = st.columns([0.65, 0.7, 0.6, 0.6, 1.1, 1.1, 0.85])
+                r1c1.button("Last 7D", key=f"{key_prefix}_u7", use_container_width=True,
+                            on_click=_set_date_preset, args=(key_prefix, last_7_start, max_d))
+                r1c2.button("Last 14D", key=f"{key_prefix}_u14", use_container_width=True,
+                            on_click=_set_date_preset, args=(key_prefix, last_14_start, max_d))
+                r1c3.button("MTD", key=f"{key_prefix}_umtd", use_container_width=True,
+                            on_click=_set_date_preset, args=(key_prefix, mtd_start, max_d))
+                r1c4.button("All", key=f"{key_prefix}_uall", use_container_width=True,
+                            on_click=_set_date_preset, args=(key_prefix, min_d, max_d))
+
+                start_d = r1c5.date_input("Start Date", min_value=min_d, max_value=max_d, key=sd_key, label_visibility="collapsed")
+                end_d = r1c6.date_input("End Date", min_value=min_d, max_value=max_d, key=ed_key, label_visibility="collapsed")
+                r1c7.button("↺ Reset", key=f"{key_prefix}_reset", use_container_width=True,
+                            on_click=_reset_unified_filters, args=(key_prefix, min_d, max_d))
+
+                if start_d > end_d:
+                    start_d, end_d = end_d, start_d
+                days_cnt = (end_d - start_d).days + 1
+                state["is_date_filtered"] = (start_d != min_d) or (end_d != max_d)
+                state["dur_label"] = f"{start_d.strftime('%d %b %Y')} to {end_d.strftime('%d %b %Y')} ({days_cnt} Days)"
+                df_work = df_work[(parsed_dates.dt.date >= start_d) & (parsed_dates.dt.date <= end_d)].copy()
+        else:
+            _, reset_col = st.columns([5.2, 0.8])
+            reset_col.button("↺ Reset", key=f"{key_prefix}_reset_nodate", use_container_width=True,
+                             on_click=_reset_unified_filters, args=(key_prefix, None, None))
+
+        active_controls = []
+        if zone_col and zone_col in df_work.columns:
+            active_controls.append(("zone", "Zone", zone_col))
+        if ro_col and ro_col in df_work.columns:
+            active_controls.append(("ro", "RO", ro_col))
+        if vendor_col and vendor_col in df_work.columns:
+            active_controls.append(("vendor", "Vendor", vendor_col))
+        if route_col and route_col in df_work.columns:
+            active_controls.append(("route", "Route", route_col))
+
+        col_weights = [1.0] * len(active_controls) + [1.4]
+        row2_cols = st.columns(col_weights)
+
+        for idx, (suffix, label, col_name) in enumerate(active_controls):
+            opts = ["ALL"] + sorted(
+                v for v in df_work[col_name].dropna().astype(str).str.strip().unique().tolist()
+                if v and v.upper() not in ("NAN", "NONE")
+            )
+            w_key = f"{key_prefix}_{suffix}"
+            if st.session_state.get(w_key) not in opts:
+                st.session_state[w_key] = "ALL"
+            chosen = row2_cols[idx].selectbox(label, opts, key=w_key)
+            state[suffix] = chosen
+            if chosen != "ALL":
+                df_work = df_work[df_work[col_name].fillna('').astype(str).str.strip().eq(chosen)].copy()
+
+        search_key = f"{key_prefix}_search"
+        search_val = row2_cols[-1].text_input("🔍 Quick Search", placeholder=search_placeholder, key=search_key)
+        state["search"] = search_val.strip()
+        if state["search"]:
+            q = state["search"]
+            mask = df_work.astype(str).apply(lambda c: c.str.contains(q, case=False, regex=False, na=False)).any(axis=1)
+            df_work = df_work[mask].copy()
+
+        chips = [f'<span class="pbi-chip">📅 {html_module.escape(state["dur_label"])}</span>']
+        for label_name, key_name in [("Zone", "zone"), ("RO", "ro"), ("Vendor", "vendor"), ("Route", "route")]:
+            if state[key_name] != "ALL":
+                chips.append(f'<span class="pbi-chip">{label_name}: {html_module.escape(str(state[key_name]))}</span>')
+        if state["search"]:
+            chips.append(f'<span class="pbi-chip">🔍 “{html_module.escape(state["search"])}”</span>')
+        if len(chips) == 1 and not state["is_date_filtered"]:
+            chips.append('<span class="pbi-chip pbi-chip-muted">All records active · Click any chart bar/point to cross-filter</span>')
+
+        st.markdown(
+            f'<div class="pbi-chip-bar"><span class="pbi-chip-title">Active Filters</span>{"".join(chips)}</div>',
+            unsafe_allow_html=True
+        )
+
+    return df_work, state
+
+def render_crossfilter_plotly(container, fig, key, target_state_key, point_field="x"):
+    """Render a Plotly chart; clicking a bar/point updates the unified filter bar on rerun."""
+    try:
+        event = container.plotly_chart(fig, use_container_width=True, on_select="rerun", selection_mode="points", key=key)
+        sel = getattr(event, "selection", None)
+        points = sel.get("points", []) if isinstance(sel, dict) else (getattr(sel, "points", []) or [])
+        if points:
+            pt = points[0]
+            clicked = pt.get(point_field) or pt.get("hovertext") or pt.get("x") or pt.get("label")
+            if clicked is not None:
+                clicked_str = str(clicked).strip()
+                if clicked_str and st.session_state.get(target_state_key) != clicked_str:
+                    st.session_state[f"_pending_{target_state_key}"] = clicked_str
+                    st.rerun()
+    except TypeError:
+        container.plotly_chart(fig, use_container_width=True)
 
 def render_powerbi_insights(title, metrics, insights, period_note=None):
     """Render a consistent, filter-aware insight strip for each dashboard module."""
@@ -4856,52 +5079,32 @@ elif choice == "📊 Operations Summary":
         if not st.session_state.get('all_vendors', True):
             df_raw_leg_full = filter_df_by_user_vendors(df_raw_leg_full, 'VendorName')
             
-        df_raw_leg, is_date_filtered, dur_str_ops = render_duration_selector(df_raw_leg_full, 'MCD_StartDate', 'ops_main')
-        
-        if is_date_filtered or not st.session_state.get('all_vendors', True):
-            df_leg_sum = build_ops_summary_from_raw(df_raw_leg)
-        else:
-            df_leg_sum = data['Legwise_Route_Summary'].copy()
-            
-        if df_leg_sum.empty:
-            st.warning("No Operations trips found for your assigned access / selected date range.")
-            st.stop()
-            
-        col1, col2, col3 = st.columns([1, 1, 2])
-        
-        all_zones = sorted(df_leg_sum['Zone'].dropna().unique().tolist()) if 'Zone' in df_leg_sum.columns else []
-        selected_zone = col1.selectbox("Filter by Zone:", ["ALL"] + all_zones)
-        if selected_zone != "ALL":
-            df_leg_sum = df_leg_sum[df_leg_sum['Zone'] == selected_zone]
-            df_raw_leg = df_raw_leg[df_raw_leg['Zone'] == selected_zone]
-            
-        all_ros = sorted(df_leg_sum['Origin RO'].dropna().unique().tolist())
-        selected_ro = col2.selectbox("Filter by RO:", ["ALL"] + all_ros)
-        if selected_ro != "ALL":
-            df_leg_sum = df_leg_sum[df_leg_sum['Origin RO'] == selected_ro]
-            df_raw_leg = df_raw_leg[df_raw_leg['Origin RO'] == selected_ro]
+        df_raw_leg, ops_filters = render_unified_filter_bar(
+            df_raw_leg_full,
+            key_prefix="ops_main",
+            date_col="MCD_StartDate",
+            zone_col="Zone" if "Zone" in df_raw_leg_full.columns else None,
+            ro_col="Origin RO" if "Origin RO" in df_raw_leg_full.columns else None,
+            vendor_col="VendorName" if "VendorName" in df_raw_leg_full.columns else None,
+            route_col="Route Path" if "Route Path" in df_raw_leg_full.columns else None,
+            search_placeholder="Search Route, Leg, Vehicle..."
+        )
+        is_date_filtered = ops_filters["is_date_filtered"]
+        dur_str_ops = ops_filters["dur_label"]
+        selected_zone = ops_filters["zone"]
+        selected_ro = ops_filters["ro"]
+        search_q = ops_filters["search"]
 
-        search_q = col3.text_input("🔍 Quick Search:", placeholder="Search Route, Leg...", key="ops_route_search")
-        if search_q.strip():
-            searchable_fields = ['Origin RO', 'Route Path', 'Legwise', 'Legs', 'RouteCode', 'CD_FromBranch', 'CD_ToBranch']
-            def _filter_ops_route_query(frame):
-                search_cols = [col for col in searchable_fields if col in frame.columns]
-                if not search_cols:
-                    return frame
-                match = pd.Series(False, index=frame.index)
-                for search_col in search_cols:
-                    match |= frame[search_col].fillna('').astype(str).str.contains(search_q.strip(), case=False, regex=False, na=False)
-                return frame.loc[match].copy()
-            df_raw_leg = _filter_ops_route_query(df_raw_leg)
-            route_identity = [col for col in ['Origin RO', 'Route Path', 'Legwise'] if col in df_raw_leg.columns and col in df_leg_sum.columns]
-            if route_identity and not df_raw_leg.empty:
-                matched_routes = pd.MultiIndex.from_frame(df_raw_leg[route_identity].fillna('').astype(str).drop_duplicates())
-                summary_routes = pd.MultiIndex.from_frame(df_leg_sum[route_identity].fillna('').astype(str))
-                df_leg_sum = df_leg_sum.loc[summary_routes.isin(matched_routes)].copy()
-            else:
-                df_leg_sum = _filter_ops_route_query(df_leg_sum)
+        any_ops_filter = (
+            is_date_filtered
+            or not st.session_state.get('all_vendors', True)
+            or any(ops_filters[k] != "ALL" for k in ("zone", "ro", "vendor", "route"))
+            or bool(search_q)
+        )
+        df_leg_sum = build_ops_summary_from_raw(df_raw_leg) if any_ops_filter else data['Legwise_Route_Summary'].copy()
+
         if df_leg_sum.empty or df_raw_leg.empty:
-            st.info("No operation trips match the selected date, zone, RO, and route search.")
+            st.info("No operation trips match the selected filters.")
             st.stop()
 
         # Classify every filtered trip into one mutually exclusive Remark outcome.
@@ -5109,14 +5312,15 @@ elif choice == "📊 Operations Summary":
 
         for c in pct_cols:
             df_display[c] = df_display[c].apply(lambda value, col=c: _format_ops_status_badge(value, col))
+
+        if PLOTLY_AVAILABLE:
             st.markdown("### 📈 Visual Analytics: Route Health")
             chart_c1, chart_c2 = st.columns(2)
-            
-            # 1. E2E Performance Donut Chart
+
             # 1. E2E Performance Donut Chart (Based on Actual Remarks)
             pie_data = pd.DataFrame(list(ops_outcome_counts.items()), columns=['Status', 'Count'])
             pie_data = pie_data[pie_data['Count'] > 0]
-            
+
             if not pie_data.empty:
                 fig_pie = px.pie(
                     pie_data, values='Count', names='Status', hole=0.45,
@@ -5124,22 +5328,21 @@ elif choice == "📊 Operations Summary":
                 )
                 fig_pie.update_traces(textposition='inside', textinfo='percent+label')
                 fig_pie.update_layout(
-                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", 
+                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
                     font_color=selected_theme["text"], margin=dict(t=40, b=10, l=10, r=10),
                     showlegend=False
                 )
                 chart_c1.plotly_chart(fig_pie, use_container_width=True)
 
-            # 2. Top 5 Problematic Routes Bar Chart
+            # 2. Top 5 Problematic Routes Bar Chart (Click bar to cross-filter Route)
             if 'Late Dep, Late Arr %' in df_leg_sum.columns:
-                # Calculate actual late count per route for the bar chart
                 df_leg_sum['Late_Count_Temp'] = df_leg_sum['Total_Trips'] * (df_leg_sum['Late Dep, Late Arr %'].apply(extract_pct) / 100)
                 top_problem_routes = df_leg_sum.nlargest(5, 'Late_Count_Temp')
-                
+
                 if not top_problem_routes.empty and top_problem_routes['Late_Count_Temp'].sum() > 0:
                     fig_bar = px.bar(
                         top_problem_routes, x='Route Path', y='Late_Count_Temp',
-                        text_auto='.0f', title='Top 5 Routes by Late Arrivals',
+                        text_auto='.0f', title='Top 5 Routes by Late Arrivals (Click bar to filter)',
                         color_discrete_sequence=['#ef4444']
                     )
                     fig_bar.update_layout(
@@ -5147,8 +5350,8 @@ elif choice == "📊 Operations Summary":
                         font_color=selected_theme["text"], margin=dict(t=40, b=10, l=10, r=10),
                         xaxis_title="", yaxis_title="Late Trips"
                     )
-                    chart_c2.plotly_chart(fig_bar, use_container_width=True)
-                
+                    render_crossfilter_plotly(chart_c2, fig_bar, key="ops_bar_cf", target_state_key="ops_main_route", point_field="x")
+
                 df_leg_sum = df_leg_sum.drop(columns=['Late_Count_Temp'], errors='ignore')
         st.markdown("---")
         st.markdown("### Top Priority Routes Summary")
@@ -5235,34 +5438,27 @@ elif choice == "🚚 Vendor Performance":
             st.info(f"🔒 **Restricted Vendor View:** Showing exclusive performance records for **{', '.join(allowed_v) if allowed_v else 'No Assigned Vendors'}**")
             df_vperf_raw_full = filter_df_by_user_vendors(df_vperf_raw_full, 'VendorName')
 
-        df_vperf_raw, is_vdate_filtered, dur_str_ven = render_duration_selector(df_vperf_raw_full, 'Date', 'ven_main')
+        df_vperf_raw, ven_filters = render_unified_filter_bar(
+            df_vperf_raw_full,
+            key_prefix="ven_main",
+            date_col="Date",
+            zone_col="Zone" if "Zone" in df_vperf_raw_full.columns else None,
+            ro_col="Origin RO" if "Origin RO" in df_vperf_raw_full.columns else None,
+            vendor_col="VendorName" if "VendorName" in df_vperf_raw_full.columns else None,
+            route_col="Route Path" if "Route Path" in df_vperf_raw_full.columns else None,
+            search_placeholder="Search Route, Leg, Vehicle..."
+        )
+        is_vdate_filtered = ven_filters["is_date_filtered"]
+        dur_str_ven = ven_filters["dur_label"]
+        selected_zone = ven_filters["zone"]
+        selected_ro = ven_filters["ro"]
+        selected_vendor_b = ven_filters["vendor"]
+        search_q = ven_filters["search"]
+
         df_vperf_sum = build_vendor_summary_from_raw(df_vperf_raw)
-            
         if df_vperf_sum.empty:
             st.warning("No Vendor trips found for the selected criteria/duration.")
             st.stop()
-
-        col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
-        
-        all_zones = sorted(df_vperf_sum['Zone'].dropna().unique().tolist()) if 'Zone' in df_vperf_sum.columns else []
-        selected_zone = col1.selectbox("Filter by Zone:", ["ALL"] + all_zones)
-        if selected_zone != "ALL":
-            df_vperf_sum = df_vperf_sum[df_vperf_sum['Zone'] == selected_zone]
-            df_vperf_raw = df_vperf_raw[df_vperf_raw['Zone'] == selected_zone]
-            
-        all_ros = sorted(df_vperf_sum['Origin RO'].dropna().unique().tolist())
-        selected_ro = col2.selectbox("Filter by RO:", ["ALL"] + all_ros)
-        if selected_ro != "ALL":
-            df_vperf_sum = df_vperf_sum[df_vperf_sum['Origin RO'] == selected_ro]
-            df_vperf_raw = df_vperf_raw[df_vperf_raw['Origin RO'] == selected_ro]
-            
-        all_vendors = sorted(df_vperf_sum['VendorName'].dropna().unique().tolist())
-        selected_vendor_b = col3.selectbox("Filter by Vendor:", ["ALL"] + all_vendors)
-        if selected_vendor_b != "ALL":
-            df_vperf_sum = df_vperf_sum[df_vperf_sum['VendorName'] == selected_vendor_b]
-            df_vperf_raw = df_vperf_raw[df_vperf_raw['VendorName'] == selected_vendor_b]
-
-        search_q = col4.text_input("🔍 Quick Search:", placeholder="Search Route, Leg...")
 
         display_cols = ['Origin RO', 'Route Path', 'Legwise', 'Legs', 'VendorName', 'Total_Trips', 'Ontime Arrival', 'Late Arrival', 'In-Transit']
         df_display = df_vperf_sum[[c for c in display_cols if c in df_vperf_sum.columns]].copy()
@@ -5374,7 +5570,7 @@ elif choice == "🚚 Vendor Performance":
                 font_color=selected_theme["text"], margin=dict(t=40, b=10, l=10, r=10),
                 xaxis_title="Total Trips", yaxis_title="On-Time %"
             )
-            v_chart1.plotly_chart(fig_v_scatter, use_container_width=True)
+            render_crossfilter_plotly(v_chart1, fig_v_scatter, key="ven_scatter_cf", target_state_key="ven_main_vendor", point_field="hovertext")
 
             # 2. Bottom 5 Vendors by Late Count
             v_vol['Late_Count'] = v_vol['Total_Trips'] - v_vol['Ontime_Count']
@@ -5391,7 +5587,7 @@ elif choice == "🚚 Vendor Performance":
                     font_color=selected_theme["text"], margin=dict(t=40, b=10, l=10, r=10),
                     xaxis_title="", yaxis_title="Late Trips"
                 )
-                v_chart2.plotly_chart(fig_v_bar, use_container_width=True)
+                render_crossfilter_plotly(v_chart2, fig_v_bar, key="ven_bar_cf", target_state_key="ven_main_vendor", point_field="x")
         st.markdown("---")
         st.markdown("#### Vendor Route / Leg Summary")
         ap_data = load_action_plans()
@@ -5555,19 +5751,20 @@ elif choice == "💳 Payment Dashboard":
             st.warning("No payment records found for your assigned vendor access.")
             st.stop()
 
-        col1, col2, col3 = st.columns([1, 1, 2])
-        all_zones = sorted(df_pay['Zone'].dropna().unique().tolist()) if 'Zone' in df_pay.columns else []
-        selected_zone = col1.selectbox("Filter by Zone:", ["ALL"] + all_zones, key='payment_zone_filter')
-        if selected_zone != "ALL":
-            df_pay = df_pay[df_pay['Zone'] == selected_zone]
-        all_ros = sorted(df_pay['RO Name'].dropna().astype(str).unique().tolist()) if 'RO Name' in df_pay.columns else []
-        selected_ro = col2.selectbox("Filter by RO:", ["ALL"] + all_ros, key='payment_ro_filter')
-        if selected_ro != "ALL":
-            df_pay = df_pay[df_pay['RO Name'].astype(str).eq(selected_ro)]
-        search_q = col3.text_input("🔍 Quick Search (Invoice, Vendor, RO...):", key='payment_quick_search')
-        if search_q.strip():
-            mask = df_pay.astype(str).apply(lambda col: col.str.contains(search_q.strip(), case=False, regex=False, na=False)).any(axis=1)
-            df_pay = df_pay[mask].copy()
+        pay_date_col = "Base Date" if "Base Date" in df_pay.columns else ("Invoice Date" if "Invoice Date" in df_pay.columns else None)
+        df_pay, pay_filters = render_unified_filter_bar(
+            df_pay,
+            key_prefix="pay_main",
+            date_col=pay_date_col,
+            zone_col="Zone" if "Zone" in df_pay.columns else None,
+            ro_col="RO Name" if "RO Name" in df_pay.columns else None,
+            vendor_col="Vendor Name" if "Vendor Name" in df_pay.columns else None,
+            route_col=None,
+            search_placeholder="Search Invoice, Vendor, RO, Status..."
+        )
+        selected_zone = pay_filters["zone"]
+        selected_ro = pay_filters["ro"]
+        search_q = pay_filters["search"]
 
         bucket_labels = ['Payment Pending / Paid', 'Finance Pending / Hold', 'Draft', 'Cost Control Pending', 'Other']
         payment_counts = df_pay.get('Payment Group', pd.Series('', index=df_pay.index)).value_counts()
