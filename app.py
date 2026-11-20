@@ -16,6 +16,7 @@ import io
 import re
 import html as html_module
 import textwrap
+import inspect
 
 # Disable SettingWithCopyWarning for Pandas
 warnings.filterwarnings('ignore')
@@ -30,6 +31,72 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Global Center + Middle Alignment for all Streamlit DataFrames & Data Editors
+_COL_CFG_HAS_ALIGNMENT = False
+try:
+    _COL_CFG_HAS_ALIGNMENT = "alignment" in inspect.signature(st.column_config.Column).parameters
+except Exception:
+    _COL_CFG_HAS_ALIGNMENT = False
+
+def _apply_center_col_config(data_obj, existing_cfg=None):
+    if not _COL_CFG_HAS_ALIGNMENT:
+        return existing_cfg
+    cols = []
+    try:
+        if hasattr(data_obj, "data") and hasattr(data_obj.data, "columns"):
+            cols = list(data_obj.data.columns)
+        elif hasattr(data_obj, "columns"):
+            cols = list(data_obj.columns)
+    except Exception:
+        return existing_cfg
+    cfg = dict(existing_cfg) if isinstance(existing_cfg, dict) else {}
+    for c in cols:
+        c_str = str(c)
+        if c_str == "Select 👁️":
+            continue
+        if c in cfg and isinstance(cfg[c], dict):
+            item = dict(cfg[c])
+            item.setdefault("alignment", "center")
+            cfg[c] = item
+        elif c not in cfg:
+            cfg[c] = st.column_config.Column(alignment="center")
+    return cfg
+
+if not getattr(st, "_trackon_center_wrapped", False):
+    _orig_st_dataframe = st.dataframe
+    _orig_st_data_editor = st.data_editor
+
+    def _centered_st_dataframe(data=None, *args, **kwargs):
+        if _COL_CFG_HAS_ALIGNMENT and data is not None:
+            orig_cc = kwargs.get("column_config")
+            try:
+                kwargs["column_config"] = _apply_center_col_config(data, orig_cc)
+                return _orig_st_dataframe(data, *args, **kwargs)
+            except TypeError:
+                if orig_cc is None:
+                    kwargs.pop("column_config", None)
+                else:
+                    kwargs["column_config"] = orig_cc
+        return _orig_st_dataframe(data, *args, **kwargs)
+
+    def _centered_st_data_editor(data, *args, **kwargs):
+        if _COL_CFG_HAS_ALIGNMENT and data is not None:
+            orig_cc = kwargs.get("column_config")
+            try:
+                kwargs["column_config"] = _apply_center_col_config(data, orig_cc)
+                return _orig_st_data_editor(data, *args, **kwargs)
+            except TypeError:
+                if orig_cc is None:
+                    kwargs.pop("column_config", None)
+                else:
+                    kwargs["column_config"] = orig_cc
+        return _orig_st_data_editor(data, *args, **kwargs)
+
+    st.dataframe = _centered_st_dataframe
+    st.data_editor = _centered_st_data_editor
+    st._trackon_center_wrapped = True
+
 
 THEME_OPTIONS = {
     "🌌 Aurora Night": {
@@ -418,8 +485,8 @@ theme_override_css = f"""
 [data-testid="stMetricLabel"] {{ color:var(--theme-muted) !important; }}
 [data-testid="stMetricValue"] {{ color:var(--theme-text) !important; }}
 [data-testid="stTable"] {{ background:{selected_theme['card1']} !important; color:{selected_theme['text']} !important; }}
-[data-testid="stTable"] th {{ background:{selected_theme['card2']} !important; color:{selected_theme['text']} !important; border-color:var(--theme-line) !important; }}
-[data-testid="stTable"] td {{ background:{selected_theme['card1']} !important; color:{selected_theme['text']} !important; border-color:var(--theme-line) !important; text-align:center !important; }}
+[data-testid="stTable"] th {{ background:{selected_theme['card2']} !important; color:{selected_theme['text']} !important; border-color:var(--theme-line) !important; text-align:center !important; vertical-align:middle !important; }}
+[data-testid="stTable"] td {{ background:{selected_theme['card1']} !important; color:{selected_theme['text']} !important; border-color:var(--theme-line) !important; text-align:center !important; vertical-align:middle !important; }}
 [data-testid="stDataFrame"],[data-testid="stDataEditor"] {{
     --gdg-bg-cell:{selected_theme['card1']} !important; --gdg-bg-cell-medium:{selected_theme['card2']} !important;
     --gdg-bg-cell-medium-hover:{selected_theme['card2']} !important; --gdg-bg-cell-light:{selected_theme['card1']} !important;
@@ -1745,8 +1812,8 @@ def build_formatted_excel_bytes(df, sheet_name, report_title, percent_columns=No
         title_fmt = workbook.add_format({'bold': True, 'font_size': 16, 'font_color': '#FFFFFF', 'bg_color': '#102B46', 'valign': 'vcenter'})
         subtitle_fmt = workbook.add_format({'font_color': '#42566B', 'italic': True, 'bg_color': '#EAF2F8', 'valign': 'vcenter'})
         header_fmt = workbook.add_format({'bold': True, 'font_color': '#FFFFFF', 'bg_color': '#155E75', 'border': 1, 'border_color': '#0E7490', 'align': 'center', 'valign': 'vcenter', 'text_wrap': True})
-        base_even_fmt = workbook.add_format({'bg_color': '#F2F7FB', 'font_color': '#14283B', 'bottom': 1, 'bottom_color': '#D9E3EC', 'valign': 'vcenter', 'text_wrap': True})
-        base_odd_fmt = workbook.add_format({'bg_color': '#FFFFFF', 'font_color': '#14283B', 'bottom': 1, 'bottom_color': '#D9E3EC', 'valign': 'vcenter', 'text_wrap': True})
+        base_even_fmt = workbook.add_format({'bg_color': '#F2F7FB', 'font_color': '#14283B', 'bottom': 1, 'bottom_color': '#D9E3EC', 'align': 'center', 'valign': 'vcenter', 'text_wrap': True})
+        base_odd_fmt = workbook.add_format({'bg_color': '#FFFFFF', 'font_color': '#14283B', 'bottom': 1, 'bottom_color': '#D9E3EC', 'align': 'center', 'valign': 'vcenter', 'text_wrap': True})
         low_even_fmt = workbook.add_format({'bg_color': '#DDF3E8', 'font_color': '#14532D', 'bold': True, 'bottom': 1, 'bottom_color': '#B8DDC8', 'align': 'center', 'valign': 'vcenter'})
         low_odd_fmt = workbook.add_format({'bg_color': '#EAF8F0', 'font_color': '#14532D', 'bold': True, 'bottom': 1, 'bottom_color': '#B8DDC8', 'align': 'center', 'valign': 'vcenter'})
         high_even_fmt = workbook.add_format({'bg_color': '#FCE1E1', 'font_color': '#8A1C1C', 'bold': True, 'bottom': 1, 'bottom_color': '#E9BABA', 'align': 'center', 'valign': 'vcenter'})
@@ -2436,14 +2503,15 @@ def style_ui_dataframe(df_in):
         'border-color': selected_theme['line'],
         'font-size': '12px',
         'padding': '7px 9px',
-        'text-align': 'center'
+        'text-align': 'center',
+        'vertical-align': 'middle'
     }).set_table_styles([
         {'selector': 'th', 'props': [
             ('background-color', selected_theme['card2']), ('color', selected_theme['text']),
             ('font-weight', '700'), ('border-color', selected_theme['line']),
             ('padding', '8px 9px'), ('text-align', 'center')
         ]},
-        {'selector': 'td', 'props': [('border-color', selected_theme['line']), ('text-align', 'center')]},
+        {'selector': 'td', 'props': [('border-color', selected_theme['line']), ('text-align', 'center'), ('vertical-align', 'middle')]},
     ], overwrite=False)
     for col in df_in.columns:
         if hasattr(styled, 'map'):
@@ -2482,6 +2550,8 @@ def style_ui_dataframe(df_in):
 
 def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic", preserve_order=False):
     df = clean_dataframe_for_excel(df_in, sheet_type=sheet_type, preserve_order=preserve_order)
+    if not df.empty and df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated()].copy()
     workbook = writer.book
     worksheet = workbook.add_worksheet(sheet_name)
     writer.sheets[sheet_name] = worksheet
@@ -2490,7 +2560,7 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic",
         'bold': True, 'bg_color': '#1E3A8A', 'font_color': 'white',
         'border': 1, 'align': 'center', 'valign': 'vcenter', 'text_wrap': True
     })
-    cell_fmt = workbook.add_format({'border': 1, 'valign': 'vcenter'})
+    cell_fmt = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter'})
     center_fmt = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter'})
     muted_fmt = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter', 'font_color': '#9CA3AF'})
     
@@ -2522,11 +2592,11 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic",
         'bold': True, 'bg_color': '#E2E8F0', 'font_color': '#0F172A',
         'border': 1, 'align': 'center', 'valign': 'vcenter'
     })
-    row_green_fmt = workbook.add_format({'border': 1, 'bg_color': '#E2F0D9', 'font_color': '#1F4E2B', 'valign': 'vcenter'})
-    row_red_fmt = workbook.add_format({'border': 1, 'bg_color': '#FCE4D6', 'font_color': '#7F1D1D', 'valign': 'vcenter'})
-    row_soft_red_fmt = workbook.add_format({'border': 1, 'bg_color': '#FFF1F2', 'font_color': '#9F1239', 'valign': 'vcenter'})
-    row_yellow_fmt = workbook.add_format({'border': 1, 'bg_color': '#FFF2CC', 'font_color': '#7F6000', 'valign': 'vcenter'})
-    row_purple_fmt = workbook.add_format({'border': 1, 'bg_color': '#E4DFEC', 'font_color': '#4C2A69', 'valign': 'vcenter'})
+    row_green_fmt = workbook.add_format({'border': 1, 'bg_color': '#E2F0D9', 'font_color': '#1F4E2B', 'align': 'center', 'valign': 'vcenter'})
+    row_red_fmt = workbook.add_format({'border': 1, 'bg_color': '#FCE4D6', 'font_color': '#7F1D1D', 'align': 'center', 'valign': 'vcenter'})
+    row_soft_red_fmt = workbook.add_format({'border': 1, 'bg_color': '#FFF1F2', 'font_color': '#9F1239', 'align': 'center', 'valign': 'vcenter'})
+    row_yellow_fmt = workbook.add_format({'border': 1, 'bg_color': '#FFF2CC', 'font_color': '#7F6000', 'align': 'center', 'valign': 'vcenter'})
+    row_purple_fmt = workbook.add_format({'border': 1, 'bg_color': '#E4DFEC', 'font_color': '#4C2A69', 'align': 'center', 'valign': 'vcenter'})
 
     if df.empty:
         worksheet.write(0, 0, "No Data Available", header_fmt)
@@ -2664,7 +2734,11 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic",
             worksheet.write(row_idx, col_idx, val_str, chosen_fmt)
 
     for i, col in enumerate(df.columns):
-        max_val_len = df[col].astype(str).map(len).max() if not df.empty else 10
+        if not df.empty:
+            _s_len = df.iloc[:, i].fillna('').astype(str).str.len().max()
+            max_val_len = int(_s_len) if pd.notna(_s_len) else 10
+        else:
+            max_val_len = 10
         col_len = max(max_val_len, len(str(col))) + 3
         worksheet.set_column(i, i, min(col_len, 42))
     worksheet.autofilter(0, 0, len(df), max(len(df.columns) - 1, 0))
@@ -3703,11 +3777,35 @@ def get_normalized_overall_payment(path, data=None, processed_signature=None):
     st.session_state['_normalized_overall_payment_cache'] = (cache_key, normalized.copy())
     return normalized
 
-@st.cache_data(show_spinner=False, max_entries=12)
+@st.cache_data(show_spinner=False, max_entries=2)
+def _read_all_dashboard_sheets_once(path, signature):
+    """Read and pre-normalize the master workbook ONCE so every module switch is instant."""
+    engine = 'openpyxl'
+    try:
+        import python_calamine  # noqa: F401
+        engine = 'calamine'
+    except Exception:
+        engine = 'openpyxl'
+    with pd.ExcelFile(path, engine=engine) as workbook:
+        sheets = {name: workbook.parse(name) for name in workbook.sheet_names}
+    if 'Vendor_Perf_Raw' in sheets and not sheets['Vendor_Perf_Raw'].empty:
+        if 'VendorName' in sheets['Vendor_Perf_Raw'].columns:
+            sheets['Vendor_Perf_Raw'] = normalize_vendor_column_cached(sheets['Vendor_Perf_Raw'], 'VendorName')
+        sheets['Vendor_Perf_Summary'] = build_vendor_summary_from_raw(sheets['Vendor_Perf_Raw'])
+    elif 'Vendor_Perf_Summary' in sheets and not sheets['Vendor_Perf_Summary'].empty:
+        if 'VendorName' in sheets['Vendor_Perf_Summary'].columns:
+            sheets['Vendor_Perf_Summary'] = normalize_vendor_column_cached(sheets['Vendor_Perf_Summary'], 'VendorName')
+    if 'Legwise_Processed_Data' in sheets and not sheets['Legwise_Processed_Data'].empty:
+        if 'VendorName' in sheets['Legwise_Processed_Data'].columns:
+            sheets['Legwise_Processed_Data'] = normalize_vendor_column_cached(sheets['Legwise_Processed_Data'], 'VendorName')
+        if '_OpsRemarkOutcome' not in sheets['Legwise_Processed_Data'].columns:
+            sheets['Legwise_Processed_Data']['_OpsRemarkOutcome'] = ops_remark_outcome_series(sheets['Legwise_Processed_Data'])
+    return sheets
+
 def read_dashboard_sheets_cached(path, signature, sheet_names):
-    """Keep workbook reads warm across navigation; the file signature invalidates stale data."""
-    with pd.ExcelFile(path, engine='openpyxl') as workbook:
-        return {name: workbook.parse(name) for name in sheet_names if name in workbook.sheet_names}
+    """Serve requested module sheets instantaneously from the single cached workbook."""
+    all_sheets = _read_all_dashboard_sheets_once(path, signature)
+    return {name: all_sheets[name] for name in sheet_names if name in all_sheets}
 
 @st.cache_data(show_spinner=False, max_entries=6)
 def read_payment_sheet_cached(path, signature, sheet_name):
@@ -3776,22 +3874,10 @@ def load_dashboard_data(page):
                 data['Payment_Raw'] = get_normalized_overall_payment(FILE_MAP['PAYMENT'], data, processed_signature)
             except Exception as exc:
                 logging.warning(f"Could not load raw payment data for Overall Issues: {exc}")
-        if 'Vendor_Perf_Raw' in data and not data['Vendor_Perf_Raw'].empty:
-            if 'VendorName' in data['Vendor_Perf_Raw'].columns:
-                data['Vendor_Perf_Raw'] = normalize_vendor_column_cached(data['Vendor_Perf_Raw'], 'VendorName')
-            data['Vendor_Perf_Summary'] = build_vendor_summary_from_raw(data['Vendor_Perf_Raw'])
-        elif 'Vendor_Perf_Summary' in data and not data['Vendor_Perf_Summary'].empty:
-            if 'VendorName' in data['Vendor_Perf_Summary'].columns:
-                data['Vendor_Perf_Summary'] = normalize_vendor_column_cached(data['Vendor_Perf_Summary'], 'VendorName')
-        if 'Legwise_Processed_Data' in data and not data['Legwise_Processed_Data'].empty and 'VendorName' in data['Legwise_Processed_Data'].columns:
-            data['Legwise_Processed_Data'] = normalize_vendor_column_cached(data['Legwise_Processed_Data'], 'VendorName')
-
         if page in ["📝 Today's Call Action Plan", "🔐 User & Access Control", "⚠️ Overall Issues"] and not data:
             data = {"dummy": pd.DataFrame()}
         page_cache[page_cache_key] = data
-        # Keep a small working set: enough to make normal module switching immediate
-        # without retaining every large raw sheet for the full session.
-        while len(page_cache) > 5:
+        while len(page_cache) > 15:
             page_cache.pop(next(iter(page_cache)))
         return data
     except Exception as exc:
@@ -4913,8 +4999,8 @@ def render_overall_issues_clickable_table(summary, start_date=None, end_date=Non
     .wrap::-webkit-scrollbar-track { background:#e2e8f0; border-radius:8px; }
     .wrap::-webkit-scrollbar-thumb { background:#64748b; border:2px solid #e2e8f0; border-radius:8px; }
     table { border-collapse:separate; border-spacing:0; width:max-content; min-width:100%; }
-    th { position:sticky; top:0; z-index:2; background:#182b40; color:#bdd1e5; text-align:left; white-space:nowrap; padding:10px 11px; border-bottom:1px solid #3b4c60; }
-    td { white-space:nowrap; padding:8px 11px; border-bottom:1px solid rgba(148,163,184,.13); }
+    th { position:sticky; top:0; z-index:2; background:#182b40; color:#bdd1e5; text-align:center; vertical-align:middle; white-space:nowrap; padding:10px 11px; border-bottom:1px solid #3b4c60; }
+    td { white-space:nowrap; text-align:center; vertical-align:middle; padding:8px 11px; border-bottom:1px solid rgba(148,163,184,.13); }
     tr:nth-child(even) td { background:rgba(30,49,69,.44); }
     th:nth-child(1), td:nth-child(1) { position:sticky; left:0; min-width:132px; z-index:3; }
     th:nth-child(2), td:nth-child(2) { position:sticky; left:132px; min-width:105px; z-index:3; }
@@ -5413,14 +5499,14 @@ def style_ops_window_dataframe(df_in):
     return (
         df_in.style
         .apply(style_frame, axis=None)
-        .set_properties(**{'border-color': pal['border'], 'font-size': '13px', 'padding': '8px 10px', 'text-align': 'center'})
+        .set_properties(**{'border-color': pal['border'], 'font-size': '13px', 'padding': '8px 10px', 'text-align': 'center', 'vertical-align': 'middle'})
         .set_table_styles([
             {'selector': 'th', 'props': [
                 ('background-color', pal['header_bg']), ('color', pal['header_text']),
                 ('font-weight', '800'), ('border-color', pal['border']), ('padding', '9px 10px'),
                 ('text-align', 'center')
             ]},
-            {'selector': 'td', 'props': [('text-align', 'center')]}
+            {'selector': 'td', 'props': [('text-align', 'center'), ('vertical-align', 'middle')]}
         ], overwrite=False)
     )
 
@@ -6320,7 +6406,6 @@ elif choice == "🚚 Vendor Performance":
     
     if 'Vendor_Perf_Summary' in data and 'Vendor_Perf_Raw' in data:
         df_vperf_raw_full = data['Vendor_Perf_Raw'].copy()
-        df_vperf_raw_full['VendorName'] = df_vperf_raw_full['VendorName'].apply(normalize_vendor_name)
         
         if not st.session_state.get('all_vendors', True):
             allowed_v = [normalize_vendor_name(v) for v in st.session_state.get('allowed_vendors', []) if v]
@@ -6359,19 +6444,9 @@ elif choice == "🚚 Vendor Performance":
             mask = df_display.astype(str).apply(lambda x: x.str.contains(search_q, case=False, regex=False, na=False)).any(axis=1)
             df_display = df_display[mask]
 
-        dl_buf_v = io.BytesIO()
-        with pd.ExcelWriter(dl_buf_v, engine='xlsxwriter') as writer:
-            write_styled_sheet_to_excel(writer, df_vperf_sum, 'Vendor_Performance', sheet_type="ven_sum")
-            write_styled_sheet_to_excel(writer, df_vperf_raw, 'Vendor_Raw_Data', sheet_type="ven_raw")
-        st.download_button(
-            "📥 Download Filtered Vendor Performance Report (Styled Excel)",
-            data=dl_buf_v.getvalue(),
-            file_name=f"Vendor_Performance_Report_{get_ist_now():%d_%b_%Y}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary"
-        )
-
         st.markdown("### Vendor Arrival Performance")
+        st.caption("🟢 Ontime Arrival · 🔴 Late Arrival · 🟡 In-Transit · 🟡 Missing Schedule. Double-click any gauge to filter the summary table below.")
+
         vendor_total_trips = int(pd.to_numeric(
             df_display.get('Total_Trips', pd.Series(0, index=df_display.index)), errors='coerce'
         ).fillna(0).sum())
@@ -6386,7 +6461,140 @@ elif choice == "🚚 Vendor Performance":
 
         vendor_ontime_count = _vendor_outcome_count('Ontime Arrival')
         vendor_late_count = _vendor_outcome_count('Late Arrival')
+        vendor_transit_count = _vendor_outcome_count('In-Transit')
+        vendor_missing_count = int(
+            df_vperf_raw.get('Remark with 15 min waiver', pd.Series('', index=df_vperf_raw.index))
+            .fillna('').astype(str).str.strip().eq('Missing Schedule').sum()
+        )
         vendor_ontime_pct = vendor_ontime_count / vendor_total_trips * 100 if vendor_total_trips else 0
+
+        # Interactive Vendor Gauges (double-click to filter below)
+        if "ven_gauge_status_filter" not in st.session_state:
+            st.session_state["ven_gauge_status_filter"] = "ALL"
+
+        def _pick_vendor_gauge(chosen_st):
+            if st.session_state.get("ven_gauge_status_filter") == chosen_st:
+                st.session_state["ven_gauge_status_filter"] = "ALL"
+            else:
+                st.session_state["ven_gauge_status_filter"] = chosen_st
+
+        ven_gauge_items = [
+            ('Ontime Arrival', vendor_ontime_count, '#16a34a', '#f0fdf4', '#bbf7d0', '🟢'),
+            ('Late Arrival', vendor_late_count, '#dc2626', '#fef2f2', '#fecaca', '🔴'),
+            ('In-Transit', vendor_transit_count, '#f59e0b', '#fffbeb', '#fde68a', '🟡'),
+        ]
+        if vendor_missing_count > 0:
+            ven_gauge_items.append(('Missing Schedule', vendor_missing_count, '#8b5cf6', '#f5f3ff', '#ddd6fe', '🟣'))
+
+        st.markdown("""
+        <style>
+        [data-testid="stVerticalBlock"]:has(> .element-container .ven-gauge-triggers-anchor) {
+            height: 0px !important; min-height: 0px !important; overflow: hidden !important;
+            opacity: 0 !important; margin: 0 !important; padding: 0 !important; pointer-events: none !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        with st.container():
+            st.markdown('<div class="ven-gauge-triggers-anchor"></div>', unsafe_allow_html=True)
+            for v_idx, (v_lbl, _, _, _, _, _) in enumerate(ven_gauge_items):
+                st.button(
+                    f"__VEN_GPICK__{v_lbl}",
+                    key=f"ven_gpick_{v_idx}_{re.sub(r'[^A-Za-z0-9]+', '_', v_lbl)}",
+                    on_click=_pick_vendor_gauge,
+                    args=(v_lbl,)
+                )
+
+        v_track_c = '#e2e8f0' if THEME_IS_LIGHT else 'rgba(148,163,184,.22)'
+        v_text_c = '#0f172a' if THEME_IS_LIGHT else selected_theme['text']
+        v_muted_c = '#475569' if THEME_IS_LIGHT else selected_theme['muted']
+        active_ven_st = st.session_state.get("ven_gauge_status_filter", "ALL")
+
+        v_cards = []
+        for v_lbl, v_cnt, v_col, v_lbg, v_lbd, v_ico in ven_gauge_items:
+            v_pct = (v_cnt / vendor_total_trips * 100.0) if vendor_total_trips else 0.0
+            v_dash = 201.06 * min(100.0, max(0.0, v_pct)) / 100.0
+            v_bg = v_lbg if THEME_IS_LIGHT else selected_theme['card1']
+            v_bd = v_lbd if THEME_IS_LIGHT else selected_theme['line']
+            v_ring = f'box-shadow: 0 0 0 2.5px {v_col}, 0 8px 20px rgba(15,23,42,.10);' if active_ven_st == v_lbl else 'box-shadow: 0 4px 14px rgba(15,23,42,.05);'
+            v_cards.append(
+                f'<div class="vg-card" role="button" tabindex="0" data-label="{html_module.escape(v_lbl, quote=True)}" '
+                f'title="Double-click to filter {html_module.escape(v_lbl)} below" '
+                f'style="background:{v_bg};border-color:{v_bd};{v_ring}">'
+                f'<div class="vg-label">{v_ico} {html_module.escape(v_lbl)}</div>'
+                f'<svg viewBox="0 0 180 108" role="img" aria-label="{v_pct:.1f} percent">'
+                f'<path d="M 18 90 A 72 72 0 0 1 162 90" fill="none" stroke="{v_track_c}" stroke-width="13" stroke-linecap="round" pathLength="201.06"/>'
+                f'<path d="M 18 90 A 72 72 0 0 1 162 90" fill="none" stroke="{v_col}" stroke-width="13" stroke-linecap="round" stroke-dasharray="{v_dash:.2f} 201.06" pathLength="201.06"/>'
+                f'<text x="90" y="75" text-anchor="middle" font-size="27" font-weight="850" fill="{v_text_c}">{v_pct:.1f}%</text>'
+                f'<text x="90" y="99" text-anchor="middle" font-size="14" font-weight="800" fill="{v_col}">{v_cnt:,} trips</text>'
+                f'</svg>'
+                f'<div class="vg-sub">out of <strong>{vendor_total_trips:,}</strong> trips</div>'
+                f'<div class="vg-hint">Double-click to filter below</div>'
+                f'</div>'
+            )
+
+        v_cols_cnt = min(len(v_cards), 4)
+        v_html = (
+            f'<!doctype html><html><head><meta charset="utf-8"><style>'
+            f'* {{ box-sizing:border-box; }}'
+            f'body {{ margin:0; padding:3px 2px; font-family:Inter,system-ui,-apple-system,Arial,sans-serif; background:transparent; color:{v_text_c}; user-select:none; }}'
+            f'.grid {{ display:grid; grid-template-columns:repeat({v_cols_cnt},minmax(170px,1fr)); gap:12px; }}'
+            f'.vg-card {{ border:1px solid; border-radius:15px; padding:10px 10px 8px; text-align:center; cursor:pointer; transition:transform .14s ease, box-shadow .14s ease; }}'
+            f'.vg-card:hover {{ transform:translateY(-2px); box-shadow:0 10px 22px rgba(15,23,42,.12) !important; }}'
+            f'.vg-label {{ font-size:12.5px; font-weight:800; color:{v_text_c}; min-height:22px; display:flex; align-items:center; justify-content:center; }}'
+            f'svg {{ display:block; width:min(100%,180px); height:auto; margin:0 auto; overflow:visible; }}'
+            f'.vg-sub {{ font-size:11.5px; font-weight:600; color:{v_muted_c}; margin-top:2px; }}'
+            f'.vg-sub strong {{ color:{v_text_c}; font-weight:800; }}'
+            f'.vg-hint {{ font-size:10.5px; font-weight:650; color:{selected_theme["blue"]}; margin-top:3px; opacity:.82; }}'
+            f'.vg-card:hover .vg-hint {{ opacity:1; text-decoration:underline; }}'
+            f'@media(max-width:860px) {{ .grid {{ grid-template-columns:repeat(2,minmax(150px,1fr)); }} }}'
+            f'@media(max-width:500px) {{ .grid {{ grid-template-columns:1fr; }} }}'
+            f'</style></head><body><div class="grid">{"".join(v_cards)}</div><script>'
+            f'function pickVenGauge(card) {{'
+            f'  const targetLabel = "__VEN_GPICK__" + card.dataset.label;'
+            f'  try {{'
+            f'    const btns = window.parent.document.querySelectorAll("button");'
+            f'    for (const b of btns) {{'
+            f'      if ((b.innerText || b.textContent || "").trim() === targetLabel) {{ b.click(); return; }}'
+            f'    }}'
+            f'  }} catch (e) {{}}'
+            f'}}'
+            f'document.querySelectorAll(".vg-card").forEach((card) => {{'
+            f'  card.addEventListener("dblclick", (e) => {{ e.preventDefault(); pickVenGauge(card); }});'
+            f'  card.addEventListener("keydown", (e) => {{ if (e.key === "Enter") {{ e.preventDefault(); pickVenGauge(card); }} }});'
+            f'}});'
+            f'</script></body></html>'
+        )
+        st.components.v1.html(v_html, height=205, scrolling=False)
+
+        if active_ven_st != "ALL":
+            vf_c1, vf_c2 = st.columns([4.5, 1.2])
+            vf_c1.info(f"Gauge filter active: **{active_ven_st}** (double-click same gauge or click Reset to show all)")
+            if vf_c2.button("↺ Show All", key="ven_gauge_reset_btn", use_container_width=True):
+                st.session_state["ven_gauge_status_filter"] = "ALL"
+                st.rerun()
+            if active_ven_st in df_display.columns:
+                df_display = df_display[
+                    df_display[active_ven_st].astype(str).apply(lambda v: (parse_pct_from_str(v) or 0) > 0)
+                ].copy()
+
+        # On-demand Styled Excel Export (keeps Vendor Performance load & module switch instant)
+        ven_dl_col1, ven_dl_col2 = st.columns([1.6, 3.4])
+        if ven_dl_col1.button("📥 Prepare Styled Excel Report", key="ven_prepare_excel_btn", type="primary", use_container_width=True):
+            with st.spinner("Generating styled Vendor Performance Excel..."):
+                dl_buf_v = io.BytesIO()
+                with pd.ExcelWriter(dl_buf_v, engine='xlsxwriter') as writer:
+                    write_styled_sheet_to_excel(writer, df_vperf_sum, 'Vendor_Performance', sheet_type="ven_sum")
+                    write_styled_sheet_to_excel(writer, df_vperf_raw, 'Vendor_Raw_Data', sheet_type="ven_raw")
+                st.session_state["_ven_excel_ready_bytes"] = dl_buf_v.getvalue()
+        if st.session_state.get("_ven_excel_ready_bytes"):
+            ven_dl_col2.download_button(
+                "⬇️ Download Vendor Performance Report (Excel)",
+                data=st.session_state["_ven_excel_ready_bytes"],
+                file_name=f"Vendor_Performance_Report_{get_ist_now():%d_%b_%Y}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="ven_ready_download_btn"
+            )
+
         vendor_insights = []
         if vendor_total_trips:
             vendor_insights.append(f"{vendor_ontime_pct:.1f}% of trips arrived on time in the current filtered view.")
@@ -6410,30 +6618,6 @@ elif choice == "🚚 Vendor Performance":
             vendor_insights,
             period_note='Signals follow the selected date range, zone, RO, vendor, and route search.'
         )
-
-        vendor_gauge_specs = [
-            ('Ontime Arrival', _vendor_outcome_count('Ontime Arrival'), '#16a34a', '#f0fdf4', '#bbf7d0'),
-            ('Late Arrival', _vendor_outcome_count('Late Arrival'), '#dc2626', '#fef2f2', '#fecaca')
-        ]
-        vendor_gauge_columns = st.columns(2, gap='small')
-        for gauge_column, (gauge_label, gauge_count, gauge_color, gauge_surface, gauge_border) in zip(vendor_gauge_columns, vendor_gauge_specs):
-            gauge_pct = min(100, max(0, gauge_count / vendor_total_trips * 100)) if vendor_total_trips else 0
-            gauge_dash = 201.06 * gauge_pct / 100
-            gauge_html = textwrap.dedent(f"""
-            <div class="gauge-card" style="background:{gauge_surface};border-color:{gauge_border}">
-              <div class="gauge-label">{'🟢' if gauge_label == 'Ontime Arrival' else '🔴'} {gauge_label}</div>
-              <svg viewBox="0 0 160 108" role="img" aria-label="{gauge_pct:.1f} percent">
-                <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="#e6ebf1" stroke-width="11" stroke-linecap="round" pathLength="201.06"/>
-                <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="{gauge_color}" stroke-width="11" stroke-linecap="round" stroke-dasharray="{gauge_dash:.2f} 201.06" pathLength="201.06"/>
-                <text x="80" y="83" text-anchor="middle" font-size="22" font-weight="750" fill="#172033">{gauge_pct:.1f}%</text>
-                <text x="16" y="104" text-anchor="middle" font-size="9" fill="#718096">0%</text>
-                <text x="144" y="104" text-anchor="middle" font-size="9" fill="#718096">100%</text>
-              </svg>
-              <div class="gauge-caption">{gauge_count:,} of {vendor_total_trips:,} trips</div>
-            </div>
-            """).strip()
-            with gauge_column:
-                st.markdown(gauge_html, unsafe_allow_html=True)
 
         # ==========================================
         # UPGRADE: POWER BI-STYLE PLOTLY VISUALS (VENDORS)
