@@ -602,7 +602,9 @@ FILE_MAP = {
     "VENDOR_MASTER": os.path.join(DATA_DIR, "vendor_master.json"),
     "ACTION_PLANS": os.path.join(DATA_DIR, "action_plans.json"),
     "USERS_DB": os.path.join(DATA_DIR, "users_master.json"),
-    "VENDOR_CATEGORY_MAP": os.path.join(DATA_DIR, "vendor_category_mapping.json")
+    "VENDOR_CATEGORY_MAP": os.path.join(DATA_DIR, "vendor_category_mapping.json"),
+    "USER_VENDOR_CATEGORY_MAP": os.path.join(DATA_DIR, "user_vendor_category_mappings.json"),
+    "USER_TRACKED_VENDORS": os.path.join(DATA_DIR, "user_tracked_vendors.json")
 }
 
 DEFAULT_VENDOR_CATEGORY_MAP = {
@@ -630,6 +632,56 @@ def load_vendor_category_mapping():
 def save_vendor_category_mapping(mapping_dict):
     with open(FILE_MAP["VENDOR_CATEGORY_MAP"], 'w', encoding='utf-8') as f:
         json.dump(mapping_dict, f, indent=4)
+
+def load_all_user_vendor_category_mappings():
+    path = FILE_MAP["USER_VENDOR_CATEGORY_MAP"]
+    if os.path.exists(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return {}
+
+def load_user_vendor_category_mapping(username):
+    if not username:
+        return {}
+    return dict(load_all_user_vendor_category_mappings().get(str(username), {}))
+
+def save_user_vendor_category_mapping(username, mapping_dict):
+    if not username:
+        return
+    all_maps = load_all_user_vendor_category_mappings()
+    all_maps[str(username)] = mapping_dict
+    with open(FILE_MAP["USER_VENDOR_CATEGORY_MAP"], 'w', encoding='utf-8') as f:
+        json.dump(all_maps, f, indent=4)
+
+def load_all_user_tracked_vendors():
+    path = FILE_MAP["USER_TRACKED_VENDORS"]
+    if os.path.exists(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return {}
+
+def load_user_tracked_vendors(username):
+    if not username:
+        return {}
+    return dict(load_all_user_tracked_vendors().get(str(username), {}))
+
+def save_user_tracked_vendors(username, tracker_dict):
+    if not username:
+        return
+    all_t = load_all_user_tracked_vendors()
+    all_t[str(username)] = tracker_dict
+    with open(FILE_MAP["USER_TRACKED_VENDORS"], 'w', encoding='utf-8') as f:
+        json.dump(all_t, f, indent=4)
 
 SCHEDULED_ROUTE_MASTER_TSV = r"""Route Path	Legwise	Legs	Scheduled Departure Time	Scheduled Arrival Time	Given Driving Hours	Scheduled Halting	Scheduled TAT Till Destination
 BKLH-JPRBPH-DELAP	Leg1	BKLH to JPRBPH	01-09-2026 01:00	01-09-2026 16:00	15:00	Origin	23:01
@@ -3938,10 +3990,15 @@ def prepare_payment_dashboard_frame(raw_frame):
     frame['Pending Since'] = eff_pending_dt.dt.strftime('%d-%b-%Y').fillna('')
     frame.loc[is_paid, 'Pending Since'] = 'Paid'
 
-    # Apply Vendor Category Mapping
-    cat_map = load_vendor_category_mapping()
+    # Apply Vendor Category Mapping (Admin Permanent + Logged-in User Personal)
+    admin_cat_map = load_vendor_category_mapping()
+    curr_user_id = st.session_state.get('username', '')
+    user_cat_map = load_user_vendor_category_mapping(curr_user_id) if curr_user_id else {}
     cat_to_group = {}
-    for grp_name, cat_list in cat_map.items():
+    for grp_name, cat_list in user_cat_map.items():
+        for c_item in (cat_list or []):
+            cat_to_group[str(c_item).strip().lower()] = f"{grp_name} (My Mapping)"
+    for grp_name, cat_list in admin_cat_map.items():
         for c_item in (cat_list or []):
             cat_to_group[str(c_item).strip().lower()] = grp_name
     frame['Vendor Mapping Category'] = (
@@ -6019,7 +6076,7 @@ def render_ops_window_remark_gauges(base_scope_df, active_remarks, gauge_context
 
     st.markdown("""
     <style>
-    [data-testid="stVerticalBlock"]:has(> .element-container .ops-gauge-triggers-anchor) {
+    [data-testid="stVerticalBlock"]:has(.ops-gauge-triggers-anchor) { position: fixed !important; left: -9999px !important; top: -9999px !important; width: 0 !important;
         height: 0px !important;
         min-height: 0px !important;
         overflow: hidden !important;
@@ -6550,7 +6607,7 @@ def render_vendor_window_gauges(base_scope_df, active_statuses, status_state_key
 
     st.markdown("""
     <style>
-    [data-testid="stVerticalBlock"]:has(> .element-container .ven-win-gtriggers) {
+    [data-testid="stVerticalBlock"]:has(.ven-win-gtriggers) { position: fixed !important; left: -9999px !important; top: -9999px !important; width: 0 !important;
         height: 0px !important; min-height: 0px !important; overflow: hidden !important;
         opacity: 0 !important; margin: 0 !important; padding: 0 !important; pointer-events: none !important;
     }
@@ -7304,60 +7361,170 @@ elif choice == "💳 Payment Dashboard":
             st.warning("No active payment records found for your assigned vendor access.")
             st.stop()
 
-        # Admin-only Vendor Mapping Category Manager
-        if st.session_state.get('role') == 'Admin':
-            with st.expander("🗂️ Vendor Mapping Category (Admin Only)", expanded=False):
-                st.caption("Group raw invoice categories into custom **Vendor Mapping Categories** (e.g. Vehicle Vendors bill). Changes apply immediately.")
-                cat_map_curr = load_vendor_category_mapping()
-                all_raw_cats = sorted(
-                    c for c in df_pay.get('Category', pd.Series(dtype=str)).dropna().astype(str).str.strip().unique().tolist()
-                    if c and c.upper() not in ('NAN', 'NONE')
-                )
+        curr_u_id = st.session_state.get('username', 'user')
+        is_admin_user = st.session_state.get('role') == 'Admin'
+        all_raw_cats = sorted(
+            c for c in df_pay.get('Category', pd.Series(dtype=str)).dropna().astype(str).str.strip().unique().tolist()
+            if c and c.upper() not in ('NAN', 'NONE')
+        )
+        all_pay_vendors = sorted(
+            v for v in df_pay.get('Vendor Name', pd.Series(dtype=str)).dropna().astype(str).str.strip().unique().tolist()
+            if v and v.upper() not in ('NAN', 'NONE')
+        )
+        all_pay_uploaders = sorted(
+            u for u in df_pay.get('Bill Uploader', pd.Series(dtype=str)).dropna().astype(str).str.strip().unique().tolist()
+            if u and u.upper() not in ('NAN', 'NONE')
+        )
 
-                mc1, mc2 = st.columns([1.4, 1.6])
-                with mc1:
-                    st.markdown("**Create / Update Mapping Group**")
-                    existing_groups = list(cat_map_curr.keys())
-                    sel_grp_edit = st.selectbox("Select Existing Group or Create New:", ["+ Create New Group"] + existing_groups, key="vcm_sel_grp")
-                    if sel_grp_edit == "+ Create New Group":
-                        grp_name_in = st.text_input("New Mapping Category Name:", placeholder="e.g. Vehicle Vendors bill", key="vcm_new_name").strip()
-                        default_cats = []
-                    else:
-                        grp_name_in = sel_grp_edit
-                        default_cats = [c for c in cat_map_curr.get(sel_grp_edit, []) if c in all_raw_cats]
+        # ---------------------------------------------------------
+        # A. VENDOR MAPPING CATEGORY (Admin Permanent + User Personal)
+        # ---------------------------------------------------------
+        m_col1, m_col2 = st.columns(2)
+        with m_col1:
+            with st.expander("🗂️ Vendor Mapping Category", expanded=False):
+                admin_cat_map = load_vendor_category_mapping()
+                user_cat_map = load_user_vendor_category_mapping(curr_u_id)
 
-                    chosen_cats_in = st.multiselect(
-                        "Assign Raw Categories:",
-                        options=sorted(set(all_raw_cats) | set(default_cats)),
-                        default=default_cats,
-                        key=f"vcm_cats_{re.sub(r'[^A-Za-z0-9]+', '_', sel_grp_edit)}"
-                    )
-                    b_save, b_del = st.columns(2)
-                    if b_save.button("💾 Save Mapping", key="vcm_save_btn", type="primary", use_container_width=True):
-                        if not grp_name_in:
-                            st.error("Please enter a mapping category name.")
+                if is_admin_user:
+                    vcm_tab_admin, vcm_tab_user = st.tabs(["🔒 Admin Permanent (Global)", "👤 My Personal Mapping"])
+                else:
+                    vcm_tab_user, vcm_tab_admin = st.tabs(["👤 My Personal Mapping", "🔒 Admin Permanent (View Only)"])
+
+                with vcm_tab_admin:
+                    if is_admin_user:
+                        st.caption("Permanent mappings visible to all users. Only Admin can edit or delete these.")
+                        ex_a_grps = list(admin_cat_map.keys())
+                        sel_a_grp = st.selectbox("Select Global Group or Create New:", ["+ Create New Group"] + ex_a_grps, key="vcm_admin_sel_grp")
+                        if sel_a_grp == "+ Create New Group":
+                            a_grp_name = st.text_input("New Global Mapping Name:", placeholder="e.g. Vehicle Vendors bill", key="vcm_admin_new_name").strip()
+                            a_def_cats = []
                         else:
-                            cat_map_curr[grp_name_in] = chosen_cats_in
-                            save_vendor_category_mapping(cat_map_curr)
-                            st.success(f"Saved mapping for **{grp_name_in}** ({len(chosen_cats_in)} categories).")
-                            st.rerun()
-                    if sel_grp_edit != "+ Create New Group":
-                        if b_del.button("🗑️ Delete Group", key="vcm_del_btn", use_container_width=True):
-                            cat_map_curr.pop(sel_grp_edit, None)
-                            save_vendor_category_mapping(cat_map_curr)
-                            st.success(f"Deleted group **{sel_grp_edit}**.")
-                            st.rerun()
-
-                with mc2:
-                    st.markdown("**Current Saved Mappings**")
-                    if cat_map_curr:
-                        map_rows = [
-                            {"Vendor Mapping Category": g, "Mapped Categories Count": len(cs), "Categories": ", ".join(cs)}
-                            for g, cs in cat_map_curr.items()
-                        ]
-                        render_centered_html_table(pd.DataFrame(map_rows), height=240)
+                            a_grp_name = sel_a_grp
+                            a_def_cats = [c for c in admin_cat_map.get(sel_a_grp, []) if c in all_raw_cats]
+                        a_chosen = st.multiselect(
+                            "Assign Raw Categories:",
+                            options=sorted(set(all_raw_cats) | set(a_def_cats)),
+                            default=a_def_cats,
+                            key=f"vcm_admin_cats_{re.sub(r'[^A-Za-z0-9]+', '_', sel_a_grp)}"
+                        )
+                        ab1, ab2 = st.columns(2)
+                        if ab1.button("💾 Save Global", key="vcm_admin_save", type="primary", use_container_width=True):
+                            if not a_grp_name:
+                                st.error("Enter a group name.")
+                            else:
+                                admin_cat_map[a_grp_name] = a_chosen
+                                save_vendor_category_mapping(admin_cat_map)
+                                st.success(f"Saved permanent mapping **{a_grp_name}**.")
+                                st.rerun()
+                        if sel_a_grp != "+ Create New Group":
+                            if ab2.button("🗑️ Delete Global", key="vcm_admin_del", use_container_width=True):
+                                admin_cat_map.pop(sel_a_grp, None)
+                                save_vendor_category_mapping(admin_cat_map)
+                                st.success(f"Deleted **{sel_a_grp}**.")
+                                st.rerun()
                     else:
-                        st.info("No vendor mapping categories configured yet.")
+                        st.caption("Permanent mappings set by Admin (read-only for users).")
+                    if admin_cat_map:
+                        render_centered_html_table(pd.DataFrame([
+                            {"Global Mapping": g, "Count": len(cs), "Categories": ", ".join(cs)}
+                            for g, cs in admin_cat_map.items()
+                        ]), height=200)
+
+                with vcm_tab_user:
+                    st.caption(f"Personal category mappings for **`{curr_u_id}`** (only visible to your account; Admin permanent mappings stay intact).")
+                    ex_u_grps = list(user_cat_map.keys())
+                    sel_u_grp = st.selectbox("Select Personal Group or Create New:", ["+ Create New Group"] + ex_u_grps, key="vcm_user_sel_grp")
+                    if sel_u_grp == "+ Create New Group":
+                        u_grp_name = st.text_input("New Personal Mapping Name:", placeholder="e.g. My Feeder Bills", key="vcm_user_new_name").strip()
+                        u_def_cats = []
+                    else:
+                        u_grp_name = sel_u_grp
+                        u_def_cats = [c for c in user_cat_map.get(sel_u_grp, []) if c in all_raw_cats]
+                    u_chosen = st.multiselect(
+                        "Assign Raw Categories:",
+                        options=sorted(set(all_raw_cats) | set(u_def_cats)),
+                        default=u_def_cats,
+                        key=f"vcm_user_cats_{re.sub(r'[^A-Za-z0-9]+', '_', sel_u_grp)}"
+                    )
+                    ub1, ub2 = st.columns(2)
+                    if ub1.button("💾 Save Personal", key="vcm_user_save", type="primary", use_container_width=True):
+                        if not u_grp_name:
+                            st.error("Enter a group name.")
+                        else:
+                            user_cat_map[u_grp_name] = u_chosen
+                            save_user_vendor_category_mapping(curr_u_id, user_cat_map)
+                            st.success(f"Saved personal mapping **{u_grp_name}**.")
+                            st.rerun()
+                    if sel_u_grp != "+ Create New Group":
+                        if ub2.button("🗑️ Delete Personal", key="vcm_user_del", use_container_width=True):
+                            user_cat_map.pop(sel_u_grp, None)
+                            save_user_vendor_category_mapping(curr_u_id, user_cat_map)
+                            st.success(f"Deleted **{sel_u_grp}**.")
+                            st.rerun()
+                    if user_cat_map:
+                        render_centered_html_table(pd.DataFrame([
+                            {"My Mapping": g, "Count": len(cs), "Categories": ", ".join(cs)}
+                            for g, cs in user_cat_map.items()
+                        ]), height=200)
+
+        # ---------------------------------------------------------
+        # B. MY TRACKED VENDORS / UPLOADER TRACKER (Per-User & Admin)
+        # ---------------------------------------------------------
+        with m_col2:
+            with st.expander("👤 My Tracked Vendors / Uploader Tracker", expanded=False):
+                st.caption(f"Saved separately for **`{curr_u_id}`**. Pick the Vendors and/or Bill Uploader names you want to track payment performance for.")
+                my_trackers = load_user_tracked_vendors(curr_u_id)
+                ex_t_grps = list(my_trackers.keys())
+                sel_t_grp = st.selectbox("Select Tracker Group or Create New:", ["+ Create New Tracker"] + ex_t_grps, key="utv_sel_grp")
+                if sel_t_grp == "+ Create New Tracker":
+                    t_name_in = st.text_input("Tracker Name:", placeholder="e.g. My Uploaded Vendors", key="utv_new_name").strip()
+                    t_def_vends = []
+                    t_def_upls = []
+                else:
+                    t_name_in = sel_t_grp
+                    t_info = my_trackers.get(sel_t_grp, {})
+                    t_def_vends = [v for v in t_info.get("vendors", []) if v in all_pay_vendors]
+                    t_def_upls = [u for u in t_info.get("uploaders", []) if u in all_pay_uploaders]
+
+                t_vends_in = st.multiselect(
+                    "Select Vendors to Track:",
+                    options=sorted(set(all_pay_vendors) | set(t_def_vends)),
+                    default=t_def_vends,
+                    key=f"utv_vends_{re.sub(r'[^A-Za-z0-9]+', '_', sel_t_grp)}"
+                )
+                t_upls_in = st.multiselect(
+                    "Select Bill Uploader Name(s) (optional):",
+                    options=sorted(set(all_pay_uploaders) | set(t_def_upls)),
+                    default=t_def_upls,
+                    key=f"utv_upls_{re.sub(r'[^A-Za-z0-9]+', '_', sel_t_grp)}"
+                )
+                tb1, tb2 = st.columns(2)
+                if tb1.button("💾 Save Tracker", key="utv_save_btn", type="primary", use_container_width=True):
+                    if not t_name_in:
+                        st.error("Please enter a tracker name.")
+                    elif not t_vends_in and not t_upls_in:
+                        st.error("Select at least one Vendor or Bill Uploader.")
+                    else:
+                        my_trackers[t_name_in] = {"vendors": t_vends_in, "uploaders": t_upls_in}
+                        save_user_tracked_vendors(curr_u_id, my_trackers)
+                        st.success(f"Saved tracker **{t_name_in}** ({len(t_vends_in)} vendors, {len(t_upls_in)} uploaders).")
+                        st.rerun()
+                if sel_t_grp != "+ Create New Tracker":
+                    if tb2.button("🗑️ Delete Tracker", key="utv_del_btn", use_container_width=True):
+                        my_trackers.pop(sel_t_grp, None)
+                        save_user_tracked_vendors(curr_u_id, my_trackers)
+                        st.success(f"Deleted tracker **{sel_t_grp}**.")
+                        st.rerun()
+
+                if my_trackers:
+                    render_centered_html_table(pd.DataFrame([
+                        {
+                            "Tracker Name": tn,
+                            "Vendors": len(ti.get("vendors", [])),
+                            "Uploaders": ", ".join(ti.get("uploaders", [])) or "—"
+                        }
+                        for tn, ti in my_trackers.items()
+                    ]), height=200)
 
         # Top Unified Filter Bar
         pay_date_col = "Base Date" if "Base Date" in df_pay.columns else ("Invoice Date" if "Invoice Date" in df_pay.columns else None)
@@ -7372,14 +7539,25 @@ elif choice == "💳 Payment Dashboard":
             search_placeholder="Search Invoice, Vendor, RO, Pending With..."
         )
 
-        # Vendor Mapping Category + Raw Category Filters
-        pf1, pf2 = st.columns([1.2, 1.8])
-        vmc_opts = ["ALL"] + sorted(
-            v for v in df_pay['Vendor Mapping Category'].dropna().astype(str).unique().tolist() if v
-        ) if 'Vendor Mapping Category' in df_pay.columns else ["ALL"]
+        # Vendor Mapping Category + Invoice Category + My Tracked Vendors/Uploaders Filter Row
+        pf1, pf2, pf3 = st.columns([1.2, 1.3, 1.3])
+
+        # Build Vendor Mapping Category filter options (Admin Global + User Personal)
+        admin_cat_map_f = load_vendor_category_mapping()
+        user_cat_map_f = load_user_vendor_category_mapping(curr_u_id)
+        vmc_filter_map = {}
+        for g_n, c_l in admin_cat_map_f.items():
+            vmc_filter_map[g_n] = {str(x).strip().lower() for x in (c_l or [])}
+        for g_n, c_l in user_cat_map_f.items():
+            vmc_filter_map[f"{g_n} (My Mapping)"] = {str(x).strip().lower() for x in (c_l or [])}
+        vmc_opts = ["ALL"] + list(vmc_filter_map.keys()) + ["Unmapped"]
         sel_vmc = pf1.selectbox("Vendor Mapping Category:", vmc_opts, key="pay_vmc_filter")
         if sel_vmc != "ALL":
-            df_pay = df_pay[df_pay['Vendor Mapping Category'].astype(str).eq(sel_vmc)].copy()
+            if sel_vmc == "Unmapped":
+                df_pay = df_pay[df_pay['Vendor Mapping Category'].astype(str).eq("Unmapped")].copy()
+            else:
+                target_cat_set = vmc_filter_map.get(sel_vmc, set())
+                df_pay = df_pay[df_pay['Category'].fillna('').astype(str).str.strip().str.lower().isin(target_cat_set)].copy()
 
         cat_opts = ["ALL"] + sorted(
             v for v in df_pay['Category'].dropna().astype(str).unique().tolist() if v
@@ -7387,6 +7565,32 @@ elif choice == "💳 Payment Dashboard":
         sel_cat = pf2.selectbox("Invoice Category:", cat_opts, key="pay_cat_filter")
         if sel_cat != "ALL":
             df_pay = df_pay[df_pay['Category'].astype(str).eq(sel_cat)].copy()
+
+        # Build My Tracked Vendors / Uploader Tracker filter options
+        tracker_choices = {}
+        my_t_dict = load_user_tracked_vendors(curr_u_id)
+        for t_n, t_info in my_t_dict.items():
+            tracker_choices[f"⭐ {t_n}"] = t_info
+        if is_admin_user:
+            all_t_db = load_all_user_tracked_vendors()
+            for u_other, u_t_dict in all_t_db.items():
+                if u_other == curr_u_id:
+                    continue
+                for t_n, t_info in (u_t_dict or {}).items():
+                    tracker_choices[f"👤 {u_other} · {t_n}"] = t_info
+
+        tracker_opts = ["ALL"] + list(tracker_choices.keys())
+        sel_tracker = pf3.selectbox("👤 Vendor / Uploader Tracker:", tracker_opts, key="pay_tracker_filter")
+        if sel_tracker != "ALL" and sel_tracker in tracker_choices:
+            t_sel_info = tracker_choices[sel_tracker]
+            t_v_set = {str(x).strip().upper() for x in t_sel_info.get("vendors", [])}
+            t_u_set = {str(x).strip().upper() for x in t_sel_info.get("uploaders", [])}
+            t_mask = pd.Series(False, index=df_pay.index)
+            if t_v_set and 'Vendor Name' in df_pay.columns:
+                t_mask |= df_pay['Vendor Name'].fillna('').astype(str).str.strip().str.upper().isin(t_v_set)
+            if t_u_set and 'Bill Uploader' in df_pay.columns:
+                t_mask |= df_pay['Bill Uploader'].fillna('').astype(str).str.strip().str.upper().isin(t_u_set)
+            df_pay = df_pay[t_mask].copy()
 
         if df_pay.empty:
             st.info("No payment records match the selected filters.")
@@ -7413,8 +7617,7 @@ elif choice == "💳 Payment Dashboard":
                 st.session_state["pay_gauge_bucket_filter"] = chosen_b
 
         st.markdown("### Payment Status Overview")
-        st.caption("🟢 Payment Pending / Paid · 🔴 Draft · 🟡 Cost Control Pending · 🟡 Finance Pending · 🔴 Finance Hold. Cancelled/Declined excluded. Double-click any gauge to filter below.")
-        st.caption(f"**{pay_total_bills:,}** active bills")
+        st.caption(f"🟢 Payment Pending / Paid · 🔴 Draft · 🟡 Cost Control Pending · 🟡 Finance Pending · 🔴 Finance Hold · **{pay_total_bills:,}** active bills (double-click any gauge to filter below)")
 
         pay_gauge_specs = [
             ('Payment Pending / Paid', int(payment_counts.get('Payment Pending / Paid', 0)), '#16a34a', '#f0fdf4', '#bbf7d0', '🟢'),
@@ -7423,24 +7626,6 @@ elif choice == "💳 Payment Dashboard":
             ('Finance Pending', int(payment_counts.get('Finance Pending', 0)), '#f59e0b', '#fffbeb', '#fde68a', '🟡'),
             ('Finance Hold', int(payment_counts.get('Finance Hold', 0)), '#dc2626', '#fef2f2', '#fecaca', '🔴'),
         ]
-
-        st.markdown("""
-        <style>
-        [data-testid="stVerticalBlock"]:has(> .element-container .pay-gauge-triggers) {
-            height: 0px !important; min-height: 0px !important; overflow: hidden !important;
-            opacity: 0 !important; margin: 0 !important; padding: 0 !important; pointer-events: none !important;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-        with st.container():
-            st.markdown('<div class="pay-gauge-triggers"></div>', unsafe_allow_html=True)
-            for p_idx, (p_lbl, _, _, _, _, _) in enumerate(pay_gauge_specs):
-                st.button(
-                    f"__PAY_GPICK__{p_lbl}",
-                    key=f"pay_gpick_{p_idx}_{re.sub(r'[^A-Za-z0-9]+', '_', p_lbl)}",
-                    on_click=_pick_pay_gauge,
-                    args=(p_lbl,)
-                )
 
         p_track_c = '#e2e8f0' if THEME_IS_LIGHT else 'rgba(148,163,184,.22)'
         p_text_c = '#0f172a' if THEME_IS_LIGHT else selected_theme['text']
@@ -7473,7 +7658,7 @@ elif choice == "💳 Payment Dashboard":
         p_html = (
             f'<!doctype html><html><head><meta charset="utf-8"><style>'
             f'* {{ box-sizing:border-box; }}'
-            f'body {{ margin:0; padding:3px 2px; font-family:Inter,system-ui,-apple-system,Arial,sans-serif; background:transparent; color:{p_text_c}; user-select:none; }}'
+            f'body {{ margin:0; padding:2px; font-family:Inter,system-ui,-apple-system,Arial,sans-serif; background:transparent; color:{p_text_c}; user-select:none; }}'
             f'.grid {{ display:grid; grid-template-columns:repeat(5,minmax(145px,1fr)); gap:10px; }}'
             f'.pg-card {{ border:1px solid; border-radius:15px; padding:10px 8px 8px; text-align:center; cursor:pointer; transition:transform .14s ease, box-shadow .14s ease; }}'
             f'.pg-card:hover {{ transform:translateY(-2px); box-shadow:0 10px 22px rgba(15,23,42,.12) !important; }}'
@@ -7501,31 +7686,65 @@ elif choice == "💳 Payment Dashboard":
             f'}});'
             f'</script></body></html>'
         )
-        st.components.v1.html(p_html, height=205, scrolling=False)
+        st.components.v1.html(p_html, height=202, scrolling=False)
+
+        # Offscreen hidden trigger buttons (zero vertical space!)
+        st.markdown("""
+        <style>
+        [data-testid="stVerticalBlock"]:has(.pay-gauge-triggers) {
+            position: fixed !important; left: -9999px !important; top: -9999px !important;
+            width: 0px !important; height: 0px !important; min-height: 0px !important;
+            overflow: hidden !important; opacity: 0 !important; margin: 0 !important; padding: 0 !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        with st.container():
+            st.markdown('<div class="pay-gauge-triggers"></div>', unsafe_allow_html=True)
+            for p_idx, (p_lbl, _, _, _, _, _) in enumerate(pay_gauge_specs):
+                st.button(
+                    f"__PAY_GPICK__{p_lbl}",
+                    key=f"pay_gpick_{p_idx}_{re.sub(r'[^A-Za-z0-9]+', '_', p_lbl)}",
+                    on_click=_pick_pay_gauge,
+                    args=(p_lbl,)
+                )
 
         if active_pay_bkt != "ALL":
             pb1, pb2 = st.columns([4.5, 1.2])
-            pb1.info(f"Gauge filter active: **{active_pay_bkt}** (double-click same gauge or click Reset to show all)")
+            pb1.info(f"Gauge filter active: **{active_pay_bkt}** (double-click same gauge or click Show All)")
             if pb2.button("↺ Show All", key="pay_gauge_reset_btn", use_container_width=True):
                 st.session_state["pay_gauge_bucket_filter"] = "ALL"
                 st.rerun()
 
-        # RO-wise Payment Summary Table in exact 5-bucket sequence
-        ro_col = get_col(df_pay, ['RO Name'])
+        # Summary Table with Group-By Switcher: RO-wise / Vendor-wise / Uploader-wise
+        st.markdown('### 📋 Payment Performance Summary')
+        pay_grp_mode = st.radio(
+            "Group Summary By:",
+            ["RO-wise", "Vendor-wise", "Uploader-wise"],
+            horizontal=True,
+            key="pay_summary_group_mode"
+        )
+
+        if pay_grp_mode == "RO-wise":
+            grp_col_name, grp_disp_label = get_col(df_pay, ['RO Name']), 'RO'
+        elif pay_grp_mode == "Vendor-wise":
+            grp_col_name, grp_disp_label = get_col(df_pay, ['Vendor Name']), 'Vendor'
+        else:
+            grp_col_name, grp_disp_label = get_col(df_pay, ['Bill Uploader']), 'Bill Uploader'
+
         summary_rows = []
-        if ro_col:
-            for ro_name, ro_rows in df_pay.groupby(ro_col, dropna=False):
-                total_bills = len(ro_rows)
-                row = {'RO': str(ro_name), 'Total Bills': total_bills}
+        if grp_col_name:
+            for g_val, g_rows in df_pay.groupby(grp_col_name, dropna=False):
+                g_str = str(g_val).strip() or 'Unassigned'
+                total_bills = len(g_rows)
+                row = {grp_disp_label: g_str, 'Total Bills': total_bills}
                 for bucket in bucket_labels:
-                    cnt = int(ro_rows['Payment Group'].eq(bucket).sum())
+                    cnt = int(g_rows['Payment Group'].eq(bucket).sum())
                     row[bucket] = format_pct_cnt(cnt, total_bills)
                 summary_rows.append(row)
-        payment_summary = pd.DataFrame(summary_rows, columns=['RO', 'Total Bills'] + bucket_labels)
+        payment_summary = pd.DataFrame(summary_rows, columns=[grp_disp_label, 'Total Bills'] + bucket_labels)
         if not payment_summary.empty:
             payment_summary = payment_summary.sort_values(by='Total Bills', ascending=False).reset_index(drop=True)
 
-        st.markdown('### 📋 RO-wise Payment Summary')
         if payment_summary.empty:
             st.info('No payment rows match the selected filters.')
         else:
@@ -7534,13 +7753,13 @@ elif choice == "💳 Payment Dashboard":
             # Focused Invoice Drill-Down (auto-filters if a gauge is active!)
             st.markdown('### 📄 Detailed Invoice Records')
             pc1, pc2 = st.columns([1.4, 1.4])
-            pay_ro_pick = pc1.selectbox('Filter Invoices by RO:', ['ALL ROS'] + payment_summary['RO'].astype(str).tolist(), key='pay_ro_inspector')
+            pay_ro_pick = pc1.selectbox(f'Filter Invoices by {grp_disp_label}:', [f'ALL {grp_disp_label.upper()}S'] + payment_summary[grp_disp_label].astype(str).tolist(), key='pay_ro_inspector')
             default_bkt_idx = (bucket_labels.index(active_pay_bkt) + 1) if active_pay_bkt in bucket_labels else 0
             pay_bkt_pick = pc2.selectbox('Filter by Payment Bucket:', ['ALL BUCKETS'] + bucket_labels, index=default_bkt_idx, key='pay_bkt_inspector')
 
             detail = df_pay.copy()
-            if pay_ro_pick != 'ALL ROS':
-                detail = detail[detail['RO Name'].astype(str).eq(pay_ro_pick)].copy()
+            if pay_ro_pick != f'ALL {grp_disp_label.upper()}S' and grp_col_name:
+                detail = detail[detail[grp_col_name].fillna('').astype(str).str.strip().eq(pay_ro_pick)].copy()
             if pay_bkt_pick != 'ALL BUCKETS':
                 detail = detail[detail['Payment Group'].eq(pay_bkt_pick)].copy()
             elif active_pay_bkt != 'ALL':
@@ -7556,7 +7775,7 @@ elif choice == "💳 Payment Dashboard":
                 with st.spinner('Generating formatted Payment Excel...'):
                     pay_bytes = io.BytesIO()
                     with pd.ExcelWriter(pay_bytes, engine='xlsxwriter') as writer:
-                        write_styled_sheet_to_excel(writer, payment_summary, 'Payment_Summary', sheet_type='generic', preserve_order=True)
+                        write_styled_sheet_to_excel(writer, payment_summary, f'{pay_grp_mode}_Summary', sheet_type='generic', preserve_order=True)
                         write_styled_sheet_to_excel(writer, compact, 'Detailed_Invoices', sheet_type='pay_raw', preserve_order=True)
                     st.session_state['_pay_excel_ready_bytes'] = pay_bytes.getvalue()
             if st.session_state.get('_pay_excel_ready_bytes'):
