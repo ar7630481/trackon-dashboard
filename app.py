@@ -4235,8 +4235,14 @@ def read_dashboard_sheets_cached(path, signature, sheet_names):
     all_sheets = _read_all_dashboard_sheets_once(path, signature)
     return {name: all_sheets[name] for name in sheet_names if name in all_sheets}
 
-@st.cache_data(show_spinner=False, max_entries=4)
 def read_payment_sheet_cached(path, signature, sheet_name):
+    try:
+        import python_calamine  # noqa: F401
+        with pd.ExcelFile(path, engine='calamine') as workbook:
+            selected_sheet = sheet_name if sheet_name in workbook.sheet_names else workbook.sheet_names[0]
+            return workbook.parse(selected_sheet)
+    except Exception:
+        pass
     try:
         df_xml = _fast_read_xlsx_sheet_xml(path, preferred_sheet=sheet_name, needed_cols_lower=NEEDED_PAYMENT_COLS_LOWER)
         if not df_xml.empty:
@@ -4311,7 +4317,7 @@ def load_dashboard_data(page):
         if page in ["📝 Today's Call Action Plan", "🔐 User & Access Control", "⚠️ Overall Issues"] and not data:
             data = {"dummy": pd.DataFrame()}
         page_cache[page_cache_key] = data
-        while len(page_cache) > 15:
+        while len(page_cache) > 3:
             page_cache.pop(next(iter(page_cache)))
         return data
     except Exception as exc:
@@ -7583,101 +7589,108 @@ elif choice == "💳 Payment Dashboard":
         )
 
         # ---------------------------------------------------------
-        # A. VENDOR MAPPING CATEGORY (Admin Permanent + User Personal)
+        # A. VENDOR MAPPING CATEGORY & UPLOADER/VENDOR TRACKER
+        #    (Single clean expander with tabs — NO nested st.columns!)
         # ---------------------------------------------------------
-        m_col1, m_col2 = st.columns(2)
-        with m_col1:
-            with st.expander("🗂️ Vendor Mapping Category", expanded=False):
-                admin_cat_map = load_vendor_category_mapping()
-                user_cat_map = load_user_vendor_category_mapping(curr_u_id)
+        with st.expander("🗂️ Vendor Mapping Category & Uploader Tracker", expanded=False):
+            admin_cat_map = load_vendor_category_mapping()
+            user_cat_map = load_user_vendor_category_mapping(curr_u_id)
 
+            if is_admin_user:
+                tab_vcm_admin, tab_vcm_user, tab_utv = st.tabs([
+                    "🔒 Vendor Mapping (Admin Global)",
+                    "👤 My Personal Category Mapping",
+                    "🎯 My Tracked Vendors / Uploader Tracker"
+                ])
+            else:
+                tab_vcm_user, tab_utv, tab_vcm_admin = st.tabs([
+                    "👤 My Personal Category Mapping",
+                    "🎯 My Tracked Vendors / Uploader Tracker",
+                    "🔒 Admin Global Mapping (View Only)"
+                ])
+
+            with tab_vcm_admin:
                 if is_admin_user:
-                    vcm_tab_admin, vcm_tab_user = st.tabs(["🔒 Admin Permanent (Global)", "👤 My Personal Mapping"])
-                else:
-                    vcm_tab_user, vcm_tab_admin = st.tabs(["👤 My Personal Mapping", "🔒 Admin Permanent (View Only)"])
-
-                with vcm_tab_admin:
-                    if is_admin_user:
-                        st.caption("Permanent mappings visible to all users. Only Admin can edit or delete these.")
-                        ex_a_grps = list(admin_cat_map.keys())
-                        sel_a_grp = st.selectbox("Select Global Group or Create New:", ["+ Create New Group"] + ex_a_grps, key="vcm_admin_sel_grp")
-                        if sel_a_grp == "+ Create New Group":
-                            a_grp_name = st.text_input("New Global Mapping Name:", placeholder="e.g. Vehicle Vendors bill", key="vcm_admin_new_name").strip()
-                            a_def_cats = []
-                        else:
-                            a_grp_name = sel_a_grp
-                            a_def_cats = [c for c in admin_cat_map.get(sel_a_grp, []) if c in all_raw_cats]
-                        a_chosen = st.multiselect(
-                            "Assign Raw Categories:",
-                            options=sorted(set(all_raw_cats) | set(a_def_cats)),
-                            default=a_def_cats,
-                            key=f"vcm_admin_cats_{re.sub(r'[^A-Za-z0-9]+', '_', sel_a_grp)}"
-                        )
-                        ab1, ab2 = st.columns(2)
-                        if ab1.button("💾 Save Global", key="vcm_admin_save", type="primary", use_container_width=True):
-                            if not a_grp_name:
-                                st.error("Enter a group name.")
-                            else:
-                                admin_cat_map[a_grp_name] = a_chosen
-                                save_vendor_category_mapping(admin_cat_map)
-                                st.success(f"Saved permanent mapping **{a_grp_name}**.")
-                                st.rerun()
-                        if sel_a_grp != "+ Create New Group":
-                            if ab2.button("🗑️ Delete Global", key="vcm_admin_del", use_container_width=True):
-                                admin_cat_map.pop(sel_a_grp, None)
-                                save_vendor_category_mapping(admin_cat_map)
-                                st.success(f"Deleted **{sel_a_grp}**.")
-                                st.rerun()
+                    st.caption("Permanent mappings visible to all users. Only Admin can edit or delete these.")
+                    ex_a_grps = list(admin_cat_map.keys())
+                    sel_a_grp = st.selectbox("Select Global Group or Create New:", ["+ Create New Group"] + ex_a_grps, key="vcm_admin_sel_grp")
+                    if sel_a_grp == "+ Create New Group":
+                        a_grp_name = st.text_input("New Global Mapping Name:", placeholder="e.g. Vehicle Vendors bill", key="vcm_admin_new_name").strip()
+                        a_def_cats = []
                     else:
-                        st.caption("Permanent mappings set by Admin (read-only for users).")
-                    if admin_cat_map:
-                        render_centered_html_table(pd.DataFrame([
-                            {"Global Mapping": g, "Count": len(cs), "Categories": ", ".join(cs)}
-                            for g, cs in admin_cat_map.items()
-                        ]), height=200)
-
-                with vcm_tab_user:
-                    st.caption(f"Personal category mappings for **`{curr_u_id}`** (only visible to your account; Admin permanent mappings stay intact).")
-                    ex_u_grps = list(user_cat_map.keys())
-                    sel_u_grp = st.selectbox("Select Personal Group or Create New:", ["+ Create New Group"] + ex_u_grps, key="vcm_user_sel_grp")
-                    if sel_u_grp == "+ Create New Group":
-                        u_grp_name = st.text_input("New Personal Mapping Name:", placeholder="e.g. My Feeder Bills", key="vcm_user_new_name").strip()
-                        u_def_cats = []
-                    else:
-                        u_grp_name = sel_u_grp
-                        u_def_cats = [c for c in user_cat_map.get(sel_u_grp, []) if c in all_raw_cats]
-                    u_chosen = st.multiselect(
+                        a_grp_name = sel_a_grp
+                        a_def_cats = [c for c in admin_cat_map.get(sel_a_grp, []) if c in all_raw_cats]
+                    a_chosen = st.multiselect(
                         "Assign Raw Categories:",
-                        options=sorted(set(all_raw_cats) | set(u_def_cats)),
-                        default=u_def_cats,
-                        key=f"vcm_user_cats_{re.sub(r'[^A-Za-z0-9]+', '_', sel_u_grp)}"
+                        options=sorted(set(all_raw_cats) | set(a_def_cats)),
+                        default=a_def_cats,
+                        key=f"vcm_admin_cats_{re.sub(r'[^A-Za-z0-9]+', '_', sel_a_grp)}"
                     )
-                    ub1, ub2 = st.columns(2)
-                    if ub1.button("💾 Save Personal", key="vcm_user_save", type="primary", use_container_width=True):
-                        if not u_grp_name:
+                    ab1, ab2 = st.columns(2)
+                    if ab1.button("💾 Save Global Mapping", key="vcm_admin_save", type="primary", use_container_width=True):
+                        if not a_grp_name:
                             st.error("Enter a group name.")
                         else:
-                            user_cat_map[u_grp_name] = u_chosen
-                            save_user_vendor_category_mapping(curr_u_id, user_cat_map)
-                            st.success(f"Saved personal mapping **{u_grp_name}**.")
+                            admin_cat_map[a_grp_name] = a_chosen
+                            save_vendor_category_mapping(admin_cat_map)
+                            st.session_state.pop('_pay_prepared_frame_cache', None)
+                            st.success(f"Saved permanent mapping **{a_grp_name}**.")
                             st.rerun()
-                    if sel_u_grp != "+ Create New Group":
-                        if ub2.button("🗑️ Delete Personal", key="vcm_user_del", use_container_width=True):
-                            user_cat_map.pop(sel_u_grp, None)
-                            save_user_vendor_category_mapping(curr_u_id, user_cat_map)
-                            st.success(f"Deleted **{sel_u_grp}**.")
+                    if sel_a_grp != "+ Create New Group":
+                        if ab2.button("🗑️ Delete Global Mapping", key="vcm_admin_del", use_container_width=True):
+                            admin_cat_map.pop(sel_a_grp, None)
+                            save_vendor_category_mapping(admin_cat_map)
+                            st.session_state.pop('_pay_prepared_frame_cache', None)
+                            st.success(f"Deleted **{sel_a_grp}**.")
                             st.rerun()
-                    if user_cat_map:
-                        render_centered_html_table(pd.DataFrame([
-                            {"My Mapping": g, "Count": len(cs), "Categories": ", ".join(cs)}
-                            for g, cs in user_cat_map.items()
-                        ]), height=200)
+                else:
+                    st.caption("Permanent mappings set by Admin (read-only for users).")
+                if admin_cat_map:
+                    render_centered_html_table(pd.DataFrame([
+                        {"Global Mapping": g, "Count": len(cs), "Categories": ", ".join(cs)}
+                        for g, cs in admin_cat_map.items()
+                    ]), height=200)
 
-        # ---------------------------------------------------------
-        # B. MY TRACKED VENDORS / UPLOADER TRACKER (Per-User & Admin)
-        # ---------------------------------------------------------
-        with m_col2:
-            with st.expander("👤 My Tracked Vendors / Uploader Tracker", expanded=False):
+            with tab_vcm_user:
+                st.caption(f"Personal category mappings for **`{curr_u_id}`** (only visible to your account; Admin permanent mappings stay intact).")
+                ex_u_grps = list(user_cat_map.keys())
+                sel_u_grp = st.selectbox("Select Personal Group or Create New:", ["+ Create New Group"] + ex_u_grps, key="vcm_user_sel_grp")
+                if sel_u_grp == "+ Create New Group":
+                    u_grp_name = st.text_input("New Personal Mapping Name:", placeholder="e.g. My Feeder Bills", key="vcm_user_new_name").strip()
+                    u_def_cats = []
+                else:
+                    u_grp_name = sel_u_grp
+                    u_def_cats = [c for c in user_cat_map.get(sel_u_grp, []) if c in all_raw_cats]
+                u_chosen = st.multiselect(
+                    "Assign Raw Categories:",
+                    options=sorted(set(all_raw_cats) | set(u_def_cats)),
+                    default=u_def_cats,
+                    key=f"vcm_user_cats_{re.sub(r'[^A-Za-z0-9]+', '_', sel_u_grp)}"
+                )
+                ub1, ub2 = st.columns(2)
+                if ub1.button("💾 Save Personal Mapping", key="vcm_user_save", type="primary", use_container_width=True):
+                    if not u_grp_name:
+                        st.error("Enter a group name.")
+                    else:
+                        user_cat_map[u_grp_name] = u_chosen
+                        save_user_vendor_category_mapping(curr_u_id, user_cat_map)
+                        st.session_state.pop('_pay_prepared_frame_cache', None)
+                        st.success(f"Saved personal mapping **{u_grp_name}**.")
+                        st.rerun()
+                if sel_u_grp != "+ Create New Group":
+                    if ub2.button("🗑️ Delete Personal Mapping", key="vcm_user_del", use_container_width=True):
+                        user_cat_map.pop(sel_u_grp, None)
+                        save_user_vendor_category_mapping(curr_u_id, user_cat_map)
+                        st.session_state.pop('_pay_prepared_frame_cache', None)
+                        st.success(f"Deleted **{sel_u_grp}**.")
+                        st.rerun()
+                if user_cat_map:
+                    render_centered_html_table(pd.DataFrame([
+                        {"My Mapping": g, "Count": len(cs), "Categories": ", ".join(cs)}
+                        for g, cs in user_cat_map.items()
+                    ]), height=200)
+
+            with tab_utv:
                 st.caption(f"Saved separately for **`{curr_u_id}`**. Pick the Vendors and/or Bill Uploader names you want to track payment performance for.")
                 my_trackers = load_user_tracked_vendors(curr_u_id)
                 ex_t_grps = list(my_trackers.keys())
