@@ -1986,11 +1986,11 @@ OPS_REMARK_OUTCOME_LABELS = [
     ('Ontime Dep, Ontime Arr', 'green', '🟢'),
     ('Ontime Dep, Late Arr', 'soft_red', '🌸'),
     ('Late Dep, Late Arr', 'red', '🔴'),
-    ('Late Dep, In-Transit', 'yellow', '🟡'),
     ('Late Dep, Ontime Arr', 'purple', '🟣'),
+    ('Late Dep, In-Transit', 'yellow', '🟡'),
     ('Ontime Dep, In-Transit', 'yellow', '🟡'),
-    ('No Departure', 'red', '🔴'),
     ('Missing Schedule', 'yellow', '🟡'),
+    ('No Departure', 'red', '🔴'),
     ('In-Transit', 'yellow', '🟡'),
     ('Other', 'muted', '⚪')
 ]
@@ -5214,14 +5214,13 @@ def render_ops_remark_gauges(ops_outcome_counts, ops_total_trips, ops_outcome_la
           data-params="{html_module.escape(params_json, quote=True)}" data-base="{html_module.escape(base_url_json, quote=True)}"
           style="background:{gauge_surface};border-color:{gauge_border}">
           <div class="gauge-label">{outcome_icon} {html_module.escape(outcome_label)}</div>
-          <svg viewBox="0 0 160 108" role="img" aria-label="{gauge_pct:.1f} percent">
-            <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="{html_module.escape(selected_theme['line'])}" stroke-width="11" stroke-linecap="round" pathLength="201.06"/>
-            <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="{gauge_color}" stroke-width="11" stroke-linecap="round" stroke-dasharray="{gauge_dash:.2f} 201.06" pathLength="201.06"/>
-            <text x="80" y="83" text-anchor="middle" font-size="22" font-weight="750" fill="{html_module.escape(selected_theme['text'])}">{gauge_pct:.1f}%</text>
-            <text x="16" y="104" text-anchor="middle" font-size="9" fill="{html_module.escape(selected_theme['muted'])}">0%</text>
-            <text x="144" y="104" text-anchor="middle" font-size="9" fill="{html_module.escape(selected_theme['muted'])}">100%</text>
+          <svg viewBox="0 0 180 108" role="img" aria-label="{gauge_pct:.1f} percent">
+            <path d="M 18 90 A 72 72 0 0 1 162 90" fill="none" stroke="{html_module.escape(selected_theme['line'])}" stroke-width="13" stroke-linecap="round" pathLength="201.06"/>
+            <path d="M 18 90 A 72 72 0 0 1 162 90" fill="none" stroke="{gauge_color}" stroke-width="13" stroke-linecap="round" stroke-dasharray="{gauge_dash:.2f} 201.06" pathLength="201.06"/>
+            <text x="90" y="75" text-anchor="middle" font-size="27" font-weight="850" fill="{html_module.escape(selected_theme['text'])}">{gauge_pct:.1f}%</text>
+            <text x="90" y="99" text-anchor="middle" font-size="14" font-weight="800" fill="{gauge_color}">{outcome_count:,} trips</text>
           </svg>
-          <div class="gauge-caption">{outcome_count:,} of {ops_total_trips:,} trips</div>
+          <div class="gauge-caption">out of <strong>{ops_total_trips:,}</strong> trips</div>
           <div class="gauge-hint">Double-click for raw data ↗</div>
         </div>''')
 
@@ -5512,14 +5511,8 @@ def build_ops_window_excel_bytes(breakdown_df, raw_df, report_title):
             ws.set_margins(0.25, 0.25, 0.35, 0.35)
     return buffer.getvalue()
 
-def render_ops_window_remark_gauges(base_scope_df, active_remarks):
-    """Render Remark-wise gauges in exact sequence:
-    1. Ontime Dep, Ontime Arr
-    2. Ontime Dep, Late Arr
-    3. Late Dep, Late Arr
-    4. Late Dep, Ontime Arr
-    followed by any other active remarks with count > 0.
-    """
+def render_ops_window_remark_gauges(base_scope_df, active_remarks, gauge_context, remark_state_key, available_remarks):
+    """Render Remark-wise gauges in exact sequence; double-clicking any gauge filters the tables below in-place."""
     scope_total = len(base_scope_df)
     counts = base_scope_df['_OpsRemarkOutcome'].value_counts().to_dict() if not base_scope_df.empty else {}
 
@@ -5532,8 +5525,8 @@ def render_ops_window_remark_gauges(base_scope_df, active_remarks):
     extra_sequence = [
         ('Late Dep, In-Transit', '#f59e0b', '#fffbeb', '#fde68a', '🟡'),
         ('Ontime Dep, In-Transit', '#f59e0b', '#fffbeb', '#fde68a', '🟡'),
-        ('No Departure', '#dc2626', '#fef2f2', '#fecaca', '🔴'),
         ('Missing Schedule', '#f59e0b', '#fffbeb', '#fde68a', '🟡'),
+        ('No Departure', '#dc2626', '#fef2f2', '#fecaca', '🔴'),
         ('In-Transit', '#f59e0b', '#fffbeb', '#fde68a', '🟡'),
         ('Other', '#64748b', '#f8fafc', '#e2e8f0', '⚪'),
     ]
@@ -5548,6 +5541,38 @@ def render_ops_window_remark_gauges(base_scope_df, active_remarks):
     else:
         track_c, text_c, muted_c = 'rgba(148,163,184,.22)', selected_theme['text'], selected_theme['muted']
 
+    # Hidden Streamlit trigger buttons so double-clicking any gauge updates the tables below in-place
+    def _pick_remark_from_gauge(chosen_label):
+        if chosen_label in available_remarks:
+            st.session_state[remark_state_key] = [chosen_label]
+
+    st.markdown("""
+    <style>
+    [data-testid="stVerticalBlock"]:has(> .element-container .ops-gauge-triggers-anchor) {
+        height: 0px !important;
+        min-height: 0px !important;
+        overflow: hidden !important;
+        opacity: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        pointer-events: none !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    with st.container():
+        st.markdown('<div class="ops-gauge-triggers-anchor"></div>', unsafe_allow_html=True)
+        for idx, (label, _, _, _, _) in enumerate(items):
+            st.button(
+                f"__OPS_GPICK__{label}",
+                key=f"ops_win_gpick_{idx}_{re.sub(r'[^A-Za-z0-9]+', '_', label)}",
+                on_click=_pick_remark_from_gauge,
+                args=(label,)
+            )
+
+    base_url_json = json.dumps(get_overall_issue_query_url(), ensure_ascii=True).replace('</', '<\/')
+    token = create_ops_remark_access_token(st.session_state.get('username', ''))
+
     cards = []
     for label, color, light_bg, light_border, icon in items:
         cnt = int(counts.get(label, 0))
@@ -5557,8 +5582,26 @@ def render_ops_window_remark_gauges(base_scope_df, active_remarks):
         border = light_border if THEME_IS_LIGHT else selected_theme['line']
         is_active = label in active_remarks
         ring_css = f'box-shadow: 0 0 0 2.5px {color}, 0 8px 20px rgba(15,23,42,.10);' if is_active else 'box-shadow: 0 4px 14px rgba(15,23,42,.05);'
+
+        params = {
+            'ops_raw': '1',
+            'ops_auth': token,
+            'ops_outcome': label,
+            'ops_start': gauge_context.get('start', ''),
+            'ops_end': gauge_context.get('end', ''),
+            'ops_zone': gauge_context.get('zone', 'ALL'),
+            'ops_ro': gauge_context.get('ro', 'ALL'),
+            'ops_route': gauge_context.get('route', 'ALL'),
+            'ops_vendor': gauge_context.get('vendor', 'ALL'),
+            'ops_search': gauge_context.get('search', '')
+        }
+        params_json = json.dumps(params, ensure_ascii=True).replace('</', '<\/')
+
         cards.append(
-            f'<div class="rm-card" style="background:{bg};border-color:{border};{ring_css}">'
+            f'<div class="rm-card" role="button" tabindex="0" title="Double-click to filter {html_module.escape(label)} below" '
+            f'data-label="{html_module.escape(label, quote=True)}" '
+            f'data-params="{html_module.escape(params_json, quote=True)}" data-base="{html_module.escape(base_url_json, quote=True)}" '
+            f'style="background:{bg};border-color:{border};{ring_css}">'
             f'<div class="rm-label">{icon} {html_module.escape(label)}</div>'
             f'<svg viewBox="0 0 180 108" role="img" aria-label="{pct:.1f} percent">'
             f'<path d="M 18 90 A 72 72 0 0 1 162 90" fill="none" stroke="{track_c}" stroke-width="13" stroke-linecap="round" pathLength="201.06"/>'
@@ -5567,24 +5610,63 @@ def render_ops_window_remark_gauges(base_scope_df, active_remarks):
             f'<text x="90" y="99" text-anchor="middle" font-size="14" font-weight="800" fill="{color}">{cnt:,} trips</text>'
             f'</svg>'
             f'<div class="rm-sub">out of <strong>{scope_total:,}</strong> trips</div>'
+            f'<div class="rm-hint">Double-click to filter below</div>'
             f'</div>'
         )
 
     rows = (len(cards) + 3) // 4
-    height_px = rows * 184 + 14
+    height_px = rows * 198 + 16
     html_doc = (
         f'<!doctype html><html><head><meta charset="utf-8"><style>'
         f'* {{ box-sizing:border-box; }}'
-        f'body {{ margin:0; padding:3px 2px; font-family:Inter,system-ui,-apple-system,Arial,sans-serif; background:transparent; color:{text_c}; }}'
+        f'body {{ margin:0; padding:3px 2px; font-family:Inter,system-ui,-apple-system,Arial,sans-serif; background:transparent; color:{text_c}; user-select:none; }}'
         f'.grid {{ display:grid; grid-template-columns:repeat(4,minmax(170px,1fr)); gap:12px; }}'
-        f'.rm-card {{ border:1px solid; border-radius:15px; padding:10px 10px 9px; text-align:center; }}'
+        f'.rm-card {{ border:1px solid; border-radius:15px; padding:10px 10px 8px; text-align:center; cursor:pointer; transition:transform .14s ease, box-shadow .14s ease; }}'
+        f'.rm-card:hover {{ transform:translateY(-2px); box-shadow:0 10px 22px rgba(15,23,42,.12) !important; }}'
+        f'.rm-card:active {{ transform:translateY(0) scale(.99); }}'
         f'.rm-label {{ font-size:12.5px; font-weight:800; color:{text_c}; min-height:22px; display:flex; align-items:center; justify-content:center; }}'
         f'svg {{ display:block; width:min(100%,180px); height:auto; margin:0 auto; overflow:visible; }}'
         f'.rm-sub {{ font-size:11.5px; font-weight:600; color:{muted_c}; margin-top:2px; }}'
         f'.rm-sub strong {{ color:{text_c}; font-weight:800; }}'
+        f'.rm-hint {{ font-size:10.5px; font-weight:650; color:{selected_theme["blue"]}; margin-top:3px; opacity:.82; }}'
+        f'.rm-card:hover .rm-hint {{ opacity:1; text-decoration:underline; }}'
         f'@media(max-width:960px) {{ .grid {{ grid-template-columns:repeat(2,minmax(150px,1fr)); }} }}'
         f'@media(max-width:520px) {{ .grid {{ grid-template-columns:1fr; }} }}'
-        f'</style></head><body><div class="grid">{"".join(cards)}</div></body></html>'
+        f'</style></head><body><div class="grid">{"".join(cards)}</div><script>'
+        f'function filterGaugeBelow(card) {{'
+        f'  const targetLabel = "__OPS_GPICK__" + card.dataset.label;'
+        f'  try {{'
+        f'    const btns = window.parent.document.querySelectorAll("button");'
+        f'    for (const b of btns) {{'
+        f'      if ((b.innerText || b.textContent || "").trim() === targetLabel) {{'
+        f'        b.click();'
+        f'        return;'
+        f'      }}'
+        f'    }}'
+        f'  }} catch (e) {{}}'
+        f'  try {{'
+        f'    const base = JSON.parse(card.dataset.base) || document.referrer || window.location.href;'
+        f'    const target = new URL(base);'
+        f'    Object.entries(JSON.parse(card.dataset.params)).forEach(([k, v]) => {{'
+        f'      if (v !== "" && v !== null && v !== undefined) target.searchParams.set(k, v);'
+        f'      else target.searchParams.delete(k);'
+        f'    }});'
+        f'    window.top.location.href = target.toString();'
+        f'  }} catch (err) {{'
+        f'    const base = JSON.parse(card.dataset.base) || document.referrer || window.location.href;'
+        f'    const target = new URL(base);'
+        f'    Object.entries(JSON.parse(card.dataset.params)).forEach(([k, v]) => {{'
+        f'      if (v !== "" && v !== null && v !== undefined) target.searchParams.set(k, v);'
+        f'      else target.searchParams.delete(k);'
+        f'    }});'
+        f'    window.open(target.toString(), "_blank", "noopener,noreferrer");'
+        f'  }}'
+        f'}}'
+        f'document.querySelectorAll(".rm-card").forEach((card) => {{'
+        f'  card.addEventListener("dblclick", (e) => {{ e.preventDefault(); filterGaugeBelow(card); }});'
+        f'  card.addEventListener("keydown", (e) => {{ if (e.key === "Enter") {{ e.preventDefault(); filterGaugeBelow(card); }} }});'
+        f'}});'
+        f'</script></body></html>'
     )
     st.components.v1.html(html_doc, height=height_px, scrolling=False)
 
@@ -5624,7 +5706,7 @@ def render_ops_remark_raw_window(data, query):
     if '_OpsRemarkOutcome' not in df_source.columns:
         df_source['_OpsRemarkOutcome'] = ops_remark_outcome_series(df_source)
 
-    # Apply Date & Zone from parent window; RO, Route, Vendor, Search stay switchable below!
+    # Apply Date from parent window; Zone, RO, Route, Vendor, Search stay switchable below!
     scoped = df_source.copy()
     start_str = query.get('ops_start', '').strip()
     end_str = query.get('ops_end', '').strip()
@@ -5639,21 +5721,23 @@ def render_ops_remark_raw_window(data, query):
         except Exception:
             pass
 
-    parent_zone = query.get('ops_zone', 'ALL').strip() or 'ALL'
-    if parent_zone != 'ALL' and 'Zone' in scoped.columns:
-        scoped = scoped[scoped['Zone'].fillna('').astype(str).str.strip().eq(parent_zone)].copy()
-
-    # Seed initial RO / Route / Vendor / Search from parent query params (user can freely change them!)
-    init_sig = (outcome_label, start_str, end_str, query.get('ops_ro', 'ALL'), query.get('ops_route', 'ALL'), query.get('ops_vendor', 'ALL'))
+    # Seed initial Zone / RO / Route / Vendor / Search from parent query params (user can freely change them!)
+    init_sig = (
+        outcome_label, start_str, end_str,
+        query.get('ops_zone', 'ALL'), query.get('ops_ro', 'ALL'),
+        query.get('ops_route', 'ALL'), query.get('ops_vendor', 'ALL')
+    )
     if st.session_state.get("_ops_win_seed_sig") != init_sig:
         st.session_state["_ops_win_seed_sig"] = init_sig
+        st.session_state["ops_win_zone"] = query.get('ops_zone', 'ALL').strip() or "ALL"
         st.session_state["ops_win_ro"] = query.get('ops_ro', 'ALL').strip() or "ALL"
         st.session_state["ops_win_route"] = query.get('ops_route', 'ALL').strip() or "ALL"
         st.session_state["ops_win_vendor"] = query.get('ops_vendor', 'ALL').strip() or "ALL"
         st.session_state["ops_win_search"] = query.get('ops_search', '').strip()
 
     available_remarks = sorted(
-        scoped['_OpsRemarkOutcome'].dropna().astype(str).unique().tolist(),
+        set(scoped['_OpsRemarkOutcome'].dropna().astype(str).unique().tolist())
+        | {'Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr', 'Late Dep, Late Arr', 'Late Dep, Ontime Arr'},
         reverse=True
     )
     default_remarks = [outcome_label] if outcome_label in available_remarks else available_remarks
@@ -5663,6 +5747,7 @@ def render_ops_remark_raw_window(data, query):
 
     def _reset_ops_win_filters():
         st.session_state[remark_state_key] = default_remarks
+        st.session_state["ops_win_zone"] = "ALL"
         st.session_state["ops_win_ro"] = "ALL"
         st.session_state["ops_win_route"] = "ALL"
         st.session_state["ops_win_vendor"] = "ALL"
@@ -5674,7 +5759,7 @@ def render_ops_remark_raw_window(data, query):
         toggle_lbl = "☰ Show Left Panel" if st.session_state.get("ops_win_hide_sidebar", True) else "✕ Hide Left Panel"
         st.button(toggle_lbl, key="ops_win_sidebar_toggle", use_container_width=True, on_click=_toggle_ops_win_sidebar)
 
-    # Sticky Dynamic Filter Strip (Remark + Switchable RO + Route + Vendor + Search)
+    # Sticky Dynamic Filter Strip (Remark + Switchable Zone + RO + Route + Vendor + Search)
     with st.container():
         st.markdown('<div class="pbi-sticky-anchor"></div>', unsafe_allow_html=True)
         r1_rem, r1_btn = st.columns([5.3, 0.7])
@@ -5687,9 +5772,19 @@ def render_ops_remark_raw_window(data, query):
         r1_btn.markdown("<div style='height:1.72rem'></div>", unsafe_allow_html=True)
         r1_btn.button("↺ Reset", key="ops_win_reset_btn", use_container_width=True, on_click=_reset_ops_win_filters)
 
-        # Base scope BEFORE Remark filter (RO is fully switchable across all ROs in date range)
+        # Base scope BEFORE Remark filter (Zone & RO are fully switchable across all records in date range)
         base_scope_df = scoped.copy()
-        fc1, fc2, fc3, fc4 = st.columns([1, 1.35, 1.2, 1.45])
+        fc_z, fc1, fc2, fc3, fc4 = st.columns([0.9, 1.0, 1.35, 1.15, 1.4])
+
+        zone_opts = ["ALL"] + sorted(
+            z for z in base_scope_df['Zone'].dropna().astype(str).str.strip().unique().tolist()
+            if z and z.upper() not in ("NAN", "NONE")
+        ) if 'Zone' in base_scope_df.columns else ["ALL"]
+        if st.session_state.get("ops_win_zone") not in zone_opts:
+            st.session_state["ops_win_zone"] = "ALL"
+        sel_zone_local = fc_z.selectbox("Zone:", zone_opts, key="ops_win_zone")
+        if sel_zone_local != "ALL" and 'Zone' in base_scope_df.columns:
+            base_scope_df = base_scope_df[base_scope_df['Zone'].fillna('').astype(str).str.strip().eq(sel_zone_local)].copy()
 
         ro_opts = ["ALL"] + sorted(base_scope_df['Origin RO'].dropna().astype(str).unique().tolist()) if 'Origin RO' in base_scope_df.columns else ["ALL"]
         if st.session_state.get("ops_win_ro") not in ro_opts:
@@ -5724,14 +5819,12 @@ def render_ops_remark_raw_window(data, query):
         chips = []
         if start_str and end_str:
             chips.append(f'<span class="pbi-chip">📅 {html_module.escape(start_str)} to {html_module.escape(end_str)}</span>')
-        if parent_zone != 'ALL':
-            chips.append(f'<span class="pbi-chip">Zone: {html_module.escape(parent_zone)}</span>')
         if selected_remarks:
             rem_chip = ', '.join(selected_remarks[:2]) + (f' +{len(selected_remarks) - 2} more' if len(selected_remarks) > 2 else '')
             chips.append(f'<span class="pbi-chip">Remark: {html_module.escape(rem_chip)}</span>')
         else:
             chips.append('<span class="pbi-chip">Remark: ALL</span>')
-        for lbl, val in [('RO', sel_ro_local), ('Route', sel_rt_local), ('Vendor', sel_ven_local)]:
+        for lbl, val in [('Zone', sel_zone_local), ('RO', sel_ro_local), ('Route', sel_rt_local), ('Vendor', sel_ven_local)]:
             if val != 'ALL':
                 chips.append(f'<span class="pbi-chip">{lbl}: {html_module.escape(val)}</span>')
         if local_search:
@@ -5754,9 +5847,17 @@ def render_ops_remark_raw_window(data, query):
     with hdr_l:
         st.markdown(f"<h2 style='margin:0'>{title_icon} {html_module.escape(title_label)}</h2>", unsafe_allow_html=True)
 
-    # Remark-wise Gauges in exact sequence:
-    # Ontime Dep, Ontime Arr -> Ontime Dep, Late Arr -> Late Dep, Late Arr -> Late Dep, Ontime Arr (+ any other active)
-    render_ops_window_remark_gauges(base_scope_df, active_remarks)
+    # Remark-wise Gauges in exact sequence; double-click any gauge to update tables below
+    win_gauge_context = {
+        'start': start_str,
+        'end': end_str,
+        'zone': sel_zone_local,
+        'ro': sel_ro_local,
+        'route': sel_rt_local,
+        'vendor': sel_ven_local,
+        'search': local_search
+    }
+    render_ops_window_remark_gauges(base_scope_df, active_remarks, win_gauge_context, remark_state_key, available_remarks)
 
     if view_df.empty:
         st.info("No raw trips match the selected filters.")
@@ -5997,7 +6098,7 @@ elif choice == "📊 Operations Summary":
         ops_outcome_counts, ops_total_trips, ops_outcome_labels = summarize_ops_remark_outcomes(raw_status)
 
         st.markdown("### Remark-wise Trip Outcome")
-        st.caption("🟢 Ontime Dep, Ontime Arr · 🌸 Ontime Dep, Late Arr · 🔴 Late Dep, Late Arr · 🟣 Late Dep, Ontime Arr · 🟡 Late Dep, In-Transit · 🟡 Ontime Dep, In-Transit · 🔴 No Departure · 🟡 Missing Schedule · 🟡 In-Transit · ⚪ Other. Each trip is counted once from its Remark; double-click any gauge to open its raw trip data in a new window.")
+        st.caption("🟢 Ontime Dep, Ontime Arr · 🌸 Ontime Dep, Late Arr · 🔴 Late Dep, Late Arr · 🟣 Late Dep, Ontime Arr · 🟡 Late Dep, In-Transit · 🟡 Ontime Dep, In-Transit · 🟡 Missing Schedule · 🔴 No Departure · 🟡 In-Transit · ⚪ Other. Each trip is counted once from its Remark; double-click any gauge to open its raw trip data in a new window.")
         st.caption(f"{ops_total_trips:,} trips · {len(df_leg_sum):,} route legs")
 
         _ops_sd_val = st.session_state.get("ops_main_sd")
