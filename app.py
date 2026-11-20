@@ -2914,7 +2914,7 @@ def render_summary_with_raw_drilldown(summary, raw, title, raw_kind, key, match_
     if compact.empty:
         st.info('No matching raw rows were found for the selected summary line.')
         return
-    st.dataframe(style_ui_dataframe(compact), use_container_width=True, hide_index=True, height=330)
+    render_centered_html_table(compact, height=380)
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
         write_styled_sheet_to_excel(writer, compact, 'Focused_Raw_Data', sheet_type=raw_kind)
@@ -3650,7 +3650,7 @@ def read_ops_remark_query_params():
             return {}
     return {key: read_value(key) for key in [
         'ops_raw', 'ops_auth', 'ops_outcome', 'ops_start', 'ops_end',
-        'ops_zone', 'ops_ro', 'ops_vendor', 'ops_route', 'ops_search'
+        'ops_zone', 'ops_ro', 'ops_vendor', 'ops_route', 'ops_leg', 'ops_search'
     ]}
 
 def read_vendor_perf_query_params():
@@ -3669,7 +3669,7 @@ def read_vendor_perf_query_params():
             return {}
     return {key: read_value(key) for key in [
         'ven_raw', 'ven_auth', 'ven_status', 'ven_start', 'ven_end',
-        'ven_zone', 'ven_ro', 'ven_vendor', 'ven_route', 'ven_search'
+        'ven_zone', 'ven_ro', 'ven_vendor', 'ven_route', 'ven_leg', 'ven_search'
     ]}
 
 issue_query = read_overall_issue_query_params()
@@ -4043,7 +4043,7 @@ def _reset_unified_filters(key_prefix, min_d=None, max_d=None):
     if min_d is not None and max_d is not None:
         st.session_state[f"{key_prefix}_sd"] = min_d
         st.session_state[f"{key_prefix}_ed"] = max_d
-    for suffix in ("zone", "ro", "vendor", "route"):
+    for suffix in ("zone", "ro", "vendor", "route", "leg"):
         st.session_state[f"{key_prefix}_{suffix}"] = "ALL"
     st.session_state[f"{key_prefix}_search"] = ""
 
@@ -4098,6 +4098,7 @@ def render_unified_filter_bar(
     ro_col=None,
     vendor_col=None,
     route_col=None,
+    leg_col=None,
     search_placeholder="Search Route, Vendor, Invoice..."
 ):
     """Sticky Power BI-style filter strip with Date Presets, cascading dropdowns & Active Filter Chips."""
@@ -4108,12 +4109,13 @@ def render_unified_filter_bar(
         "ro": "ALL",
         "vendor": "ALL",
         "route": "ALL",
+        "leg": "ALL",
         "search": ""
     }
     if df_raw is None or df_raw.empty:
         return df_raw, state
 
-    for suffix in ("zone", "ro", "vendor", "route"):
+    for suffix in ("zone", "ro", "vendor", "route", "leg"):
         pending_key = f"_pending_{key_prefix}_{suffix}"
         if pending_key in st.session_state:
             st.session_state[f"{key_prefix}_{suffix}"] = st.session_state.pop(pending_key)
@@ -4173,15 +4175,22 @@ def render_unified_filter_bar(
             active_controls.append(("vendor", "Vendor", vendor_col))
         if route_col and route_col in df_work.columns:
             active_controls.append(("route", "Route", route_col))
+        if leg_col and leg_col in df_work.columns:
+            active_controls.append(("leg", "Legwise", leg_col))
 
-        col_weights = [1.0] * len(active_controls) + [1.4]
+        col_weights = [1.0] * len(active_controls) + [1.35]
         row2_cols = st.columns(col_weights)
 
         for idx, (suffix, label, col_name) in enumerate(active_controls):
-            opts = ["ALL"] + sorted(
+            raw_vals = [
                 v for v in df_work[col_name].dropna().astype(str).str.strip().unique().tolist()
                 if v and v.upper() not in ("NAN", "NONE")
-            )
+            ]
+            if suffix == "leg":
+                raw_vals = sorted(raw_vals, key=lambda x: (int(re.search(r'(\d+)', x).group(1)) if re.search(r'(\d+)', x) else 999, x))
+            else:
+                raw_vals = sorted(raw_vals)
+            opts = ["ALL"] + raw_vals
             w_key = f"{key_prefix}_{suffix}"
             if st.session_state.get(w_key) not in opts:
                 st.session_state[w_key] = "ALL"
@@ -4199,7 +4208,7 @@ def render_unified_filter_bar(
             df_work = df_work[mask].copy()
 
         chips = [f'<span class="pbi-chip">📅 {html_module.escape(state["dur_label"])}</span>']
-        for label_name, key_name in [("Zone", "zone"), ("RO", "ro"), ("Vendor", "vendor"), ("Route", "route")]:
+        for label_name, key_name in [("Zone", "zone"), ("RO", "ro"), ("Vendor", "vendor"), ("Route", "route"), ("Legwise", "leg")]:
             if state[key_name] != "ALL":
                 chips.append(f'<span class="pbi-chip">{label_name}: {html_module.escape(str(state[key_name]))}</span>')
         if state["search"]:
@@ -4383,7 +4392,7 @@ def render_scheduled_route_master(data):
             if poster.empty:
                 st.info(f"No {spec['label'].lower()} rows for {branch_label} with these filters.")
                 continue
-            st.dataframe(poster, use_container_width=True, hide_index=True, height=360)
+            render_centered_html_table(poster, height=400)
             poster_bytes = build_formatted_excel_bytes(
                 poster, spec['label'], f"{spec['label']} · {branch_label}",
                 width_overrides=spec['widths'], paper_size=spec['paper_size'], landscape=spec['landscape']
@@ -4406,7 +4415,7 @@ def render_scheduled_route_master(data):
         'Scheduled Driving Hours', 'Scheduled Halting', 'Scheduled TAT Till Destination'
     ]
     with st.expander("Full leg-wise route master preview", expanded=False):
-        st.dataframe(visible.reindex(columns=master_columns).fillna(''), use_container_width=True, hide_index=True, height=440)
+        render_centered_html_table(visible.reindex(columns=master_columns).fillna(''), height=460)
 
 def get_overall_issue_frames(data):
     ops_raw = data.get('Legwise_Processed_Data', pd.DataFrame())
@@ -4872,7 +4881,7 @@ def render_overall_issue_raw_page(data, query):
         if compact_view.empty:
             st.info('No matching operations records for this issue.')
         else:
-            st.dataframe(style_ui_dataframe(compact_view), use_container_width=True, hide_index=True, height=330)
+            render_centered_html_table(compact_view, height=420)
     elif issue_type in payment_groups:
         st.markdown('### Payment')
         view = _overall_issue_pivot_selection(
@@ -4883,7 +4892,7 @@ def render_overall_issue_raw_page(data, query):
         if compact_view.empty:
             st.info('No matching payment records for this issue.')
         else:
-            st.dataframe(style_ui_dataframe(compact_view), use_container_width=True, hide_index=True, height=330)
+            render_centered_html_table(compact_view, height=420)
     else:
         st.markdown('### Utilization')
         util_ro_col = get_col(focused, ['RO'])
@@ -4898,7 +4907,7 @@ def render_overall_issue_raw_page(data, query):
         if compact_view.empty:
             st.info('No matching utilization records for this issue.')
         else:
-            st.dataframe(style_ui_dataframe(compact_view), use_container_width=True, hide_index=True, height=330)
+            render_centered_html_table(compact_view, height=420)
 
     focused_kind = 'ops_raw' if issue_type in operations_issues else ('pay_raw' if issue_type in payment_groups else 'cpk_raw')
     focused_compact = compact_detail_frame(focused, focused_kind)
@@ -5385,6 +5394,7 @@ def render_ops_remark_gauges(ops_outcome_counts, ops_total_trips, ops_outcome_la
             'ops_ro': gauge_context.get('ro', 'ALL'),
             'ops_vendor': gauge_context.get('vendor', 'ALL'),
             'ops_route': gauge_context.get('route', 'ALL'),
+            'ops_leg': gauge_context.get('leg', 'ALL'),
             'ops_search': gauge_context.get('search', '')
         }
         params_json = json.dumps(params, ensure_ascii=True).replace('</', '<\/')
@@ -5478,14 +5488,25 @@ def render_centered_html_table(
         return
 
     df_view = df_in.head(max_rows).reset_index(drop=True)
-    num_set = set(num_cols or []) | {'Total Trips', 'Trips', 'Count', 'Prev 7D Trips', 'Curr 7D Trips', 'Overall Trips', 'ROs', 'Routes', 'Vendors'}
-    bold_set = set(bold_cols or []) | {'Origin RO', 'Legwise', 'Zone', 'Vendor', 'VendorName'}
+    num_set = set(num_cols or []) | {
+        'Total Trips', 'Total_Trips', 'Trips', 'Count', 'Total Bills', 'Days Pending',
+        'Prev 7D Trips', 'Curr 7D Trips', 'Overall Trips', 'ROs', 'Routes', 'Vendors',
+        'Overall CPK', 'Total Capacity', 'Total Carried Wt', 'Total Trip Cost', 'Unique Vendors'
+    }
+    bold_set = set(bold_cols or []) | {
+        'Origin RO', 'RO', 'RO Name', 'VendorRO', 'RO_Clean', 'Legwise', 'Zone',
+        'Vendor', 'VendorName', 'Vendor Name', 'User ID', 'Route Code', 'Module Name'
+    }
     pill_set = set(pill_cols or []) | {
-        'Remark', 'Remark % (Count)', 'Ontime Dep, Ontime Arr',
-        'Ontime Arrival', 'Late Arrival', 'In-Transit', 'Missing Schedule',
-        'Remark with 15 min waiver', 'Status', 'Status % (Count)',
+        'Remark', 'Remark % (Count)', 'Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr',
+        'Late Dep, Late Arr', 'Late Dep, Ontime Arr', 'Late Dep, In-Transit',
+        'Ontime Dep, In-Transit', 'Missing Schedule', 'No Departure',
+        'Ontime Arrival', 'Late Arrival', 'In-Transit',
+        'Remark with 15 min waiver', 'Status', 'Status % (Count)', 'Delay Hours',
         '7D Trend', 'Prev 7D On-Time', 'Curr 7D On-Time', 'Curr 7D Late',
-        'Overall On-Time', 'Overall Late'
+        'Overall On-Time', 'Overall Late', 'Overall Util %', 'Route Utilization', 'Utilization Class',
+        'Payment Group', 'Payment Pending / Paid', 'Finance Pending / Hold', 'Finance Pending',
+        'Finance Hold', 'Draft', 'Draft Bills', 'Cost Control Pending', 'Other', 'Operations Outcome'
     }
 
     pal = _ops_window_semantic_palette()
@@ -5543,6 +5564,37 @@ def render_centered_html_table(
             if pct is None or pct == 0:
                 return 'neutral'
             return 'warn'
+        if 'util' in c:
+            if 'efficient' in s:
+                return 'good'
+            if 'underutilized' in s:
+                return 'bad'
+            if pct is not None:
+                return 'bad' if pct < 60 else ('warn' if pct < 80 else 'good')
+        if 'payment pending / paid' in c or 'payment pending / paid' in s or s == 'paid':
+            return 'good'
+        if 'finance hold' in c or 'finance hold' in s or 'draft' in c or s == 'draft' or 'disabled' in s:
+            return 'bad'
+        if 'finance pending' in c or 'finance pending' in s or 'cost control' in c or 'cost control' in s or c == 'other' or s == 'other':
+            return 'warn'
+        if 'active' in s:
+            return 'good'
+        if c == 'delay hours' and s not in ('', '-', '0:00'):
+            if s.startswith('-'):
+                return 'good'
+            try:
+                pts = s.split(':')
+                if (int(pts[0]) + int(pts[1]) / 60.0) > 0.25:
+                    return 'bad'
+            except Exception:
+                pass
+            return 'good'
+        if 'ontime dep, late arr' in c:
+            return 'soft_bad' if (pct is not None and pct > 0) else 'neutral'
+        if 'late dep, ontime arr' in c:
+            return 'recover' if (pct is not None and pct > 0) else 'neutral'
+        if 'late dep, late arr' in c or 'no departure' in c:
+            return 'bad' if (pct is not None and pct > 0) else 'neutral'
         return None
 
     headers = ''.join(f'<th>{html_module.escape(str(c))}</th>' for c in df_view.columns)
@@ -6046,13 +6098,14 @@ def render_ops_remark_raw_window(data, query):
     init_sig = (
         outcome_label, start_str, end_str,
         query.get('ops_zone', 'ALL'), query.get('ops_ro', 'ALL'),
-        query.get('ops_route', 'ALL'), query.get('ops_vendor', 'ALL')
+        query.get('ops_route', 'ALL'), query.get('ops_leg', 'ALL'), query.get('ops_vendor', 'ALL')
     )
     if st.session_state.get("_ops_win_seed_sig") != init_sig:
         st.session_state["_ops_win_seed_sig"] = init_sig
         st.session_state["ops_win_zone"] = query.get('ops_zone', 'ALL').strip() or "ALL"
         st.session_state["ops_win_ro"] = query.get('ops_ro', 'ALL').strip() or "ALL"
         st.session_state["ops_win_route"] = query.get('ops_route', 'ALL').strip() or "ALL"
+        st.session_state["ops_win_leg"] = query.get('ops_leg', 'ALL').strip() or "ALL"
         st.session_state["ops_win_vendor"] = query.get('ops_vendor', 'ALL').strip() or "ALL"
         st.session_state["ops_win_search"] = query.get('ops_search', '').strip()
 
@@ -6071,6 +6124,7 @@ def render_ops_remark_raw_window(data, query):
         st.session_state["ops_win_zone"] = "ALL"
         st.session_state["ops_win_ro"] = "ALL"
         st.session_state["ops_win_route"] = "ALL"
+        st.session_state["ops_win_leg"] = "ALL"
         st.session_state["ops_win_vendor"] = "ALL"
         st.session_state["ops_win_search"] = ""
 
@@ -6095,7 +6149,7 @@ def render_ops_remark_raw_window(data, query):
 
         # Base scope BEFORE Remark filter (Zone & RO are fully switchable across all records in date range)
         base_scope_df = scoped.copy()
-        fc_z, fc1, fc2, fc3, fc4 = st.columns([0.9, 1.0, 1.35, 1.15, 1.4])
+        fc_z, fc1, fc2, fc_l, fc3, fc4 = st.columns([0.85, 0.9, 1.3, 0.85, 1.1, 1.3])
 
         zone_opts = ["ALL"] + sorted(
             z for z in base_scope_df['Zone'].dropna().astype(str).str.strip().unique().tolist()
@@ -6121,6 +6175,14 @@ def render_ops_remark_raw_window(data, query):
         if sel_rt_local != "ALL" and 'Route Path' in base_scope_df.columns:
             base_scope_df = base_scope_df[base_scope_df['Route Path'].astype(str).eq(sel_rt_local)].copy()
 
+        leg_raw_vals = [v for v in base_scope_df['Legwise'].dropna().astype(str).str.strip().unique().tolist() if v] if 'Legwise' in base_scope_df.columns else []
+        leg_opts = ["ALL"] + sorted(leg_raw_vals, key=lambda x: (int(re.search(r'(\d+)', x).group(1)) if re.search(r'(\d+)', x) else 999, x))
+        if st.session_state.get("ops_win_leg") not in leg_opts:
+            st.session_state["ops_win_leg"] = "ALL"
+        sel_leg_local = fc_l.selectbox("Legwise:", leg_opts, key="ops_win_leg")
+        if sel_leg_local != "ALL" and 'Legwise' in base_scope_df.columns:
+            base_scope_df = base_scope_df[base_scope_df['Legwise'].astype(str).str.strip().eq(sel_leg_local)].copy()
+
         ven_opts = ["ALL"] + sorted(base_scope_df['VendorName'].dropna().astype(str).unique().tolist()) if 'VendorName' in base_scope_df.columns else ["ALL"]
         if st.session_state.get("ops_win_vendor") not in ven_opts:
             st.session_state["ops_win_vendor"] = "ALL"
@@ -6145,7 +6207,7 @@ def render_ops_remark_raw_window(data, query):
             chips.append(f'<span class="pbi-chip">Remark: {html_module.escape(rem_chip)}</span>')
         else:
             chips.append('<span class="pbi-chip">Remark: ALL</span>')
-        for lbl, val in [('Zone', sel_zone_local), ('RO', sel_ro_local), ('Route', sel_rt_local), ('Vendor', sel_ven_local)]:
+        for lbl, val in [('Zone', sel_zone_local), ('RO', sel_ro_local), ('Route', sel_rt_local), ('Legwise', sel_leg_local), ('Vendor', sel_ven_local)]:
             if val != 'ALL':
                 chips.append(f'<span class="pbi-chip">{lbl}: {html_module.escape(val)}</span>')
         if local_search:
@@ -6308,6 +6370,7 @@ def render_vendor_perf_gauges_open_window(ven_counts, ven_total, gauge_context):
             'ven_ro': gauge_context.get('ro', 'ALL'),
             'ven_vendor': gauge_context.get('vendor', 'ALL'),
             'ven_route': gauge_context.get('route', 'ALL'),
+            'ven_leg': gauge_context.get('leg', 'ALL'),
             'ven_search': gauge_context.get('search', '')
         }
         params_json = json.dumps(params, ensure_ascii=True).replace('</', '<\/')
@@ -6520,7 +6583,7 @@ def render_vendor_perf_raw_window(data, query):
     init_sig = (
         status_label, start_str, end_str,
         query.get('ven_zone', 'ALL'), query.get('ven_ro', 'ALL'),
-        query.get('ven_vendor', 'ALL'), query.get('ven_route', 'ALL')
+        query.get('ven_vendor', 'ALL'), query.get('ven_route', 'ALL'), query.get('ven_leg', 'ALL')
     )
     if st.session_state.get("_ven_win_seed_sig") != init_sig:
         st.session_state["_ven_win_seed_sig"] = init_sig
@@ -6528,6 +6591,7 @@ def render_vendor_perf_raw_window(data, query):
         st.session_state["ven_win_ro"] = query.get('ven_ro', 'ALL').strip() or "ALL"
         st.session_state["ven_win_vendor"] = query.get('ven_vendor', 'ALL').strip() or "ALL"
         st.session_state["ven_win_route"] = query.get('ven_route', 'ALL').strip() or "ALL"
+        st.session_state["ven_win_leg"] = query.get('ven_leg', 'ALL').strip() or "ALL"
         st.session_state["ven_win_search"] = query.get('ven_search', '').strip()
 
     available_statuses = ['Ontime Arrival', 'Late Arrival', 'In-Transit', 'Missing Schedule']
@@ -6542,6 +6606,7 @@ def render_vendor_perf_raw_window(data, query):
         st.session_state["ven_win_ro"] = "ALL"
         st.session_state["ven_win_vendor"] = "ALL"
         st.session_state["ven_win_route"] = "ALL"
+        st.session_state["ven_win_leg"] = "ALL"
         st.session_state["ven_win_search"] = ""
 
     hdr_l, hdr_r = st.columns([5.2, 1.1])
@@ -6562,7 +6627,7 @@ def render_vendor_perf_raw_window(data, query):
         r1_btn.button("↺ Reset", key="ven_win_reset_btn", use_container_width=True, on_click=_reset_ven_win_filters)
 
         base_scope_df = scoped.copy()
-        fc_z, fc1, fc2, fc3, fc4 = st.columns([0.9, 1.0, 1.25, 1.3, 1.35])
+        fc_z, fc1, fc2, fc3, fc_l, fc4 = st.columns([0.85, 0.9, 1.2, 1.25, 0.85, 1.25])
 
         zone_opts = ["ALL"] + sorted(
             z for z in base_scope_df['Zone'].dropna().astype(str).str.strip().unique().tolist()
@@ -6595,6 +6660,14 @@ def render_vendor_perf_raw_window(data, query):
         if sel_rt_local != "ALL" and 'Route Path' in base_scope_df.columns:
             base_scope_df = base_scope_df[base_scope_df['Route Path'].astype(str).eq(sel_rt_local)].copy()
 
+        v_leg_vals = [v for v in base_scope_df['Legwise'].dropna().astype(str).str.strip().unique().tolist() if v] if 'Legwise' in base_scope_df.columns else []
+        v_leg_opts = ["ALL"] + sorted(v_leg_vals, key=lambda x: (int(re.search(r'(\d+)', x).group(1)) if re.search(r'(\d+)', x) else 999, x))
+        if st.session_state.get("ven_win_leg") not in v_leg_opts:
+            st.session_state["ven_win_leg"] = "ALL"
+        sel_leg_local = fc_l.selectbox("Legwise:", v_leg_opts, key="ven_win_leg")
+        if sel_leg_local != "ALL" and 'Legwise' in base_scope_df.columns:
+            base_scope_df = base_scope_df[base_scope_df['Legwise'].astype(str).str.strip().eq(sel_leg_local)].copy()
+
         local_search = fc4.text_input("Search Vehicle, CD No, Branch:", key="ven_win_search").strip()
         if local_search:
             l_mask = base_scope_df.astype(str).apply(lambda c: c.str.contains(local_search, case=False, regex=False, na=False)).any(axis=1)
@@ -6611,7 +6684,7 @@ def render_vendor_perf_raw_window(data, query):
             chips.append(f'<span class="pbi-chip">Status: {html_module.escape(", ".join(selected_statuses))}</span>')
         else:
             chips.append('<span class="pbi-chip">Status: ALL</span>')
-        for lbl, val in [('Zone', sel_zone_local), ('RO', sel_ro_local), ('Vendor', sel_ven_local), ('Route', sel_rt_local)]:
+        for lbl, val in [('Zone', sel_zone_local), ('RO', sel_ro_local), ('Vendor', sel_ven_local), ('Route', sel_rt_local), ('Legwise', sel_leg_local)]:
             if val != 'ALL':
                 chips.append(f'<span class="pbi-chip">{lbl}: {html_module.escape(val)}</span>')
         if local_search:
@@ -6754,6 +6827,7 @@ elif choice == "📊 Operations Summary":
             ro_col="Origin RO" if "Origin RO" in df_raw_leg_full.columns else None,
             vendor_col="VendorName" if "VendorName" in df_raw_leg_full.columns else None,
             route_col="Route Path" if "Route Path" in df_raw_leg_full.columns else None,
+            leg_col="Legwise" if "Legwise" in df_raw_leg_full.columns else None,
             search_placeholder="Search Route, Leg, Vehicle..."
         )
         is_date_filtered = ops_filters["is_date_filtered"]
@@ -6765,7 +6839,7 @@ elif choice == "📊 Operations Summary":
         any_ops_filter = (
             is_date_filtered
             or not st.session_state.get('all_vendors', True)
-            or any(ops_filters[k] != "ALL" for k in ("zone", "ro", "vendor", "route"))
+            or any(ops_filters[k] != "ALL" for k in ("zone", "ro", "vendor", "route", "leg"))
             or bool(search_q)
         )
         df_leg_sum = build_ops_summary_from_raw(df_raw_leg) if any_ops_filter else data['Legwise_Route_Summary'].copy()
@@ -6830,9 +6904,88 @@ elif choice == "📊 Operations Summary":
             "ro": ops_filters.get("ro", "ALL"),
             "vendor": ops_filters.get("vendor", "ALL"),
             "route": ops_filters.get("route", "ALL"),
+            "leg": ops_filters.get("leg", "ALL"),
             "search": ops_filters.get("search", "")
         }
         render_ops_remark_gauges(ops_outcome_counts, ops_total_trips, ops_outcome_labels, ops_gauge_context)
+
+        # Clean, Logical Operations Route & Leg Summary Table (Matching Vendor Performance Style)
+        st.markdown("---")
+        st.markdown("### 📋 Route & Leg Operations Summary")
+
+        ops_leg_keys = [c for c in ['Origin RO', 'Route Path', 'Legwise', 'Legs'] if c in raw_status.columns]
+        if ops_leg_keys:
+            ops_tbl = raw_status.copy()
+            ops_out_s = ops_tbl['_OpsRemarkOutcome'].fillna('Other').astype(str)
+            primary_outcomes = [
+                'Ontime Dep, Ontime Arr',
+                'Ontime Dep, Late Arr',
+                'Late Dep, Late Arr',
+                'Late Dep, Ontime Arr'
+            ]
+            extra_outcomes = [
+                lbl for lbl, _, _ in OPS_REMARK_OUTCOME_LABELS
+                if lbl not in primary_outcomes and int(ops_outcome_counts.get(lbl, 0)) > 0
+            ]
+            shown_outcomes = primary_outcomes + extra_outcomes
+
+            ops_piv = ops_tbl.groupby(ops_leg_keys + ['_OpsRemarkOutcome'], dropna=False).size().unstack('_OpsRemarkOutcome', fill_value=0)
+            ops_piv = ops_piv.reindex(columns=shown_outcomes, fill_value=0)
+            ops_tot = ops_tbl.groupby(ops_leg_keys, dropna=False).size().rename('Total Trips')
+            ops_summary_df = ops_tot.to_frame().join(ops_piv).reset_index()
+
+            oo_cnts = ops_summary_df['Ontime Dep, Ontime Arr'].astype(int) if 'Ontime Dep, Ontime Arr' in ops_summary_df.columns else pd.Series(0, index=ops_summary_df.index)
+            tot_cnts = ops_summary_df['Total Trips'].astype(int)
+            oo_pct_num = np.where(tot_cnts > 0, oo_cnts / tot_cnts * 100.0, 0.0)
+
+            for lbl in shown_outcomes:
+                ops_summary_df[lbl] = [format_pct_cnt(c, t) for c, t in zip(ops_summary_df[lbl], tot_cnts)]
+
+            ops_summary_df['Status'] = np.where(oo_pct_num >= 85, '🟢 Strong', np.where(oo_pct_num >= 70, '🟡 Watch', '🔴 Action Needed'))
+            ops_summary_df['_leg_n'] = extract_leg_num_val(ops_summary_df['Legwise']) if 'Legwise' in ops_summary_df.columns else 999
+            ops_summary_df = ops_summary_df.sort_values(
+                by=[c for c in ['Origin RO', 'Route Path', '_leg_n'] if c in ops_summary_df.columns],
+                ascending=True
+            ).drop(columns=['_leg_n'], errors='ignore').reset_index(drop=True)
+
+            render_centered_html_table(ops_summary_df, height=520)
+
+            # Clean 1-line Raw Trip Inspector
+            ops_drill_opts = ["Select a Route & Leg to inspect raw trips..."] + [
+                f"{r.get('Origin RO', '')} | {r.get('Route Path', '')} | {r.get('Legwise', '')} ({r.get('Total Trips', 0)} trips)"
+                for _, r in ops_summary_df.iterrows()
+            ]
+            chosen_ops_drill = st.selectbox("🔎 Inspect Raw Trips:", ops_drill_opts, key="ops_main_raw_inspector")
+            if chosen_ops_drill != ops_drill_opts[0]:
+                o_idx = ops_drill_opts.index(chosen_ops_drill) - 1
+                if 0 <= o_idx < len(ops_summary_df):
+                    sel_or = ops_summary_df.iloc[o_idx]
+                    o_raw = raw_status[
+                        raw_status['Origin RO'].astype(str).eq(str(sel_or['Origin RO']))
+                        & raw_status['Route Path'].astype(str).eq(str(sel_or['Route Path']))
+                        & raw_status['Legwise'].astype(str).eq(str(sel_or['Legwise']))
+                    ].drop(columns=['_OpsRemarkOutcome', '_RemarkOutcome'], errors='ignore').copy()
+                    o_raw_clean = clean_dataframe_for_excel(o_raw, sheet_type="ops_raw")
+                    st.markdown(f"#### 📄 `{sel_or['Origin RO']}` · `{sel_or['Route Path']}` · `{sel_or['Legwise']}` (**{len(o_raw_clean):,} trips**)")
+                    render_centered_html_table(o_raw_clean, height=400)
+
+            # On-demand Styled Excel Export
+            ops_dl1, ops_dl2 = st.columns([1.6, 3.4])
+            if ops_dl1.button("📥 Prepare Styled Excel Report", key="ops_prepare_excel_btn", type="primary", use_container_width=True):
+                with st.spinner("Generating styled Operations Excel..."):
+                    dl_buf_o = io.BytesIO()
+                    with pd.ExcelWriter(dl_buf_o, engine='xlsxwriter') as writer:
+                        write_styled_sheet_to_excel(writer, ops_summary_df, 'Operations_Summary', sheet_type="generic", preserve_order=True)
+                        write_styled_sheet_to_excel(writer, raw_status.drop(columns=['_OpsRemarkOutcome', '_RemarkOutcome'], errors='ignore'), 'Operations_Raw', sheet_type="ops_raw")
+                    st.session_state["_ops_excel_ready_bytes"] = dl_buf_o.getvalue()
+            if st.session_state.get("_ops_excel_ready_bytes"):
+                ops_dl2.download_button(
+                    "⬇️ Download Operations Summary Report (Excel)",
+                    data=st.session_state["_ops_excel_ready_bytes"],
+                    file_name=f"Operations_Summary_Report_{get_ist_now():%d_%b_%Y}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="ops_ready_download_btn"
+                )
 
 
 # -------------------------------------------------------------
@@ -6862,6 +7015,7 @@ elif choice == "🚚 Vendor Performance":
             ro_col="Origin RO" if "Origin RO" in df_vperf_raw_full.columns else None,
             vendor_col="VendorName" if "VendorName" in df_vperf_raw_full.columns else None,
             route_col="Route Path" if "Route Path" in df_vperf_raw_full.columns else None,
+            leg_col="Legwise" if "Legwise" in df_vperf_raw_full.columns else None,
             search_placeholder="Search Route, Leg, Vehicle..."
         )
         selected_zone = ven_filters["zone"]
@@ -6902,6 +7056,7 @@ elif choice == "🚚 Vendor Performance":
             "ro": ven_filters.get("ro", "ALL"),
             "vendor": ven_filters.get("vendor", "ALL"),
             "route": ven_filters.get("route", "ALL"),
+            "leg": ven_filters.get("leg", "ALL"),
             "search": ven_filters.get("search", "")
         }
         render_vendor_perf_gauges_open_window(ven_counts, ven_total, ven_gauge_context)
@@ -7051,6 +7206,8 @@ elif choice == "🚚 Vendor Performance":
             compare_raw = compare_raw[compare_raw['Origin RO'].eq(selected_ro)]
         if selected_vendor_b != 'ALL' and 'VendorName' in compare_raw.columns:
             compare_raw = compare_raw[compare_raw['VendorName'].eq(selected_vendor_b)]
+        if ven_filters.get("leg", "ALL") != 'ALL' and 'Legwise' in compare_raw.columns:
+            compare_raw = compare_raw[compare_raw['Legwise'].astype(str).str.strip().eq(ven_filters["leg"])]
 
         compare_date_col = get_col(compare_raw, ['Date'])
         compare_dates = pd.to_datetime(compare_raw[compare_date_col], dayfirst=True, errors='coerce').dt.date if compare_date_col else pd.Series([None] * len(compare_raw), index=compare_raw.index)
@@ -7257,35 +7414,27 @@ elif choice == "💳 Payment Dashboard":
         if payment_summary.empty:
             st.info('No payment rows match the selected filters.')
         else:
-            event = st.dataframe(
-                style_ui_dataframe(payment_summary), use_container_width=True, hide_index=True,
-                on_select='rerun', selection_mode='single-cell', key='payment_summary_click'
-            )
-            row_idx, selected_col = get_selected_cell_from_event(event, payment_summary)
-            if row_idx is None or not (0 <= row_idx < len(payment_summary)):
-                st.info('Click any count or percentage above to open its invoices.')
-            else:
-                selected_summary = payment_summary.iloc[row_idx]
-                detail = df_pay[df_pay['RO Name'].astype(str).eq(str(selected_summary['RO']))].copy()
-                selected_bucket = selected_col if selected_col in bucket_labels else None
-                if selected_bucket:
-                    detail = detail[detail['Payment Group'].eq(selected_bucket)].copy()
+            render_centered_html_table(payment_summary, height=460)
+            pc1, pc2 = st.columns([1.4, 1.4])
+            pay_ro_pick = pc1.selectbox('🔎 Inspect Invoices by RO:', ['Select RO...'] + payment_summary['RO'].astype(str).tolist(), key='pay_ro_inspector')
+            pay_bkt_pick = pc2.selectbox('Payment Bucket:', ['All Buckets'] + bucket_labels, key='pay_bkt_inspector')
+            if pay_ro_pick != 'Select RO...':
+                detail = df_pay[df_pay['RO Name'].astype(str).eq(pay_ro_pick)].copy()
+                if pay_bkt_pick != 'All Buckets':
+                    detail = detail[detail['Payment Group'].eq(pay_bkt_pick)].copy()
                 count = len(detail)
-                denominator = len(df_pay[df_pay['RO Name'].astype(str).eq(str(selected_summary['RO']))])
+                denominator = len(df_pay[df_pay['RO Name'].astype(str).eq(pay_ro_pick)])
                 pct = count / denominator * 100 if denominator else 0
-                st.markdown(f"#### {selected_summary['RO']} · {selected_bucket or 'All payment buckets'}")
-                k1, k2 = st.columns(2)
-                k1.metric('Matching invoices', f'{count:,}')
-                k2.metric('Share of this RO bills', f'{pct:.1f}%')
+                st.markdown(f"#### 📄 {pay_ro_pick} · {pay_bkt_pick} (**{count:,} invoices** · {pct:.1f}%)")
                 compact = compact_detail_frame(detail.sort_values('Amount', ascending=False) if 'Amount' in detail.columns else detail, 'pay_raw')
-                st.dataframe(style_ui_dataframe(compact), use_container_width=True, hide_index=True, height=340)
+                render_centered_html_table(compact, height=420)
                 pay_bytes = io.BytesIO()
                 with pd.ExcelWriter(pay_bytes, engine='xlsxwriter') as writer:
                     write_styled_sheet_to_excel(writer, payment_summary, 'Payment_Summary', sheet_type='payment_summary')
                     write_styled_sheet_to_excel(writer, compact, 'Focused_Invoices', sheet_type='pay_raw')
                 st.download_button(
                     '📥 Download selected payment detail (formatted Excel)', data=pay_bytes.getvalue(),
-                    file_name=f"Payment_Detail_{re.sub(r'[^A-Za-z0-9_-]+', '_', str(selected_summary['RO']))}.xlsx",
+                    file_name=f"Payment_Detail_{re.sub(r'[^A-Za-z0-9_-]+', '_', str(pay_ro_pick))}.xlsx",
                     mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                     type='primary', key='payment_detail_download'
                 )
@@ -7681,7 +7830,7 @@ elif choice == "📱 Communication Hub":
                     payment_detail = payment_detail[payment_detail['Payment Group'].eq(payment_col)].copy()
                 payment_compact = compact_detail_frame(payment_detail, 'pay_raw')
                 st.markdown(f'Focused payment records · {payment_col if payment_col in comm_payment_buckets else "all buckets"} · {len(payment_compact):,}')
-                st.dataframe(style_ui_dataframe(payment_compact), use_container_width=True, hide_index=True, height=300)
+                render_centered_html_table(payment_compact, height=360)
                 payment_excel = io.BytesIO()
                 with pd.ExcelWriter(payment_excel, engine='xlsxwriter') as writer:
                     write_styled_sheet_to_excel(writer, comm_payment_summary, 'Payment_Summary', sheet_type='payment_summary')
@@ -7968,13 +8117,12 @@ elif choice == "💰 Network Utilization":
                         st.markdown(f"### 🔄 Up/Down Route Summary for `{selected_sortkey}`")
                         
                         if df_updown is not None and not df_updown.empty:
-                            updown_filtered = df_updown[(df_updown['SortKey'] == selected_sortkey)].copy()
-                            updown_styled = updown_filtered.drop(columns=['SortKey', 'Zone'], errors='ignore').style
+                            updown_filtered = df_updown[(df_updown['SortKey'] == selected_sortkey)].drop(columns=['SortKey', 'Zone'], errors='ignore').copy()
                             if 'Overall Util %' in updown_filtered.columns:
-                                updown_styled = updown_styled.format({'Overall Util %': lambda x: f"{x*100:.2f}%" if isinstance(x, (int, float)) else x})
+                                updown_filtered['Overall Util %'] = updown_filtered['Overall Util %'].apply(lambda x: f"{x*100:.2f}%" if isinstance(x, (int, float)) else x)
                             if 'Overall CPK' in updown_filtered.columns:
-                                updown_styled = updown_styled.format({'Overall CPK': lambda x: f"₹{x:.2f}" if isinstance(x, (int, float)) else x})
-                            st.dataframe(updown_styled, use_container_width=True)
+                                updown_filtered['Overall CPK'] = updown_filtered['Overall CPK'].apply(lambda x: f"₹{x:.2f}" if isinstance(x, (int, float)) else x)
+                            render_centered_html_table(updown_filtered, height=340)
                             
                         st.markdown(f"### 📄 Raw Data for Route Pair `{selected_sortkey}`")
                         raw_trips = df_cpk_raw[(df_cpk_raw['SortKey'] == selected_sortkey)]
@@ -8006,15 +8154,10 @@ elif choice == "💰 Network Utilization":
                     raw_cols = [c for c in raw_cols if c in raw_trips.columns]
                     raw_trips = raw_trips[raw_cols]
                     
-                    styled_raw_trips = raw_trips.style
-                    if 'Cost' in raw_trips.columns:
-                        def format_cost(val):
-                            try: return f"₹{float(val):.2f}"
-                            except: return val
-                        if hasattr(styled_raw_trips, 'format'):
-                            styled_raw_trips = styled_raw_trips.format({'Cost': format_cost})
-                    
-                    st.dataframe(styled_raw_trips, use_container_width=True)
+                    raw_trips_disp = raw_trips.copy()
+                    if 'Cost' in raw_trips_disp.columns:
+                        raw_trips_disp['Cost'] = raw_trips_disp['Cost'].apply(lambda v: f"₹{float(v):.2f}" if pd.notna(v) and str(v).replace('.', '', 1).replace('-', '', 1).isdigit() else v)
+                    render_centered_html_table(raw_trips_disp, height=400)
             else:
                 st.info("👆 Check the 'Select 👁️' box in the table above to view detailed split & raw data.")
 
@@ -8122,7 +8265,7 @@ elif choice == "📝 Today's Call Action Plan":
             period_note='Counts reflect the selected RO filter and saved action plans.'
         )
         
-        st.dataframe(df_ap, use_container_width=True, hide_index=True)
+        render_centered_html_table(df_ap, height=460)
         
         output_ap = io.BytesIO()
         with pd.ExcelWriter(output_ap, engine='xlsxwriter') as writer:
@@ -8224,7 +8367,7 @@ elif choice == "🔐 User & Access Control":
             "Allowed Modules": m_disp
         })
     df_users_overview = pd.DataFrame(user_rows)
-    st.dataframe(style_ui_dataframe(df_users_overview), use_container_width=True, hide_index=True)
+    render_centered_html_table(df_users_overview, height=400)
 
     st.markdown("---")
 
