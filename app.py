@@ -419,7 +419,7 @@ theme_override_css = f"""
 [data-testid="stMetricValue"] {{ color:var(--theme-text) !important; }}
 [data-testid="stTable"] {{ background:{selected_theme['card1']} !important; color:{selected_theme['text']} !important; }}
 [data-testid="stTable"] th {{ background:{selected_theme['card2']} !important; color:{selected_theme['text']} !important; border-color:var(--theme-line) !important; }}
-[data-testid="stTable"] td {{ background:{selected_theme['card1']} !important; color:{selected_theme['text']} !important; border-color:var(--theme-line) !important; }}
+[data-testid="stTable"] td {{ background:{selected_theme['card1']} !important; color:{selected_theme['text']} !important; border-color:var(--theme-line) !important; text-align:center !important; }}
 [data-testid="stDataFrame"],[data-testid="stDataEditor"] {{
     --gdg-bg-cell:{selected_theme['card1']} !important; --gdg-bg-cell-medium:{selected_theme['card2']} !important;
     --gdg-bg-cell-medium-hover:{selected_theme['card2']} !important; --gdg-bg-cell-light:{selected_theme['card1']} !important;
@@ -2435,14 +2435,15 @@ def style_ui_dataframe(df_in):
         'color': selected_theme['text'],
         'border-color': selected_theme['line'],
         'font-size': '12px',
-        'padding': '7px 9px'
+        'padding': '7px 9px',
+        'text-align': 'center'
     }).set_table_styles([
         {'selector': 'th', 'props': [
             ('background-color', selected_theme['card2']), ('color', selected_theme['text']),
             ('font-weight', '700'), ('border-color', selected_theme['line']),
-            ('padding', '8px 9px')
+            ('padding', '8px 9px'), ('text-align', 'center')
         ]},
-        {'selector': 'td', 'props': [('border-color', selected_theme['line'])]},
+        {'selector': 'td', 'props': [('border-color', selected_theme['line']), ('text-align', 'center')]},
     ], overwrite=False)
     for col in df_in.columns:
         if hasattr(styled, 'map'):
@@ -5359,7 +5360,7 @@ def style_ops_window_dataframe(df_in):
 
     def pill_css(tone_key):
         bg, fg, accent = pal[tone_key]
-        return f'background-color: {bg}; color: {fg}; font-weight: 800; border-left: 3px solid {accent};'
+        return f'background-color: {bg}; color: {fg}; font-weight: 800; border-left: 3px solid {accent}; text-align: center;'
 
     def classify_text(val_str):
         s = val_str.lower()
@@ -5379,7 +5380,7 @@ def style_ops_window_dataframe(df_in):
         styles = pd.DataFrame('', index=frame.index, columns=frame.columns)
         for i, idx in enumerate(frame.index):
             base_bg = pal['row_even'] if i % 2 == 0 else pal['row_odd']
-            styles.loc[idx, :] = f'background-color: {base_bg}; color: {pal["text"]};'
+            styles.loc[idx, :] = f'background-color: {base_bg}; color: {pal["text"]}; text-align: center;'
 
         for col in frame.columns:
             c_low = str(col).lower()
@@ -5403,7 +5404,7 @@ def style_ops_window_dataframe(df_in):
                     styles.loc[idx, col] = pill_css(classify_text(str(remark_series.loc[idx])))
             elif col in ('Total Trips', 'Trips', 'Count'):
                 for idx in frame.index:
-                    styles.loc[idx, col] = f'background-color: {pal["num_bg"]}; color: {pal["num_fg"]}; font-weight: 850;'
+                    styles.loc[idx, col] = f'background-color: {pal["num_bg"]}; color: {pal["num_fg"]}; font-weight: 850; text-align: center;'
             elif col in ('Origin RO', 'Legwise'):
                 for idx in frame.index:
                     styles.loc[idx, col] += ' font-weight: 700;'
@@ -5412,12 +5413,14 @@ def style_ops_window_dataframe(df_in):
     return (
         df_in.style
         .apply(style_frame, axis=None)
-        .set_properties(**{'border-color': pal['border'], 'font-size': '13px', 'padding': '8px 10px'})
+        .set_properties(**{'border-color': pal['border'], 'font-size': '13px', 'padding': '8px 10px', 'text-align': 'center'})
         .set_table_styles([
             {'selector': 'th', 'props': [
                 ('background-color', pal['header_bg']), ('color', pal['header_text']),
-                ('font-weight', '800'), ('border-color', pal['border']), ('padding', '9px 10px')
-            ]}
+                ('font-weight', '800'), ('border-color', pal['border']), ('padding', '9px 10px'),
+                ('text-align', 'center')
+            ]},
+            {'selector': 'td', 'props': [('text-align', 'center')]}
         ], overwrite=False)
     )
 
@@ -5429,8 +5432,8 @@ def build_ops_window_excel_bytes(breakdown_df, raw_df, report_title):
         title_fmt = wb.add_format({'bold': True, 'font_size': 15, 'font_color': '#FFFFFF', 'bg_color': '#0F2942', 'valign': 'vcenter'})
         sub_fmt = wb.add_format({'font_color': '#475569', 'italic': True, 'bg_color': '#EDF2F7', 'valign': 'vcenter', 'font_size': 10})
         head_fmt = wb.add_format({'bold': True, 'font_color': '#FFFFFF', 'bg_color': '#1B365D', 'border': 1, 'border_color': '#CBD5E1', 'align': 'center', 'valign': 'vcenter', 'text_wrap': True})
-        even_fmt = wb.add_format({'bg_color': '#FFFFFF', 'font_color': '#1E293B', 'border': 1, 'border_color': '#E2E8F0', 'valign': 'vcenter'})
-        odd_fmt = wb.add_format({'bg_color': '#F8FAFC', 'font_color': '#1E293B', 'border': 1, 'border_color': '#E2E8F0', 'valign': 'vcenter'})
+        even_fmt = wb.add_format({'bg_color': '#FFFFFF', 'font_color': '#1E293B', 'border': 1, 'border_color': '#E2E8F0', 'align': 'center', 'valign': 'vcenter'})
+        odd_fmt = wb.add_format({'bg_color': '#F8FAFC', 'font_color': '#1E293B', 'border': 1, 'border_color': '#E2E8F0', 'align': 'center', 'valign': 'vcenter'})
         num_fmt = wb.add_format({'bg_color': '#EFF6FF', 'font_color': '#1E3A8A', 'bold': True, 'border': 1, 'border_color': '#BFDBFE', 'align': 'center', 'valign': 'vcenter', 'num_format': '#,##0'})
 
         pill_fmts = {
