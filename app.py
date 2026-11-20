@@ -5306,10 +5306,283 @@ def _sort_ops_window_df(df):
         out = out.drop(columns=drop_helpers)
     return out.reset_index(drop=True)
 
+def _ops_window_semantic_palette():
+    """Refined Power BI semantic palette: crisp accents on status cells, clean neutral data rows."""
+    if THEME_IS_LIGHT:
+        return {
+            'row_even': '#ffffff', 'row_odd': '#f8fafc', 'text': '#1e293b', 'border': '#e2e8f0',
+            'header_bg': '#f1f5f9', 'header_text': '#0f172a',
+            'good': ('#ecfdf5', '#065f46', '#10b981'),
+            'soft_bad': ('#fff1f2', '#9f1239', '#fb7185'),
+            'bad': ('#fef2f2', '#991b1b', '#ef4444'),
+            'warn': ('#fffbeb', '#92400e', '#f59e0b'),
+            'recover': ('#f5f3ff', '#5b21b6', '#8b5cf6'),
+            'neutral': ('#f1f5f9', '#475569', '#94a3b8')
+        }
+    return {
+        'row_even': selected_theme['card1'], 'row_odd': selected_theme['card2'],
+        'text': selected_theme['text'], 'border': selected_theme['line'],
+        'header_bg': selected_theme['navy800'], 'header_text': selected_theme['text'],
+        'good': ('rgba(16,185,129,.16)', '#6ee7b7', '#10b981'),
+        'soft_bad': ('rgba(244,63,94,.16)', '#fda4af', '#f43f5e'),
+        'bad': ('rgba(239,68,68,.18)', '#fca5a5', '#ef4444'),
+        'warn': ('rgba(245,158,11,.16)', '#fde68a', '#f59e0b'),
+        'recover': ('rgba(139,92,246,.18)', '#ddd6fe', '#8b5cf6'),
+        'neutral': ('rgba(148,163,184,.12)', selected_theme['muted'], '#64748b')
+    }
+
+def style_ops_window_dataframe(df_in):
+    """Executive Power BI table styling: clean zebra rows + soft pill accents ONLY on status/achievement columns."""
+    if df_in is None or df_in.empty:
+        return df_in
+    pal = _ops_window_semantic_palette()
+
+    def pill_css(tone_key):
+        bg, fg, accent = pal[tone_key]
+        return f'background-color: {bg}; color: {fg}; font-weight: 700; border-left: 3px solid {accent};'
+
+    def classify_text(val_str):
+        s = val_str.lower()
+        if 'ontime dep, ontime arr' in s or 'strong' in s or 'achievement' in s:
+            return 'good'
+        if 'late dep, late arr' in s or 'no dep' in s or 'critical' in s:
+            return 'bad'
+        if 'ontime dep, late arr' in s or 'partial' in s:
+            return 'soft_bad'
+        if 'late dep, ontime arr' in s or 'recovery' in s:
+            return 'recover'
+        if 'in-transit' in s or 'missing' in s or 'watch' in s or 'moderate' in s:
+            return 'warn'
+        return 'neutral'
+
+    def style_frame(frame):
+        styles = pd.DataFrame('', index=frame.index, columns=frame.columns)
+        for i, idx in enumerate(frame.index):
+            base_bg = pal['row_even'] if i % 2 == 0 else pal['row_odd']
+            styles.loc[idx, :] = f'background-color: {base_bg}; color: {pal["text"]};'
+
+        for col in frame.columns:
+            c_low = str(col).lower()
+            if col in ('Remark', 'Health', 'Category'):
+                for idx, val in frame[col].items():
+                    t = classify_text(str(val))
+                    styles.loc[idx, col] = pill_css(t)
+            elif col == 'Ontime Dep, Ontime Arr':
+                for idx, val in frame[col].items():
+                    pct = parse_pct_from_str(str(val))
+                    if pct is None or pct == 0:
+                        styles.loc[idx, col] = pill_css('bad' if pct == 0 else 'neutral')
+                    elif pct >= 70:
+                        styles.loc[idx, col] = pill_css('good')
+                    elif pct >= 40:
+                        styles.loc[idx, col] = pill_css('warn')
+                    else:
+                        styles.loc[idx, col] = pill_css('bad')
+            elif 'remark %' in c_low:
+                remark_series = frame['Remark'] if 'Remark' in frame.columns else pd.Series('', index=frame.index)
+                for idx, val in frame[col].items():
+                    t = classify_text(str(remark_series.loc[idx]))
+                    styles.loc[idx, col] = pill_css(t)
+            elif col == 'Total Trips':
+                for idx in frame.index:
+                    styles.loc[idx, col] += ' font-weight: 700;'
+        return styles
+
+    return (
+        df_in.style
+        .apply(style_frame, axis=None)
+        .set_properties(**{'border-color': pal['border'], 'font-size': '12.5px', 'padding': '7px 10px'})
+        .set_table_styles([
+            {'selector': 'th', 'props': [
+                ('background-color', pal['header_bg']), ('color', pal['header_text']),
+                ('font-weight', '750'), ('border-color', pal['border']), ('padding', '9px 10px')
+            ]}
+        ], overwrite=False)
+    )
+
+def build_ops_window_excel_bytes(remark_summary_df, breakdown_df, raw_df, report_title):
+    """Build a polished 3-sheet executive Excel workbook with muted headers, clean zebra rows, and semantic status pills."""
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+        wb = writer.book
+        title_fmt = wb.add_format({'bold': True, 'font_size': 15, 'font_color': '#FFFFFF', 'bg_color': '#0F2942', 'valign': 'vcenter'})
+        sub_fmt = wb.add_format({'font_color': '#475569', 'italic': True, 'bg_color': '#EDF2F7', 'valign': 'vcenter', 'font_size': 10})
+        head_fmt = wb.add_format({'bold': True, 'font_color': '#FFFFFF', 'bg_color': '#1B365D', 'border': 1, 'border_color': '#CBD5E1', 'align': 'center', 'valign': 'vcenter', 'text_wrap': True})
+        even_fmt = wb.add_format({'bg_color': '#FFFFFF', 'font_color': '#1E293B', 'border': 1, 'border_color': '#E2E8F0', 'valign': 'vcenter'})
+        odd_fmt = wb.add_format({'bg_color': '#F8FAFC', 'font_color': '#1E293B', 'border': 1, 'border_color': '#E2E8F0', 'valign': 'vcenter'})
+        num_even = wb.add_format({'bg_color': '#FFFFFF', 'font_color': '#0F172A', 'bold': True, 'border': 1, 'border_color': '#E2E8F0', 'align': 'center', 'valign': 'vcenter', 'num_format': '#,##0'})
+        num_odd = wb.add_format({'bg_color': '#F8FAFC', 'font_color': '#0F172A', 'bold': True, 'border': 1, 'border_color': '#E2E8F0', 'align': 'center', 'valign': 'vcenter', 'num_format': '#,##0'})
+
+        pill_fmts = {
+            'good': wb.add_format({'bg_color': '#ECFDF5', 'font_color': '#065F46', 'bold': True, 'border': 1, 'border_color': '#A7F3D0', 'align': 'center', 'valign': 'vcenter'}),
+            'bad': wb.add_format({'bg_color': '#FEF2F2', 'font_color': '#991B1B', 'bold': True, 'border': 1, 'border_color': '#FECACA', 'align': 'center', 'valign': 'vcenter'}),
+            'soft_bad': wb.add_format({'bg_color': '#FFF1F2', 'font_color': '#9F1239', 'bold': True, 'border': 1, 'border_color': '#FECDD3', 'align': 'center', 'valign': 'vcenter'}),
+            'warn': wb.add_format({'bg_color': '#FFFBEB', 'font_color': '#92400E', 'bold': True, 'border': 1, 'border_color': '#FDE68A', 'align': 'center', 'valign': 'vcenter'}),
+            'recover': wb.add_format({'bg_color': '#F5F3FF', 'font_color': '#5B21B6', 'bold': True, 'border': 1, 'border_color': '#DDD6FE', 'align': 'center', 'valign': 'vcenter'}),
+            'neutral': wb.add_format({'bg_color': '#F1F5F9', 'font_color': '#475569', 'bold': True, 'border': 1, 'border_color': '#CBD5E1', 'align': 'center', 'valign': 'vcenter'})
+        }
+
+        def tone_for(text):
+            s = str(text).lower()
+            if 'ontime dep, ontime arr' in s or 'strong' in s or 'achievement' in s:
+                return 'good'
+            if 'late dep, late arr' in s or 'no dep' in s or 'critical' in s:
+                return 'bad'
+            if 'ontime dep, late arr' in s or 'partial' in s:
+                return 'soft_bad'
+            if 'late dep, ontime arr' in s or 'recovery' in s:
+                return 'recover'
+            if 'in-transit' in s or 'missing' in s or 'watch' in s or 'moderate' in s:
+                return 'warn'
+            return 'neutral'
+
+        sheet_specs = [
+            ('Remark_Summary', remark_summary_df),
+            ('Route_Leg_Breakdown', breakdown_df),
+            ('Detailed_Raw_Trips', raw_df)
+        ]
+        for s_name, df_src in sheet_specs:
+            frame = df_src.copy() if isinstance(df_src, pd.DataFrame) and not df_src.empty else pd.DataFrame({'Status': ['No matching records.']})
+            frame = frame.reset_index(drop=True)
+            ws = wb.add_worksheet(s_name)
+            writer.sheets[s_name] = ws
+            ncols = max(len(frame.columns), 1)
+            ws.merge_range(0, 0, 0, ncols - 1, report_title, title_fmt)
+            ws.merge_range(1, 0, 1, ncols - 1, f"{s_name.replace('_', ' ')} · Sorted: Origin RO (A→Z), Route Path (A→Z), Legwise (A→Z), Remark (Z→A) · Generated {get_ist_now():%d %b %Y, %I:%M %p} IST", sub_fmt)
+            ws.set_row(0, 28)
+            ws.set_row(1, 20)
+            ws.set_row(2, 28)
+
+            for ci, col in enumerate(frame.columns):
+                ws.write(2, ci, str(col), head_fmt)
+
+            for ri, (_, row) in enumerate(frame.iterrows(), start=3):
+                is_even = (ri - 3) % 2 == 0
+                base_fmt = even_fmt if is_even else odd_fmt
+                row_remark = str(row.get('Remark', ''))
+                for ci, col in enumerate(frame.columns):
+                    val = row[col]
+                    if isinstance(val, np.generic):
+                        val = val.item()
+                    if val is None or (not isinstance(val, (list, dict)) and pd.isna(val)):
+                        val = ''
+                    c_low = str(col).lower()
+                    fmt = base_fmt
+                    if col in ('Remark', 'Health', 'Category'):
+                        fmt = pill_fmts[tone_for(val)]
+                    elif col == 'Ontime Dep, Ontime Arr':
+                        pct = parse_pct_from_str(str(val))
+                        fmt = pill_fmts['good'] if (pct is not None and pct >= 70) else (pill_fmts['warn'] if (pct is not None and pct >= 40) else pill_fmts['bad'])
+                    elif 'remark %' in c_low:
+                        fmt = pill_fmts[tone_for(row_remark)]
+                    elif isinstance(val, (int, float)) and not isinstance(val, bool):
+                        fmt = num_even if is_even else num_odd
+
+                    if isinstance(val, (int, float)) and not isinstance(val, bool):
+                        ws.write_number(ri, ci, val, fmt)
+                    else:
+                        ws.write(ri, ci, str(val), fmt)
+                ws.set_row(ri, 22)
+
+            for ci, col in enumerate(frame.columns):
+                vals = frame[col].fillna('').astype(str).tolist()
+                max_len = max([len(str(col))] + [min(len(v), 52) for v in vals]) + 3
+                ws.set_column(ci, ci, min(max(max_len, 12), 40))
+            ws.autofilter(2, 0, len(frame) + 2, ncols - 1)
+            ws.freeze_panes(3, 0)
+            ws.set_landscape()
+            ws.fit_to_pages(1, 0)
+            ws.repeat_rows(2)
+            ws.set_margins(0.25, 0.25, 0.35, 0.35)
+    return buffer.getvalue()
+
+def render_ops_window_gauges(selected_title, match_cnt, scope_total, ontime_cnt, late_cnt, uniq_routes):
+    """Render 4 Power BI-style hero gauges with BIG percentages and BIG counts."""
+    sel_pct = (match_cnt / scope_total * 100) if scope_total else 0.0
+    ot_pct = (ontime_cnt / scope_total * 100) if scope_total else 0.0
+    late_pct = (late_cnt / scope_total * 100) if scope_total else 0.0
+
+    sel_color = '#10b981' if 'ontime dep, ontime arr' in selected_title.lower() else ('#ef4444' if 'late' in selected_title.lower() or 'no dep' in selected_title.lower() else '#3b82f6')
+    if THEME_IS_LIGHT:
+        card_bg, border_c, track_c, text_c, muted_c = '#ffffff', '#dbe4ee', '#e2e8f0', '#0f172a', '#64748b'
+    else:
+        card_bg, border_c, track_c, text_c, muted_c = selected_theme['card1'], selected_theme['line'], 'rgba(148,163,184,.22)', selected_theme['text'], selected_theme['muted']
+
+    def gauge_svg(title, pct, big_count, sub_text, color, badge):
+        dash = 201.06 * min(100, max(0, pct)) / 100
+        return (
+            f'<div class="pbi-hero-card">'
+            f'<div class="pbi-hero-head"><span class="pbi-hero-title">{html_module.escape(title)}</span>'
+            f'<span class="pbi-hero-badge" style="color:{color};border-color:{color}33;background:{color}16">{html_module.escape(badge)}</span></div>'
+            f'<svg viewBox="0 0 180 106" role="img" aria-label="{pct:.1f} percent">'
+            f'<path d="M 18 90 A 72 72 0 0 1 162 90" fill="none" stroke="{track_c}" stroke-width="13" stroke-linecap="round" pathLength="201.06"/>'
+            f'<path d="M 18 90 A 72 72 0 0 1 162 90" fill="none" stroke="{color}" stroke-width="13" stroke-linecap="round" stroke-dasharray="{dash:.2f} 201.06" pathLength="201.06"/>'
+            f'<text x="90" y="76" text-anchor="middle" font-size="27" font-weight="800" fill="{text_c}">{pct:.1f}%</text>'
+            f'<text x="90" y="98" text-anchor="middle" font-size="13" font-weight="750" fill="{color}">{html_module.escape(big_count)}</text>'
+            f'</svg>'
+            f'<div class="pbi-hero-sub">{html_module.escape(sub_text)}</div>'
+            f'</div>'
+        )
+
+    g1 = gauge_svg(selected_title, sel_pct, f"{match_cnt:,} trips", f"out of {scope_total:,} scoped trips", sel_color, "SELECTED")
+    g2 = gauge_svg("Ontime Dep, Ontime Arr", ot_pct, f"{ontime_cnt:,} trips", "Full E2E Achievement in scope", "#10b981", "ACHIEVEMENT")
+    g3 = gauge_svg("Late Arrivals (Total)", late_pct, f"{late_cnt:,} trips", "Ontime-Late + Late-Late failures", "#ef4444", "FAILURE")
+    g4 = (
+        f'<div class="pbi-hero-card pbi-hero-stat">'
+        f'<div class="pbi-hero-head"><span class="pbi-hero-title">Scope Coverage</span>'
+        f'<span class="pbi-hero-badge" style="color:#0f6cbd;border-color:#0f6cbd33;background:#0f6cbd16">LIVE</span></div>'
+        f'<div class="pbi-stat-big">{match_cnt:,}</div>'
+        f'<div class="pbi-stat-pct" style="color:{sel_color}">{sel_pct:.1f}% of {scope_total:,}</div>'
+        f'<div class="pbi-stat-row"><span>Affected Routes</span><strong>{uniq_routes:,}</strong></div>'
+        f'</div>'
+    )
+
+    html_doc = (
+        f'<!doctype html><html><head><meta charset="utf-8"><style>'
+        f'* {{ box-sizing:border-box; }}'
+        f'body {{ margin:0; padding:2px; font-family:Inter,system-ui,-apple-system,Arial,sans-serif; background:transparent; color:{text_c}; }}'
+        f'.grid {{ display:grid; grid-template-columns:repeat(4,minmax(180px,1fr)); gap:12px; }}'
+        f'.pbi-hero-card {{ background:{card_bg}; border:1px solid {border_c}; border-radius:16px; padding:12px 14px 10px; text-align:center; box-shadow:0 8px 20px rgba(15,23,42,.05); }}'
+        f'.pbi-hero-head {{ display:flex; justify-content:space-between; align-items:center; gap:6px; margin-bottom:2px; }}'
+        f'.pbi-hero-title {{ font-size:12px; font-weight:750; color:{text_c}; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}'
+        f'.pbi-hero-badge {{ font-size:9.5px; font-weight:800; letter-spacing:.05em; padding:2px 7px; border-radius:999px; border:1px solid; flex-shrink:0; }}'
+        f'svg {{ display:block; width:min(100%,182px); height:auto; margin:0 auto; overflow:visible; }}'
+        f'.pbi-hero-sub {{ font-size:11.5px; font-weight:600; color:{muted_c}; margin-top:2px; }}'
+        f'.pbi-hero-stat {{ display:flex; flex-direction:column; justify-content:space-between; text-align:left; }}'
+        f'.pbi-stat-big {{ font-size:36px; font-weight:850; line-height:1.05; color:{text_c}; margin-top:6px; }}'
+        f'.pbi-stat-pct {{ font-size:15px; font-weight:750; margin-top:2px; }}'
+        f'.pbi-stat-row {{ display:flex; justify-content:space-between; align-items:center; border-top:1px solid {border_c}; padding-top:7px; margin-top:8px; font-size:12px; color:{muted_c}; }}'
+        f'.pbi-stat-row strong {{ font-size:14px; color:{text_c}; }}'
+        f'@media(max-width:960px) {{ .grid {{ grid-template-columns:repeat(2,minmax(160px,1fr)); }} }}'
+        f'@media(max-width:520px) {{ .grid {{ grid-template-columns:1fr; }} }}'
+        f'</style></head><body><div class="grid">{g1}{g2}{g3}{g4}</div></body></html>'
+    )
+    st.components.v1.html(html_doc, height=188, scrolling=False)
+
 def render_ops_remark_raw_window(data, query):
-    """Dedicated dynamic Excel/Power BI-style new-window view for Operations Remark-wise raw trips."""
+    """Dedicated full-screen Power BI-style new-window view for Operations Remark-wise raw trips."""
     outcome_label = query.get('ops_outcome', 'Ontime Dep, Ontime Arr') or 'Ontime Dep, Ontime Arr'
     icon_lookup = {label: icon for label, _, icon in OPS_REMARK_OUTCOME_LABELS}
+
+    # Full-width focus mode: hide left sidebar by default with a 1-click toggle button
+    if "ops_win_hide_sidebar" not in st.session_state:
+        st.session_state["ops_win_hide_sidebar"] = True
+
+    def _toggle_ops_win_sidebar():
+        st.session_state["ops_win_hide_sidebar"] = not st.session_state.get("ops_win_hide_sidebar", True)
+
+    if st.session_state.get("ops_win_hide_sidebar", True):
+        st.markdown("""
+        <style>
+        [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"] { display: none !important; }
+        [data-testid="stMainBlockContainer"], .block-container {
+            max-width: 99% !important;
+            padding-left: 1.4rem !important;
+            padding-right: 1.4rem !important;
+            padding-top: 1.1rem !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
 
     df_source = data.get('Legwise_Processed_Data', pd.DataFrame()).copy()
     if df_source.empty:
@@ -5352,8 +5625,6 @@ def render_ops_remark_raw_window(data, query):
         mask = scoped.astype(str).apply(lambda c: c.str.contains(q_search, case=False, regex=False, na=False)).any(axis=1)
         scoped = scoped[mask].copy()
 
-    scope_total = len(scoped)
-
     # Available Remarks sorted Z to A for dynamic filtering
     available_remarks = sorted(
         scoped['_OpsRemarkOutcome'].dropna().astype(str).unique().tolist(),
@@ -5371,10 +5642,16 @@ def render_ops_remark_raw_window(data, query):
         st.session_state["ops_win_vendor"] = "ALL"
         st.session_state["ops_win_search"] = ""
 
+    # Top Header Row with Sidebar Show/Hide Toggle Button
+    hdr_l, hdr_r = st.columns([5.2, 1.1])
+    with hdr_r:
+        toggle_lbl = "☰ Show Left Panel" if st.session_state.get("ops_win_hide_sidebar", True) else "✕ Hide Left Panel"
+        st.button(toggle_lbl, key="ops_win_sidebar_toggle", use_container_width=True, on_click=_toggle_ops_win_sidebar)
+
     # Sticky Dynamic Filter Strip inside the New Window (includes Remark Filter!)
     with st.container():
         st.markdown('<div class="pbi-sticky-anchor"></div>', unsafe_allow_html=True)
-        r1_rem, r1_btn = st.columns([5.2, 0.8])
+        r1_rem, r1_btn = st.columns([5.3, 0.7])
         selected_remarks = r1_rem.multiselect(
             "🎯 Filter Remark (Z → A):",
             options=available_remarks,
@@ -5384,35 +5661,37 @@ def render_ops_remark_raw_window(data, query):
         r1_btn.markdown("<div style='height:1.72rem'></div>", unsafe_allow_html=True)
         r1_btn.button("↺ Reset", key="ops_win_reset_btn", use_container_width=True, on_click=_reset_ops_win_filters)
 
-        active_remarks = selected_remarks if selected_remarks else available_remarks
-        view_df = scoped[scoped['_OpsRemarkOutcome'].isin(active_remarks)].copy()
-
-        fc1, fc2, fc3, fc4 = st.columns([1, 1.3, 1.2, 1.4])
-        ro_opts = ["ALL"] + sorted(view_df['Origin RO'].dropna().astype(str).unique().tolist()) if 'Origin RO' in view_df.columns else ["ALL"]
+        # Base scope BEFORE Remark filter (used for Total Trips, Ontime Achievement %, and Upper All-Remarks Table)
+        base_scope_df = scoped.copy()
+        fc1, fc2, fc3, fc4 = st.columns([1, 1.35, 1.2, 1.45])
+        ro_opts = ["ALL"] + sorted(base_scope_df['Origin RO'].dropna().astype(str).unique().tolist()) if 'Origin RO' in base_scope_df.columns else ["ALL"]
         if st.session_state.get("ops_win_ro") not in ro_opts:
             st.session_state["ops_win_ro"] = "ALL"
         sel_ro_local = fc1.selectbox("Filter RO:", ro_opts, key="ops_win_ro")
-        if sel_ro_local != "ALL" and 'Origin RO' in view_df.columns:
-            view_df = view_df[view_df['Origin RO'].astype(str).eq(sel_ro_local)].copy()
+        if sel_ro_local != "ALL" and 'Origin RO' in base_scope_df.columns:
+            base_scope_df = base_scope_df[base_scope_df['Origin RO'].astype(str).eq(sel_ro_local)].copy()
 
-        rt_opts = ["ALL"] + sorted(view_df['Route Path'].dropna().astype(str).unique().tolist()) if 'Route Path' in view_df.columns else ["ALL"]
+        rt_opts = ["ALL"] + sorted(base_scope_df['Route Path'].dropna().astype(str).unique().tolist()) if 'Route Path' in base_scope_df.columns else ["ALL"]
         if st.session_state.get("ops_win_route") not in rt_opts:
             st.session_state["ops_win_route"] = "ALL"
         sel_rt_local = fc2.selectbox("Filter Route:", rt_opts, key="ops_win_route")
-        if sel_rt_local != "ALL" and 'Route Path' in view_df.columns:
-            view_df = view_df[view_df['Route Path'].astype(str).eq(sel_rt_local)].copy()
+        if sel_rt_local != "ALL" and 'Route Path' in base_scope_df.columns:
+            base_scope_df = base_scope_df[base_scope_df['Route Path'].astype(str).eq(sel_rt_local)].copy()
 
-        ven_opts = ["ALL"] + sorted(view_df['VendorName'].dropna().astype(str).unique().tolist()) if 'VendorName' in view_df.columns else ["ALL"]
+        ven_opts = ["ALL"] + sorted(base_scope_df['VendorName'].dropna().astype(str).unique().tolist()) if 'VendorName' in base_scope_df.columns else ["ALL"]
         if st.session_state.get("ops_win_vendor") not in ven_opts:
             st.session_state["ops_win_vendor"] = "ALL"
         sel_ven_local = fc3.selectbox("Filter Vendor:", ven_opts, key="ops_win_vendor")
-        if sel_ven_local != "ALL" and 'VendorName' in view_df.columns:
-            view_df = view_df[view_df['VendorName'].astype(str).eq(sel_ven_local)].copy()
+        if sel_ven_local != "ALL" and 'VendorName' in base_scope_df.columns:
+            base_scope_df = base_scope_df[base_scope_df['VendorName'].astype(str).eq(sel_ven_local)].copy()
 
         local_search = fc4.text_input("🔍 Search Vehicle, CD No, Branch...", key="ops_win_search").strip()
         if local_search:
-            l_mask = view_df.astype(str).apply(lambda c: c.str.contains(local_search, case=False, regex=False, na=False)).any(axis=1)
-            view_df = view_df[l_mask].copy()
+            l_mask = base_scope_df.astype(str).apply(lambda c: c.str.contains(local_search, case=False, regex=False, na=False)).any(axis=1)
+            base_scope_df = base_scope_df[l_mask].copy()
+
+        active_remarks = selected_remarks if selected_remarks else available_remarks
+        view_df = base_scope_df[base_scope_df['_OpsRemarkOutcome'].isin(active_remarks)].copy()
 
         # Active Scope Chips
         chips = []
@@ -5434,7 +5713,7 @@ def render_ops_remark_raw_window(data, query):
             unsafe_allow_html=True
         )
 
-    # Dynamic Page Title reflecting current Remark selection
+    # Dynamic Page Title
     if len(active_remarks) == 1:
         title_label = active_remarks[0]
         title_icon = icon_lookup.get(title_label, '📄')
@@ -5444,58 +5723,117 @@ def render_ops_remark_raw_window(data, query):
     else:
         title_label = f"{len(active_remarks)} Selected Remarks"
         title_icon = "🎯"
-    st.markdown(f"<h2>{title_icon} {html_module.escape(title_label)} — Raw Trip Data</h2>", unsafe_allow_html=True)
+    with hdr_l:
+        st.markdown(f"<h2 style='margin:0'>{title_icon} {html_module.escape(title_label)} — Executive Drill-Down</h2>", unsafe_allow_html=True)
 
-    # Live Dynamic KPI Strip
+    # Power BI Hero Gauges (BIG % + BIG Count)
+    scope_total = len(base_scope_df)
     match_cnt = len(view_df)
-    share_pct = (match_cnt / scope_total * 100) if scope_total else 0.0
+    ontime_total_cnt = int(base_scope_df['_OpsRemarkOutcome'].eq('Ontime Dep, Ontime Arr').sum()) if not base_scope_df.empty else 0
+    late_total_cnt = int(base_scope_df['_OpsRemarkOutcome'].isin(['Ontime Dep, Late Arr', 'Late Dep, Late Arr']).sum()) if not base_scope_df.empty else 0
     uniq_routes = int(view_df['Route Path'].nunique()) if 'Route Path' in view_df.columns else 0
-    uniq_vendors = int(view_df['VendorName'].nunique()) if 'VendorName' in view_df.columns else 0
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Matching Trips", f"{match_cnt:,}")
-    k2.metric("Share of Filtered Scope", f"{share_pct:.1f}%", delta=f"out of {scope_total:,} trips", delta_color="off")
-    k3.metric("Affected Routes", f"{uniq_routes:,}")
-    k4.metric("Vendors Involved", f"{uniq_vendors:,}")
+
+    render_ops_window_gauges(title_label, match_cnt, scope_total, ontime_total_cnt, late_total_cnt, uniq_routes)
+
+    # Upper Compact All-Remarks Summary Table for the Current Selected Filters
+    remark_summary_df = pd.DataFrame()
+    if not base_scope_df.empty:
+        st.markdown("### 📋 All Remarks Summary (Selected Scope)")
+        rem_counts = base_scope_df['_OpsRemarkOutcome'].value_counts()
+        rem_rows = []
+        for rem_name in sorted(rem_counts.index.tolist(), reverse=True):
+            cnt = int(rem_counts[rem_name])
+            pct_val = (cnt / scope_total * 100.0) if scope_total else 0.0
+            cat_label = (
+                '✅ Achievement' if rem_name == 'Ontime Dep, Ontime Arr'
+                else ('🔴 Critical Failure' if rem_name in ('Late Dep, Late Arr', 'No Departure')
+                      else ('🌸 Partial Failure' if rem_name == 'Ontime Dep, Late Arr'
+                            else ('🟣 Recovery' if rem_name == 'Late Dep, Ontime Arr' else '🟡 Watch')))
+            )
+            rem_rows.append({
+                'Remark': rem_name,
+                'Category': cat_label,
+                'Count': cnt,
+                'Share % (Count)': f"{pct_val:.1f}% ({cnt:,})",
+                'Share %': round(pct_val, 1)
+            })
+        remark_summary_df = pd.DataFrame(rem_rows)
+        rem_col_cfg = {
+            'Remark': st.column_config.TextColumn('Remark (Z → A)', width='large'),
+            'Category': st.column_config.TextColumn('Classification', width='medium'),
+            'Count': st.column_config.NumberColumn('Trips', width='small', format='%d'),
+            'Share % (Count)': st.column_config.TextColumn('% (Count)', width='medium'),
+            'Share %': st.column_config.ProgressColumn('Share Bar', width='medium', format='%.1f%%', min_value=0.0, max_value=100.0)
+        }
+        st.dataframe(
+            style_ops_window_dataframe(remark_summary_df),
+            column_config=rem_col_cfg,
+            use_container_width=True,
+            hide_index=True,
+            height=min(300, 44 + len(remark_summary_df) * 36)
+        )
 
     if view_df.empty:
         st.info("No raw trips match the selected filters.")
         return
 
     # =========================================================
-    # 1. ROUTE & LEG BREAKDOWN (Excel / Power BI Styled Table)
+    # 1. ROUTE & LEG BREAKDOWN (Full-Width, Total Trips + Ontime Achievement + Remark % (Count), NO Vendor)
     # Sorted: Origin RO (A->Z), Route Path (A->Z), Legwise (A->Z), Remark (Z->A)
     # =========================================================
-    pivot_cols = [c for c in ['Origin RO', 'Route Path', 'Legwise', 'Legs', 'Remark'] if c in view_df.columns]
+    leg_keys = [c for c in ['Origin RO', 'Route Path', 'Legwise', 'Legs'] if c in view_df.columns]
+    pivot_cols = leg_keys + (['Remark'] if 'Remark' in view_df.columns else [])
     narrowed_df = view_df.copy()
-    if pivot_cols and not view_df.empty:
+
+    if leg_keys and not view_df.empty:
         st.markdown("### 📊 Route & Leg Breakdown (Click a row to narrow raw trips)")
-        st.caption("Sorted automatically: **Origin RO (A→Z) · Route Path (A→Z) · Legwise (A→Z) · Remark (Z→A)**")
+        st.caption("Sorted automatically: **Origin RO (A→Z) · Route Path (A→Z) · Legwise (A→Z) · Remark (Z→A)** · Shows **Total Trips**, **Ontime Dep, Ontime Arr % (Count)** & **Selected Remark % (Count)**.")
 
-        agg_spec = {'Trips': ('_OpsRemarkOutcome', 'size')}
-        if 'VendorName' in view_df.columns:
-            agg_spec['Vendors'] = ('VendorName', 'nunique')
+        # Compute Total Trips and Ontime Dep, Ontime Arr per Route+Leg from base_scope_df
+        leg_totals = base_scope_df.groupby(leg_keys, dropna=False).agg(
+            Total_Trips=('_OpsRemarkOutcome', 'size'),
+            OO_Trips=('_OpsRemarkOutcome', lambda s: int((s == 'Ontime Dep, Ontime Arr').sum()))
+        ).reset_index()
 
-        pivot_df = view_df.groupby(pivot_cols, dropna=False).agg(**agg_spec).reset_index()
-        pivot_df['Share %'] = np.where(match_cnt > 0, (pivot_df['Trips'] / match_cnt) * 100.0, 0.0).round(1)
-        pivot_df = _sort_ops_window_df(pivot_df)
+        # Compute Matching Trips per Route+Leg+Remark from view_df
+        pivot_df = view_df.groupby(pivot_cols, dropna=False).size().reset_index(name='_Match_Cnt')
+        pivot_df = pivot_df.merge(leg_totals, on=leg_keys, how='left')
+        pivot_df['Total_Trips'] = pivot_df['Total_Trips'].fillna(pivot_df['_Match_Cnt']).astype(int)
+        pivot_df['OO_Trips'] = pivot_df['OO_Trips'].fillna(0).astype(int)
+
+        pivot_df['Ontime Dep, Ontime Arr'] = [
+            format_pct_cnt(oo, tot) for oo, tot in zip(pivot_df['OO_Trips'], pivot_df['Total_Trips'])
+        ]
+        pivot_df['Remark % (Count)'] = [
+            format_pct_cnt(mc, tot) for mc, tot in zip(pivot_df['_Match_Cnt'], pivot_df['Total_Trips'])
+        ]
+        pivot_df['Health'] = [
+            '✅ Strong' if (tot > 0 and (oo / tot) >= 0.70)
+            else ('🟡 Moderate' if (tot > 0 and (oo / tot) >= 0.40) else '🔴 Critical')
+            for oo, tot in zip(pivot_df['OO_Trips'], pivot_df['Total_Trips'])
+        ]
+        pivot_df = pivot_df.rename(columns={'Total_Trips': 'Total Trips'})
+        final_piv_cols = leg_keys + ['Total Trips', 'Ontime Dep, Ontime Arr'] + (['Remark'] if 'Remark' in pivot_df.columns else []) + ['Remark % (Count)', 'Health']
+        pivot_df = _sort_ops_window_df(pivot_df[final_piv_cols])
 
         pivot_col_config = {
             'Origin RO': st.column_config.TextColumn('Origin RO', width='small'),
             'Route Path': st.column_config.TextColumn('Route Path', width='large'),
             'Legwise': st.column_config.TextColumn('Legwise', width='small'),
             'Legs': st.column_config.TextColumn('Legs', width='medium'),
+            'Total Trips': st.column_config.NumberColumn('Total Trips', width='small', format='%d'),
+            'Ontime Dep, Ontime Arr': st.column_config.TextColumn('Ontime Dep, Ontime Arr', width='medium'),
             'Remark': st.column_config.TextColumn('Remark', width='medium'),
-            'Trips': st.column_config.NumberColumn('Trips', width='small', format='%d'),
-            'Vendors': st.column_config.NumberColumn('Vendors', width='small', format='%d'),
-            'Share %': st.column_config.ProgressColumn('Share %', width='small', format='%.1f%%', min_value=0.0, max_value=100.0)
+            'Remark % (Count)': st.column_config.TextColumn('Remark % (Count)', width='medium'),
+            'Health': st.column_config.TextColumn('Health', width='small')
         }
         try:
             piv_event = st.dataframe(
-                style_ui_dataframe(pivot_df),
+                style_ops_window_dataframe(pivot_df),
                 column_config=pivot_col_config,
                 use_container_width=True,
                 hide_index=True,
-                height=300,
+                height=460,
                 on_select='rerun',
                 selection_mode='single-row',
                 key='ops_win_pivot'
@@ -5515,17 +5853,17 @@ def render_ops_remark_raw_window(data, query):
                     )
         except TypeError:
             st.dataframe(
-                style_ui_dataframe(pivot_df),
+                style_ops_window_dataframe(pivot_df),
                 column_config=pivot_col_config,
                 use_container_width=True,
                 hide_index=True,
-                height=300
+                height=460
             )
     else:
         pivot_df = pd.DataFrame()
 
     # =========================================================
-    # 2. DETAILED RAW TRIP RECORDS (Excel / Power BI Styled Table)
+    # 2. DETAILED RAW TRIP RECORDS (Full-Width, Executive Styled Table)
     # Sorted: Origin RO (A->Z), Route Path (A->Z), Legwise (A->Z), Remark (Z->A)
     # =========================================================
     raw_clean = clean_dataframe_for_excel(
@@ -5533,7 +5871,6 @@ def render_ops_remark_raw_window(data, query):
         sheet_type="ops_raw",
         preserve_order=True
     )
-    # Put hierarchy columns first for a clean Excel-table layout
     excel_lead_cols = [
         'Origin RO', 'Route Path', 'Legwise', 'Legs', 'Remark',
         'MCD_StartDate', 'Scheduled Departure Time', 'Actual Departure Time',
@@ -5566,28 +5903,23 @@ def render_ops_remark_raw_window(data, query):
         'MasterCDNo': st.column_config.TextColumn('Master CD No', width='medium'),
     }
     st.dataframe(
-        style_ui_dataframe(raw_clean),
+        style_ops_window_dataframe(raw_clean),
         column_config=raw_col_config,
         use_container_width=True,
         hide_index=True,
-        height=500
+        height=620
     )
 
-    # Styled Excel Export preserving the exact Origin RO (A->Z), Route Path (A->Z), Legwise (A->Z), Remark (Z->A) order
-    dl_buf = io.BytesIO()
-    with pd.ExcelWriter(dl_buf, engine='xlsxwriter') as writer:
-        if not pivot_df.empty:
-            pivot_export = pivot_df.copy()
-            if 'Share %' in pivot_export.columns:
-                pivot_export['Share %'] = pivot_export['Share %'].map(lambda v: f"{float(v):.1f}%" if pd.notna(v) else "0.0%")
-            write_styled_sheet_to_excel(writer, pivot_export, 'Route_Leg_Breakdown', sheet_type="generic", preserve_order=True)
-        write_styled_sheet_to_excel(writer, raw_clean, 'Detailed_Raw_Trips', sheet_type="ops_raw", preserve_order=True)
+    # Polished 3-Sheet Executive Excel Export (Remark Summary + Route Leg Breakdown + Detailed Raw Trips)
+    rem_export = remark_summary_df.drop(columns=['Share %'], errors='ignore') if not remark_summary_df.empty else pd.DataFrame()
+    excel_title = f"Trackon Operations Drill-Down · {title_label}"
+    excel_bytes = build_ops_window_excel_bytes(rem_export, pivot_df, raw_clean, excel_title)
 
     safe_name = re.sub(r'[^A-Za-z0-9_-]+', '_', title_label).strip('_') or 'Remark_Raw'
     st.download_button(
-        f"📥 Download {title_label} Report (Breakdown + Raw Trips Excel)",
-        data=dl_buf.getvalue(),
-        file_name=f"Ops_{safe_name}_Raw_Data_{get_ist_now():%d_%b_%Y}.xlsx",
+        f"📥 Download {title_label} Executive Report (3-Sheet Formatted Excel)",
+        data=excel_bytes,
+        file_name=f"Ops_{safe_name}_Executive_Report_{get_ist_now():%d_%b_%Y}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary",
         use_container_width=True,
