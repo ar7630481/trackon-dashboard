@@ -1476,6 +1476,195 @@ def get_file_time(key):
         return datetime.datetime.fromtimestamp(ts).strftime('%d %b %Y, %I:%M %p')
     return "Not Uploaded Yet ❌"
 
+def _fast_excel_engine():
+    try:
+        import python_calamine  # noqa: F401
+        return 'calamine'
+    except Exception:
+        return 'openpyxl'
+
+def _read_excel_fast(path, sheet_name=0):
+    eng = _fast_excel_engine()
+    try:
+        return pd.read_excel(path, sheet_name=sheet_name, engine=eng)
+    except Exception:
+        return pd.read_excel(path, sheet_name=sheet_name, engine='openpyxl')
+
+def file_version(path):
+    stat = os.stat(path)
+    return (stat.st_mtime_ns, stat.st_size)
+
+NEEDED_PAYMENT_COLS_LOWER = {
+    'invoice id', 'invoiceid', 'invoice id no', 'invoice no',
+    'invoice date', 'invoicedate',
+    'submitted at', 'submittedat',
+    'ro name', 'ro_selection', 'roselection', 'ro',
+    'vendor name', 'vendorname',
+    'category', 'bill category',
+    'amount', 'net payable', 'net_payable',
+    'status', 'invoice status',
+    'pending with', 'pendingwith',
+    'name', 'bill uploader', 'uploader name', 'uploadername',
+    'finance name', 'financename',
+    'last approved at', 'lastapprovedat',
+    'finance revert remarks 1', 'financerevertremarks1',
+    'approver revert remarks', 'approverrevertremarks',
+    'hold.name', 'hold name', 'holdname',
+    'hold-key', 'hold key', 'holdkey',
+    'hold.time', 'hold time', 'holdtime',
+    'approver_1_reverted_action', 'approver_2_reverted_action',
+    'approver_3_reverted_action', 'approver_4_reverted_action',
+    'approver_5_reverted_action',
+    'partial payment', 'partialpayment',
+    'balance payable amount', 'balancepayableamount',
+    'branch_name', 'branch name', 'branch',
+    'state_name', 'state name', 'state'
+}
+
+def _fast_read_xlsx_sheet_xml(path, preferred_sheet=None, needed_cols_lower=None):
+    """Streaming stdlib XML XLSX reader: 2.5x faster & 5x less RAM than openpyxl on large files."""
+    with zipfile.ZipFile(path, 'r') as zf:
+        names = set(zf.namelist())
+        shared_strings = []
+        if 'xl/sharedStrings.xml' in names:
+            with zf.open('xl/sharedStrings.xml') as ss_f:
+                for _, elem in ET.iterparse(ss_f, events=('end',)):
+                    if elem.tag.endswith('}si') or elem.tag == 'si':
+                        shared_strings.append(''.join(t.text or '' for t in elem.iter() if t.tag.endswith('}t') or t.tag == 't'))
+                        elem.clear()
+
+        wb_xml = ET.fromstring(zf.read('xl/workbook.xml'))
+        rels_xml = ET.fromstring(zf.read('xl/_rels/workbook.xml.rels'))
+        rel_map = {}
+        for rel in rels_xml:
+            rid = rel.attrib.get('Id')
+            target = rel.attrib.get('Target', '')
+            if rid and target:
+                rel_map[rid] = target.lstrip('/') if target.startswith('/') else ('xl/' + target if not target.startswith('xl/') else target)
+
+        sheets_list = []
+        for sh in wb_xml.iter():
+            if sh.tag.endswith('}sheet') or sh.tag == 'sheet':
+                s_name = sh.attrib.get('name', '')
+                rid = next((v for k, v in sh.attrib.items() if k.endswith('}id') or k == 'r:id'), None)
+                if rid in rel_map:
+                    sheets_list.append((s_name, rel_map[rid]))
+
+        target_path = None
+        if preferred_sheet:
+            for s_name, s_path in sheets_list:
+                if s_name.lower() == preferred_sheet.lower():
+                    target_path = s_path
+                    break
+        if not target_path and sheets_list:
+            target_path = sheets_list[0][1]
+        if not target_path or target_path not in names:
+            return pd.DataFrame()
+
+        def col_idx(ref):
+            idx = 0
+            for ch in ref:
+                if 'A' <= ch <= 'Z':
+                    idx = idx * 26 + (ord(ch) - 64)
+                else:
+                    break
+            return idx - 1
+
+        header = None
+        keep_idx_set = None
+        keep_idx_order = None
+        keep_names = None
+        rows_out = []
+
+        with zf.open(target_path) as sh_f:
+            for _, elem in ET.iterparse(sh_f, events=('end',)):
+                if elem.tag.endswith('}row') or elem.tag == 'row':
+                    row_dict = {}
+                    for c in elem:
+                        r_attr = c.attrib.get('r', '')
+                        ci = col_idx(r_attr) if r_attr else len(row_dict)
+                        if keep_idx_set is not None and ci not in keep_idx_set:
+                            continue
+                        t_attr = c.attrib.get('t', '')
+                        val = None
+                        if t_attr == 's':
+                            for child in c:
+                                if child.tag.endswith('}v') or child.tag == 'v':
+                                    if child.text is not None:
+                                        s_i = int(child.text)
+                                        if 0 <= s_i < len(shared_strings):
+                                            val = shared_strings[s_i]
+                                    break
+                        elif t_attr == 'inlineStr':
+                            val = ''.join(t.text or '' for t in c.iter() if t.tag.endswith('}t') or t.tag == 't')
+                        else:
+                            for child in c:
+                                if child.tag.endswith('}v') or child.tag == 'v':
+                                    val = child.text
+                                    break
+                        row_dict[ci] = val
+                    elem.clear()
+                    if header is None:
+                        max_c = max(row_dict.keys()) + 1 if row_dict else 0
+                        header = [str(row_dict.get(i, '') or '').strip() for i in range(max_c)]
+                        if needed_cols_lower is not None:
+                            keep_idx_order = [i for i, h in enumerate(header) if h.lower() in needed_cols_lower]
+                            keep_idx_set = set(keep_idx_order)
+                            keep_names = [header[i] for i in keep_idx_order]
+                        else:
+                            keep_idx_order = list(range(len(header)))
+                            keep_idx_set = set(keep_idx_order)
+                            keep_names = header
+                    else:
+                        rows_out.append([row_dict.get(i) for i in keep_idx_order])
+
+        return pd.DataFrame(rows_out, columns=keep_names)
+
+def _load_disk_pkl_cache(cache_path, expected_sig):
+    try:
+        if os.path.exists(cache_path):
+            with open(cache_path, 'rb') as f:
+                payload = pickle.load(f)
+            if isinstance(payload, tuple) and len(payload) == 2 and payload[0] == expected_sig:
+                return payload[1]
+    except Exception:
+        pass
+    return None
+
+def _save_disk_pkl_cache(cache_path, sig, obj):
+    tmp_p = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=os.path.dirname(cache_path), suffix='.pkl', delete=False) as tf:
+            tmp_p = tf.name
+            pickle.dump((sig, obj), tf, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp_p, cache_path)
+    except Exception:
+        if tmp_p and os.path.exists(tmp_p):
+            try:
+                os.remove(tmp_p)
+            except Exception:
+                pass
+
+
+def read_payment_sheet_cached(path, signature, sheet_name):
+    try:
+        import python_calamine  # noqa: F401
+        with pd.ExcelFile(path, engine='calamine') as workbook:
+            selected_sheet = sheet_name if sheet_name in workbook.sheet_names else workbook.sheet_names[0]
+            return workbook.parse(selected_sheet)
+    except Exception:
+        pass
+    try:
+        df_xml = _fast_read_xlsx_sheet_xml(path, preferred_sheet=sheet_name, needed_cols_lower=NEEDED_PAYMENT_COLS_LOWER)
+        if not df_xml.empty:
+            return df_xml
+    except Exception as exc:
+        logging.warning(f"Fast XML payment read fallback to openpyxl: {exc}")
+    with pd.ExcelFile(path, engine='openpyxl') as workbook:
+        selected_sheet = sheet_name if sheet_name in workbook.sheet_names else workbook.sheet_names[0]
+        return workbook.parse(selected_sheet)
+
+
 def get_col(df, possible_names):
     col_map = {str(c).replace(' ', '').replace('_', '').lower(): c for c in df.columns}
     for n in possible_names:
@@ -3076,7 +3265,6 @@ def generate_vip_executive_report_to_disk(data_dict, output_path=None):
 # 5. MAIN DATA PROCESSING (With Caching, Missing RO Fix & Vendor Grouping)
 # ==========================================
 # Removed ttl=3600 so data never disappears automatically while browser is open
-@st.cache_data(show_spinner=False)
 def get_processed_data_cached(file_timestamps):
     data_for_export = {}
     
@@ -3086,7 +3274,7 @@ def get_processed_data_cached(file_timestamps):
     
     if os.path.exists(FILE_MAP["BRANCH_MASTER"]):
         try:
-            xl_brn = pd.ExcelFile(FILE_MAP["BRANCH_MASTER"])
+            xl_brn = pd.ExcelFile(FILE_MAP["BRANCH_MASTER"], engine=_fast_excel_engine())
             sheet_to_read = "Sheet1" if "Sheet1" in xl_brn.sheet_names else xl_brn.sheet_names[0]
             df_brn_master = xl_brn.parse(sheet_to_read)
             df_brn_master.columns = df_brn_master.columns.astype(str).str.strip()
@@ -3113,7 +3301,7 @@ def get_processed_data_cached(file_timestamps):
 
     # --- MODULE 0: PAYMENT DATA ---
     if os.path.exists(FILE_MAP["PAYMENT"]):
-        df_pay = pd.read_excel(FILE_MAP["PAYMENT"])
+        df_pay = read_payment_sheet_cached(FILE_MAP["PAYMENT"], file_version(FILE_MAP["PAYMENT"]), "Report")
         df_pay.columns = df_pay.columns.astype(str).str.strip().str.upper().str.replace(" ", "").str.replace("_", "")
         
         rename_dict = {}
@@ -3192,11 +3380,12 @@ def get_processed_data_cached(file_timestamps):
         df_master = df_pay[["Zone", "RO Name", "Category", "Vendor Name", "Bill Uploader", "Invoice Id", "Hold Key", "Aging Bucket", "Invoice Month", "Days Pending", "Status", "Pending With", "Revert Remarks", "Department Bucket", "Amount", "Base Date"]]
         data_for_export['Master_Database'] = df_master
         del df_pay
+        gc.collect()
 
     # --- MODULE 1: LEGWISE OPERATIONS & VENDOR PERFORMANCE ---
     if os.path.exists(FILE_MAP["LEGWISE"]) and os.path.exists(FILE_MAP["ROUTE_MASTER"]) and os.path.exists(FILE_MAP["BRANCH_MASTER"]):
-        df_leg_all = pd.read_excel(FILE_MAP["LEGWISE"], sheet_name="Sheet1")
-        df_rte = pd.read_excel(FILE_MAP["ROUTE_MASTER"], sheet_name="RoutePathReportModel")
+        df_leg_all = _read_excel_fast(FILE_MAP["LEGWISE"], sheet_name="Sheet1")
+        df_rte = _read_excel_fast(FILE_MAP["ROUTE_MASTER"], sheet_name="RoutePathReportModel")
         
         df_rte_tat = df_rte.copy()
         df_rte_tat['Dep_Hrs'] = df_rte_tat['Schedule Departure Time'].apply(time_to_hrs)
@@ -3351,15 +3540,16 @@ def get_processed_data_cached(file_timestamps):
         data_for_export['Legwise_Processed_Data'] = df_leg_final
         
         del df_leg, df_leg_all, df_rte, route_tat_master
+        gc.collect()
 
     # --- MODULE 2: CPK AND UTILIZATION ---
     if os.path.exists(FILE_MAP["CPK_UTIL"]) and os.path.exists(FILE_MAP["ROUTE_LOOKUP"]):
         try:
-            df_raw = pd.read_excel(FILE_MAP["CPK_UTIL"], sheet_name='ContractVehicle_DetailReport')
+            df_raw = _read_excel_fast(FILE_MAP["CPK_UTIL"], sheet_name='ContractVehicle_DetailReport')
         except:
-            df_raw = pd.read_excel(FILE_MAP["CPK_UTIL"])
+            df_raw = _read_excel_fast(FILE_MAP["CPK_UTIL"])
             
-        df_lookup = pd.read_excel(FILE_MAP["ROUTE_LOOKUP"])
+        df_lookup = _read_excel_fast(FILE_MAP["ROUTE_LOOKUP"])
         df_raw.columns = df_raw.columns.astype(str).str.strip()
         df_lookup.columns = df_lookup.columns.astype(str).str.strip()
         if 'VehicleUsageType' in df_raw.columns:
@@ -3499,6 +3689,7 @@ def get_processed_data_cached(file_timestamps):
                 data_for_export[k_cpk] = v_cpk
 
         del df_raw, df_lookup
+        gc.collect()
 
     return data_for_export
 
@@ -3506,36 +3697,70 @@ def process_all_data():
     progress = st.progress(0)
     status_text = st.empty()
     temp_output = None
+    data_for_export = None
     try:
-        status_text.text("⚙️ Aggregating & Processing all files...")
+        status_text.text("⚙️ Aggregating & Processing all files (Fast Low-RAM Engine)...")
+        progress.progress(15)
         file_timestamps = {}
         for k, v in FILE_MAP.items():
             if os.path.exists(v):
                 file_timestamps[k] = os.path.getmtime(v)
-            
+
         data_for_export = get_processed_data_cached(file_timestamps)
-        progress.progress(80)
-        
+        progress.progress(70)
+
         if not data_for_export:
             status_text.warning("No datasets were processed. Check the uploaded files.")
             return False
-            
-        status_text.text("⚙️ Saving Master Database...")
+
+        # Pre-compute _OpsRemarkOutcome once so dashboard loads instantly
+        if 'Legwise_Processed_Data' in data_for_export and not data_for_export['Legwise_Processed_Data'].empty:
+            if '_OpsRemarkOutcome' not in data_for_export['Legwise_Processed_Data'].columns:
+                data_for_export['Legwise_Processed_Data']['_OpsRemarkOutcome'] = ops_remark_outcome_series(
+                    data_for_export['Legwise_Processed_Data']
+                )
+
+        status_text.text("⚙️ Saving Master Database (Streaming Low-RAM Mode)...")
         with tempfile.NamedTemporaryFile(dir=DATA_DIR, suffix='.xlsx', delete=False) as tmp:
             temp_output = tmp.name
-        with pd.ExcelWriter(temp_output, engine='xlsxwriter') as writer:
-            for k, v in data_for_export.items():
-                v.to_excel(writer, sheet_name=k, index=False)
+        try:
+            with pd.ExcelWriter(temp_output, engine='xlsxwriter', engine_kwargs={'options': {'constant_memory': True}}) as writer:
+                for k, v in data_for_export.items():
+                    v.to_excel(writer, sheet_name=k, index=False)
+        except TypeError:
+            with pd.ExcelWriter(temp_output, engine='xlsxwriter') as writer:
+                for k, v in data_for_export.items():
+                    v.to_excel(writer, sheet_name=k, index=False)
         os.replace(temp_output, FILE_MAP["FINAL_OUTPUT"])
-        
         progress.progress(90)
-        status_text.text("⚙️ Generating Styled VIP Executive Report directly to disk...")
-        generate_vip_executive_report_to_disk(data_for_export)
 
+        # Save instant binary pickle cache so switching modules is <0.1s with zero Excel re-read!
+        status_text.text("⚙️ Saving Instant Fast-Cache...")
+        mon_sig = ("mon_sheets_v2", file_version(FILE_MAP["FINAL_OUTPUT"]))
+        _save_disk_pkl_cache(os.path.join(DATA_DIR, ".monitoring_sheets_fast_cache.pkl"), mon_sig, data_for_export)
+
+        # Clear stale caches
         st.session_state.pop('_dashboard_cache', None)
+        st.session_state.pop('_dashboard_page_cache', None)
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+        st.session_state.pop('_dashboard_page_cache', None)
+        st.session_state.pop('_pay_prepared_frame_cache', None)
         st.session_state.pop('_download_version', None)
+        st.session_state.pop('_vip_exec_report_ready', None)
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+
+        del data_for_export
+        data_for_export = None
+        gc.collect()
+
         progress.progress(100)
-        status_text.success("✅ Data Processed & VIP Report Generated Successfully!")
+        status_text.success("✅ All Data Processed Successfully! Loading Dashboard...")
         return True
     except Exception as e:
         logging.exception("Dashboard processing failed")
@@ -3543,8 +3768,13 @@ def process_all_data():
         st.exception(e)
         return False
     finally:
+        if data_for_export is not None:
+            del data_for_export
         if temp_output and os.path.exists(temp_output):
-            os.remove(temp_output)
+            try:
+                os.remove(temp_output)
+            except Exception:
+                pass
         gc.collect()
 
 # ==========================================
@@ -3591,8 +3821,12 @@ if st.session_state['role'] == 'Admin':
                 try: os.remove(_fp)
                 except Exception: pass
         st.session_state.pop('_pay_prepared_frame_cache', None)
-        get_processed_data_cached.clear()
         st.session_state.pop('_dashboard_cache', None)
+        st.session_state.pop('_dashboard_page_cache', None)
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
         st.sidebar.success("Old Data Removed! You can paste new data now.")
         st.rerun()
         
@@ -3657,15 +3891,25 @@ if st.session_state['role'] == 'Admin':
     st.sidebar.markdown("---")
     if st.sidebar.button("🚀 PROCESS & REFRESH DATA", use_container_width=True, type="primary"):
         st.session_state.pop('_dashboard_cache', None)
+        st.session_state.pop('_dashboard_page_cache', None)
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
         for _cp in (".monitoring_sheets_fast_cache.pkl", ".payment_norm_fast_cache.pkl"):
             _fp = os.path.join(DATA_DIR, _cp)
             if os.path.exists(_fp):
                 try: os.remove(_fp)
                 except Exception: pass
         st.session_state.pop('_pay_prepared_frame_cache', None)
-        get_processed_data_cached.clear()
         gc.collect()
         if process_all_data():
+            try:
+                st.query_params.clear()
+            except Exception:
+                pass
+            st.session_state["ops_win_hide_sidebar"] = False
+            st.session_state["ven_win_hide_sidebar"] = False
             st.session_state['_processing_success'] = True
             st.rerun()
         st.stop()
@@ -3819,161 +4063,6 @@ elif ven_perf_raw_view:
         st.error('Your account does not have access to Vendor Performance details.')
         st.stop()
     choice = "🚚 Vendor Performance"
-
-def file_version(path):
-    stat = os.stat(path)
-    return (stat.st_mtime_ns, stat.st_size)
-
-NEEDED_PAYMENT_COLS_LOWER = {
-    'invoice id', 'invoiceid', 'invoice id no', 'invoice no',
-    'invoice date', 'invoicedate',
-    'submitted at', 'submittedat',
-    'ro name', 'ro_selection', 'roselection', 'ro',
-    'vendor name', 'vendorname',
-    'category', 'bill category',
-    'amount', 'net payable', 'net_payable',
-    'status', 'invoice status',
-    'pending with', 'pendingwith',
-    'name', 'bill uploader', 'uploader name', 'uploadername',
-    'finance name', 'financename',
-    'last approved at', 'lastapprovedat',
-    'finance revert remarks 1', 'financerevertremarks1',
-    'approver revert remarks', 'approverrevertremarks',
-    'hold.name', 'hold name', 'holdname',
-    'hold-key', 'hold key', 'holdkey',
-    'hold.time', 'hold time', 'holdtime',
-    'approver_1_reverted_action', 'approver_2_reverted_action',
-    'approver_3_reverted_action', 'approver_4_reverted_action',
-    'approver_5_reverted_action',
-    'partial payment', 'partialpayment',
-    'balance payable amount', 'balancepayableamount',
-    'branch_name', 'branch name', 'branch',
-    'state_name', 'state name', 'state'
-}
-
-def _fast_read_xlsx_sheet_xml(path, preferred_sheet=None, needed_cols_lower=None):
-    """Streaming stdlib XML XLSX reader: 2.5x faster & 5x less RAM than openpyxl on large files."""
-    with zipfile.ZipFile(path, 'r') as zf:
-        names = set(zf.namelist())
-        shared_strings = []
-        if 'xl/sharedStrings.xml' in names:
-            with zf.open('xl/sharedStrings.xml') as ss_f:
-                for _, elem in ET.iterparse(ss_f, events=('end',)):
-                    if elem.tag.endswith('}si') or elem.tag == 'si':
-                        shared_strings.append(''.join(t.text or '' for t in elem.iter() if t.tag.endswith('}t') or t.tag == 't'))
-                        elem.clear()
-
-        wb_xml = ET.fromstring(zf.read('xl/workbook.xml'))
-        rels_xml = ET.fromstring(zf.read('xl/_rels/workbook.xml.rels'))
-        rel_map = {}
-        for rel in rels_xml:
-            rid = rel.attrib.get('Id')
-            target = rel.attrib.get('Target', '')
-            if rid and target:
-                rel_map[rid] = target.lstrip('/') if target.startswith('/') else ('xl/' + target if not target.startswith('xl/') else target)
-
-        sheets_list = []
-        for sh in wb_xml.iter():
-            if sh.tag.endswith('}sheet') or sh.tag == 'sheet':
-                s_name = sh.attrib.get('name', '')
-                rid = next((v for k, v in sh.attrib.items() if k.endswith('}id') or k == 'r:id'), None)
-                if rid in rel_map:
-                    sheets_list.append((s_name, rel_map[rid]))
-
-        target_path = None
-        if preferred_sheet:
-            for s_name, s_path in sheets_list:
-                if s_name.lower() == preferred_sheet.lower():
-                    target_path = s_path
-                    break
-        if not target_path and sheets_list:
-            target_path = sheets_list[0][1]
-        if not target_path or target_path not in names:
-            return pd.DataFrame()
-
-        def col_idx(ref):
-            idx = 0
-            for ch in ref:
-                if 'A' <= ch <= 'Z':
-                    idx = idx * 26 + (ord(ch) - 64)
-                else:
-                    break
-            return idx - 1
-
-        header = None
-        keep_idx_set = None
-        keep_idx_order = None
-        keep_names = None
-        rows_out = []
-
-        with zf.open(target_path) as sh_f:
-            for _, elem in ET.iterparse(sh_f, events=('end',)):
-                if elem.tag.endswith('}row') or elem.tag == 'row':
-                    row_dict = {}
-                    for c in elem:
-                        r_attr = c.attrib.get('r', '')
-                        ci = col_idx(r_attr) if r_attr else len(row_dict)
-                        if keep_idx_set is not None and ci not in keep_idx_set:
-                            continue
-                        t_attr = c.attrib.get('t', '')
-                        val = None
-                        if t_attr == 's':
-                            for child in c:
-                                if child.tag.endswith('}v') or child.tag == 'v':
-                                    if child.text is not None:
-                                        s_i = int(child.text)
-                                        if 0 <= s_i < len(shared_strings):
-                                            val = shared_strings[s_i]
-                                    break
-                        elif t_attr == 'inlineStr':
-                            val = ''.join(t.text or '' for t in c.iter() if t.tag.endswith('}t') or t.tag == 't')
-                        else:
-                            for child in c:
-                                if child.tag.endswith('}v') or child.tag == 'v':
-                                    val = child.text
-                                    break
-                        row_dict[ci] = val
-                    elem.clear()
-                    if header is None:
-                        max_c = max(row_dict.keys()) + 1 if row_dict else 0
-                        header = [str(row_dict.get(i, '') or '').strip() for i in range(max_c)]
-                        if needed_cols_lower is not None:
-                            keep_idx_order = [i for i, h in enumerate(header) if h.lower() in needed_cols_lower]
-                            keep_idx_set = set(keep_idx_order)
-                            keep_names = [header[i] for i in keep_idx_order]
-                        else:
-                            keep_idx_order = list(range(len(header)))
-                            keep_idx_set = set(keep_idx_order)
-                            keep_names = header
-                    else:
-                        rows_out.append([row_dict.get(i) for i in keep_idx_order])
-
-        return pd.DataFrame(rows_out, columns=keep_names)
-
-def _load_disk_pkl_cache(cache_path, expected_sig):
-    try:
-        if os.path.exists(cache_path):
-            with open(cache_path, 'rb') as f:
-                payload = pickle.load(f)
-            if isinstance(payload, tuple) and len(payload) == 2 and payload[0] == expected_sig:
-                return payload[1]
-    except Exception:
-        pass
-    return None
-
-def _save_disk_pkl_cache(cache_path, sig, obj):
-    tmp_p = None
-    try:
-        with tempfile.NamedTemporaryFile(dir=os.path.dirname(cache_path), suffix='.pkl', delete=False) as tf:
-            tmp_p = tf.name
-            pickle.dump((sig, obj), tf, protocol=pickle.HIGHEST_PROTOCOL)
-        os.replace(tmp_p, cache_path)
-    except Exception:
-        if tmp_p and os.path.exists(tmp_p):
-            try:
-                os.remove(tmp_p)
-            except Exception:
-                pass
 
 def get_overall_issue_ro_zone_lookup(data=None):
     """Build RO-to-zone labels from the uploaded branch master and processed data."""
@@ -4178,7 +4267,7 @@ def prepare_payment_dashboard_frame(raw_frame):
     )
     return frame.reset_index(drop=True)
 
-@st.cache_data(show_spinner=False, max_entries=2)
+@st.cache_data(show_spinner=False, max_entries=1)
 def _get_normalized_payment_cached(path, payment_signature, branch_signature, processed_signature):
     """Ultra-fast payment loader: disk pickle -> streaming XML -> openpyxl fallback."""
     pkl_path = os.path.join(DATA_DIR, ".payment_norm_fast_cache.pkl")
@@ -4199,7 +4288,7 @@ def get_normalized_overall_payment(path, data=None, processed_signature=None):
     branch_signature = file_version(branch_path) if branch_path and os.path.exists(branch_path) else None
     return _get_normalized_payment_cached(path, payment_signature, branch_signature, processed_signature)
 
-@st.cache_data(show_spinner=False, max_entries=2)
+@st.cache_data(show_spinner=False, max_entries=1)
 def _read_all_dashboard_sheets_once(path, signature):
     """Read and pre-normalize the master workbook ONCE with disk pickle cache so every switch is <0.1s."""
     pkl_path = os.path.join(DATA_DIR, ".monitoring_sheets_fast_cache.pkl")
@@ -4234,24 +4323,6 @@ def read_dashboard_sheets_cached(path, signature, sheet_names):
     """Serve requested module sheets instantaneously from the single cached workbook."""
     all_sheets = _read_all_dashboard_sheets_once(path, signature)
     return {name: all_sheets[name] for name in sheet_names if name in all_sheets}
-
-def read_payment_sheet_cached(path, signature, sheet_name):
-    try:
-        import python_calamine  # noqa: F401
-        with pd.ExcelFile(path, engine='calamine') as workbook:
-            selected_sheet = sheet_name if sheet_name in workbook.sheet_names else workbook.sheet_names[0]
-            return workbook.parse(selected_sheet)
-    except Exception:
-        pass
-    try:
-        df_xml = _fast_read_xlsx_sheet_xml(path, preferred_sheet=sheet_name, needed_cols_lower=NEEDED_PAYMENT_COLS_LOWER)
-        if not df_xml.empty:
-            return df_xml
-    except Exception as exc:
-        logging.warning(f"Fast XML payment read fallback to openpyxl: {exc}")
-    with pd.ExcelFile(path, engine='openpyxl') as workbook:
-        selected_sheet = sheet_name if sheet_name in workbook.sheet_names else workbook.sheet_names[0]
-        return workbook.parse(selected_sheet)
 
 @st.cache_data(show_spinner=False, max_entries=2)
 def read_binary_asset_cached(path, signature):
@@ -4330,24 +4401,34 @@ def load_dashboard_data(page):
 if st.session_state.pop('_processing_success', False):
     st.success("Data refreshed successfully. Your Executive Report is ready to download!")
 
-# 📥 EXPORT REPORT - DIRECT FILE STREAM FROM DISK (Only for users with All Vendors Access)
-if st.session_state.get('all_vendors', True) and os.path.exists(FILE_MAP["FINAL_OUTPUT"]) and os.path.exists(FILE_MAP["EXECUTIVE_REPORT"]):
+# 📥 EXPORT REPORT - ON-DEMAND GENERATION (Zero RAM overhead during processing!)
+if st.session_state.get('all_vendors', True) and os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
     st.sidebar.markdown("---")
     st.sidebar.header("📥 Export Reports")
-    try:
-        report_path = FILE_MAP["EXECUTIVE_REPORT"]
-        report_bytes = read_binary_asset_cached(report_path, file_version(report_path))
-        st.sidebar.download_button(
-            "📄 Download VIP Executive Report",
-            data=report_bytes,
-            file_name=f"Trackon_Executive_Master_Report_{get_ist_now():%d_%b_%Y}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-            type="primary"
-        )
-    except Exception as exc:
-        st.sidebar.error(f"Could not load download: {exc}")
-        
+    if st.sidebar.button("⚙️ Prepare VIP Executive Report", key="prep_vip_exec_btn", use_container_width=True):
+        with st.spinner("Generating VIP Executive Report..."):
+            try:
+                all_s = _read_all_dashboard_sheets_once(FILE_MAP["FINAL_OUTPUT"], file_version(FILE_MAP["FINAL_OUTPUT"]))
+                generate_vip_executive_report_to_disk(all_s)
+                st.session_state['_vip_exec_report_ready'] = True
+                gc.collect()
+            except Exception as exc:
+                st.sidebar.error(f"Could not generate report: {exc}")
+    if os.path.exists(FILE_MAP["EXECUTIVE_REPORT"]):
+        try:
+            report_path = FILE_MAP["EXECUTIVE_REPORT"]
+            report_bytes = read_binary_asset_cached(report_path, file_version(report_path))
+            st.sidebar.download_button(
+                "📄 Download VIP Executive Report",
+                data=report_bytes,
+                file_name=f"Trackon_Executive_Master_Report_{get_ist_now():%d_%b_%Y}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                type="primary"
+            )
+        except Exception as exc:
+            st.sidebar.error(f"Could not load download: {exc}")
+
     ts = os.path.getmtime(FILE_MAP["FINAL_OUTPUT"])
     ist = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
     dt = datetime.datetime.fromtimestamp(ts, tz=ist).strftime('%d %b %Y, %I:%M %p')
@@ -4355,6 +4436,14 @@ if st.session_state.get('all_vendors', True) and os.path.exists(FILE_MAP["FINAL_
 
 data = load_dashboard_data(choice)
 if not data and choice not in ["🔐 User & Access Control", "🧭 Scheduled Route Master", "⚠️ Overall Issues"]:
+    if ops_remark_raw_view or ven_perf_raw_view or overall_issue_raw_view:
+        try:
+            st.query_params.clear()
+        except Exception:
+            pass
+        st.session_state["ops_win_hide_sidebar"] = False
+        st.session_state["ven_win_hide_sidebar"] = False
+        st.rerun()
     st.warning("No processed data for this page. Admin must upload the relevant files and process data.")
     st.stop()
 
