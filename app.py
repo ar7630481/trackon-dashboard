@@ -1502,7 +1502,7 @@ NEEDED_PAYMENT_COLS_LOWER = {
     'ro name', 'ro_selection', 'roselection', 'ro',
     'vendor name', 'vendorname',
     'category', 'bill category',
-    'amount', 'net payable', 'net_payable',
+    'amount', 'base amount', 'baseamount', 'net payable', 'net_payable',
     'status', 'invoice status',
     'pending with', 'pendingwith',
     'name', 'bill uploader', 'uploader name', 'uploadername',
@@ -3105,7 +3105,7 @@ def compact_detail_frame(frame, kind):
     preferred_by_kind = {
         'ven_raw': ['Date', 'Remark with 15 min waiver', 'Origin RO', 'Route Path', 'Legwise', 'VendorName', 'Actual Arrival Time', 'Delay Hours', 'MasterCDNo'],
         'ops_raw': ['MCD_StartDate', 'Remark', 'Operations Outcome', 'Zone', 'Origin RO', 'Route Path', 'Legwise', 'Legs', 'CD_FromBranch', 'CD_ToBranch', 'MasterCDNo'],
-        'pay_raw': ['Invoice Id', 'Bill No.', 'Invoice Date', 'Bill Uploader', 'RO Name', 'Zone', 'Vendor Name', 'Vendor Mapping Category', 'Category', 'Amount', 'Status', 'Payment Group', 'Pending With', 'Pending Since', 'Days Pending', 'Hold Key'],
+        'pay_raw': ['Invoice Id', 'Bill No.', 'Invoice Date', 'Bill Uploader', 'RO Name', 'Zone', 'Vendor Name', 'Vendor Mapping Category', 'Category', 'Base Amount', 'Amount', 'Status', 'Payment Group', 'Pending With', 'Pending Since', 'Days Pending', 'Hold Key'],
         'cpk_raw': ['Date', 'RO_Clean', 'Final_Route', 'Final_Type', 'VendorName', 'Vehicle No', 'Cap', 'Wt', 'Trips', 'Cost']
     }
     cols = [col for col in preferred_by_kind.get(kind, list(frame.columns)) if col in frame.columns]
@@ -3313,6 +3313,7 @@ def get_processed_data_cached(file_timestamps):
             elif 'INVOICEID' in col: rename_dict[col] = 'Invoice Id'
             elif 'BILLNO' in col or 'BILLNUMBER' in col: rename_dict[col] = 'Bill No.'
             elif 'INVOICEDATE' in col: rename_dict[col] = 'Invoice Date'
+            elif 'BASEAMOUNT' in col: rename_dict[col] = 'Base Amount'
             elif 'AMOUNT' == col: rename_dict[col] = 'Amount'
             elif 'STATUS' == col: rename_dict[col] = 'Status'
             elif 'PENDINGWITH' in col: rename_dict[col] = 'Pending With'
@@ -3324,7 +3325,7 @@ def get_processed_data_cached(file_timestamps):
 
         df_pay.rename(columns=rename_dict, inplace=True)
         
-        required_cols = ['RO Name', 'Category', 'Vendor Name', 'Invoice Id', 'Bill No.', 'Invoice Date', 'Amount', 'Status', 'Pending With', 'Last Approved At', 'Finance Revert Remarks 1', 'Approver Revert Remarks', 'Hold Key', 'Bill Uploader']
+        required_cols = ['RO Name', 'Category', 'Vendor Name', 'Invoice Id', 'Bill No.', 'Invoice Date', 'Base Amount', 'Amount', 'Status', 'Pending With', 'Last Approved At', 'Finance Revert Remarks 1', 'Approver Revert Remarks', 'Hold Key', 'Bill Uploader']
         for req in required_cols:
             if req not in df_pay.columns:
                 df_pay[req] = ""
@@ -3379,7 +3380,7 @@ def get_processed_data_cached(file_timestamps):
         df_pay['Base Date'] = df_pay['Base Date'].dt.strftime('%d-%b-%Y').fillna("")
         df_pay['Invoice Month'] = df_pay['Invoice Date'].dt.strftime('%b-%Y').fillna("UNKNOWN")
         
-        df_master = df_pay[["Zone", "RO Name", "Category", "Vendor Name", "Bill Uploader", "Invoice Id", "Bill No.", "Hold Key", "Aging Bucket", "Invoice Month", "Days Pending", "Status", "Pending With", "Revert Remarks", "Department Bucket", "Amount", "Base Date"]]
+        df_master = df_pay[["Zone", "RO Name", "Category", "Vendor Name", "Bill Uploader", "Invoice Id", "Bill No.", "Hold Key", "Aging Bucket", "Invoice Month", "Days Pending", "Status", "Pending With", "Revert Remarks", "Department Bucket", "Base Amount", "Amount", "Base Date"]]
         data_for_export['Master_Database'] = df_master
         del df_pay
         gc.collect()
@@ -3744,7 +3745,7 @@ def process_all_data():
         # Clear stale caches
         st.session_state.pop('_dashboard_cache', None)
         st.session_state.pop('_dashboard_page_cache', None)
-        st.session_state.pop('_pay_prepared_frame_cache_v2', None)
+        st.session_state.pop('_pay_prepared_frame_cache_v3', None)
         st.session_state.pop('_download_version', None)
         st.session_state.pop('_vip_exec_report_ready', None)
         try:
@@ -3817,7 +3818,7 @@ if st.session_state['role'] == 'Admin':
             if os.path.exists(_fp):
                 try: os.remove(_fp)
                 except Exception: pass
-        st.session_state.pop('_pay_prepared_frame_cache_v2', None)
+        st.session_state.pop('_pay_prepared_frame_cache_v3', None)
         st.session_state.pop('_dashboard_cache', None)
         st.session_state.pop('_dashboard_page_cache', None)
         try:
@@ -3898,7 +3899,7 @@ if st.session_state['role'] == 'Admin':
             if os.path.exists(_fp):
                 try: os.remove(_fp)
                 except Exception: pass
-        st.session_state.pop('_pay_prepared_frame_cache_v2', None)
+        st.session_state.pop('_pay_prepared_frame_cache_v3', None)
         gc.collect()
         if process_all_data():
             try:
@@ -4099,7 +4100,7 @@ def normalize_overall_payment_raw(raw, data=None):
     if raw is None or raw.empty:
         return pd.DataFrame(columns=[
             'Invoice Id', 'Bill No.', 'Invoice Date', 'Base Date', 'RO Name', 'Zone', 'Vendor Name',
-            'Category', 'Amount', 'Status', 'Pending With', 'Bill Uploader', 'Hold Name', 'Hold Time'
+            'Category', 'Base Amount', 'Amount', 'Status', 'Pending With', 'Bill Uploader', 'Hold Name', 'Hold Time'
         ])
     source = raw.copy()
     source.columns = source.columns.astype(str).str.strip()
@@ -4111,6 +4112,7 @@ def normalize_overall_payment_raw(raw, data=None):
         'RO Name': ['RO Name', 'ro_selection', 'ROSelection', 'RO'],
         'Vendor Name': ['Vendor Name', 'VendorName'],
         'Category': ['Category', 'Bill Category'],
+        'Base Amount': ['Base Amount', 'BaseAmount', 'Base_Amount'],
         'Amount': ['Amount', 'Net Payable', 'net_payable'],
         'Status': ['Status', 'Invoice Status'],
         'Pending With': ['Pending With', 'PendingWith'],
@@ -4154,6 +4156,10 @@ def normalize_overall_payment_raw(raw, data=None):
     _v_src = normalized['Vendor Name'].fillna('').astype(str)
     _v_map = {v: normalize_vendor_name(v) for v in _v_src.unique()}
     normalized['Vendor Name'] = _v_src.map(_v_map)
+    if 'Base Amount' in normalized.columns:
+        normalized['Base Amount'] = pd.to_numeric(normalized['Base Amount'], errors='coerce').fillna(0.0)
+    else:
+        normalized['Base Amount'] = 0.0
     if 'Amount' in normalized.columns:
         normalized['Amount'] = pd.to_numeric(normalized['Amount'], errors='coerce').fillna(0.0)
     normalized['Category'] = normalized['Category'].fillna('').astype(str).str.strip()
@@ -4264,13 +4270,19 @@ def prepare_payment_dashboard_frame(raw_frame):
         .fillna('').astype(str).str.strip().str.lower()
         .map(cat_to_group).fillna('Unmapped')
     )
+    if 'Bill No.' not in frame.columns:
+        frame['Bill No.'] = ''
+    if 'Base Amount' not in frame.columns:
+        frame['Base Amount'] = 0.0
+    else:
+        frame['Base Amount'] = pd.to_numeric(frame['Base Amount'], errors='coerce').fillna(0.0)
     return frame.reset_index(drop=True)
 
 @st.cache_data(show_spinner=False, max_entries=1)
 def _get_normalized_payment_cached(path, payment_signature, branch_signature, processed_signature):
     """Ultra-fast payment loader: disk pickle -> streaming XML -> openpyxl fallback."""
     pkl_path = os.path.join(DATA_DIR, ".payment_norm_fast_cache.pkl")
-    sig = ("pay_norm_v3", payment_signature, branch_signature, processed_signature)
+    sig = ("pay_norm_v4", payment_signature, branch_signature, processed_signature)
     hit = _load_disk_pkl_cache(pkl_path, sig)
     if isinstance(hit, pd.DataFrame) and not hit.empty:
         return hit
@@ -4370,7 +4382,7 @@ def load_dashboard_data(page):
         payment_signature = file_version(payment_path) if payment_path and os.path.exists(payment_path) else None
         branch_path = FILE_MAP.get('BRANCH_MASTER', '')
         branch_signature = file_version(branch_path) if branch_path and os.path.exists(branch_path) else None
-        page_cache_key = (page, processed_signature, payment_signature, branch_signature)
+        page_cache_key = ('v4', page, processed_signature, payment_signature, branch_signature)
         page_cache = st.session_state.setdefault('_dashboard_page_cache', {})
         if page_cache_key in page_cache:
             # Page frames are kept for this session, so module navigation avoids another
@@ -7651,7 +7663,7 @@ elif choice == "💳 Payment Dashboard":
             bool(st.session_state.get('all_vendors', True)),
             tuple(st.session_state.get('allowed_vendors', []))
         )
-        _pay_prep_cache = st.session_state.get('_pay_prepared_frame_cache_v2')
+        _pay_prep_cache = st.session_state.get('_pay_prepared_frame_cache_v3')
         if _pay_prep_cache and _pay_prep_cache[0] == _pay_prep_sig:
             df_pay = _pay_prep_cache[1]
         else:
@@ -7661,7 +7673,7 @@ elif choice == "💳 Payment Dashboard":
                 df_pay = prepare_payment_dashboard_frame(data['Master_Database'])
             if not st.session_state.get('all_vendors', True):
                 df_pay = filter_df_by_user_vendors(df_pay, 'Vendor Name')
-            st.session_state['_pay_prepared_frame_cache_v2'] = (_pay_prep_sig, df_pay)
+            st.session_state['_pay_prepared_frame_cache_v3'] = (_pay_prep_sig, df_pay)
 
         if df_pay.empty:
             st.warning("No active payment records found for your assigned vendor access.")
@@ -7725,14 +7737,14 @@ elif choice == "💳 Payment Dashboard":
                         else:
                             admin_cat_map[a_grp_name] = a_chosen
                             save_vendor_category_mapping(admin_cat_map)
-                            st.session_state.pop('_pay_prepared_frame_cache_v2', None)
+                            st.session_state.pop('_pay_prepared_frame_cache_v3', None)
                             st.success(f"Saved permanent mapping **{a_grp_name}**.")
                             st.rerun()
                     if sel_a_grp != "+ Create New Group":
                         if ab2.button("🗑️ Delete Global Mapping", key="vcm_admin_del", use_container_width=True):
                             admin_cat_map.pop(sel_a_grp, None)
                             save_vendor_category_mapping(admin_cat_map)
-                            st.session_state.pop('_pay_prepared_frame_cache_v2', None)
+                            st.session_state.pop('_pay_prepared_frame_cache_v3', None)
                             st.success(f"Deleted **{sel_a_grp}**.")
                             st.rerun()
                 else:
@@ -7766,14 +7778,14 @@ elif choice == "💳 Payment Dashboard":
                     else:
                         user_cat_map[u_grp_name] = u_chosen
                         save_user_vendor_category_mapping(curr_u_id, user_cat_map)
-                        st.session_state.pop('_pay_prepared_frame_cache_v2', None)
+                        st.session_state.pop('_pay_prepared_frame_cache_v3', None)
                         st.success(f"Saved personal mapping **{u_grp_name}**.")
                         st.rerun()
                 if sel_u_grp != "+ Create New Group":
                     if ub2.button("🗑️ Delete Personal Mapping", key="vcm_user_del", use_container_width=True):
                         user_cat_map.pop(sel_u_grp, None)
                         save_user_vendor_category_mapping(curr_u_id, user_cat_map)
-                        st.session_state.pop('_pay_prepared_frame_cache_v2', None)
+                        st.session_state.pop('_pay_prepared_frame_cache_v3', None)
                         st.success(f"Deleted **{sel_u_grp}**.")
                         st.rerun()
                 if user_cat_map:
