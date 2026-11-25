@@ -1,3 +1,37 @@
+"""
+================================================================================
+TRACKON COMMAND CENTER — ARCHITECTURE & DECISION-FIRST DIRECTIVE
+================================================================================
+Mandatory rules for every AI assistant and developer maintaining this codebase:
+
+1. DECISION-FIRST, ZERO-CONFUSION DESIGN:
+   - Every module, table, and Excel export must drive immediate operational
+     decisions and escalations (worst-first sorting, clear Red/Amber/Green
+     status, and plain-English written escalation remarks).
+   - Never dump raw unprioritized tables when a crisp Branch / RO / Zone /
+     Vendor action statement answers the question in 2 seconds.
+
+2. LEAN, DYNAMIC & ZERO CODE BLOAT:
+   - Do NOT duplicate helper functions, filter bars, or legacy views.
+   - Delete dead/superseded functions whenever replacing a feature so file
+     size stays lean and maintainable.
+   - All filters, call lookups, summaries, and raw inspectors must cascade
+     dynamically from the active dataset.
+
+3. SUB-SECOND SPEED & ON-DEMAND EXPORTS:
+   - Never generate Excel workbooks during normal page reruns; always build
+     Excel bytes on-demand behind an explicit "Prepare" button.
+   - Cache workbook sheets (disk pickle + session RAM) and JSON configs
+     (mtime memory cache) so module switching stays instant (<0.3s).
+
+4. STRICT DATA SEPARATION & FREE-FOREVER STACK:
+   - Keep `All Trips & Additional/Manual Audit` strictly separate from
+     Operations SLA, Vendor Performance SLA, Overall Issues, and Communication Hub.
+   - Exclude NON SCHEDULED (Manual) trips from Operations & Vendor SLA.
+   - 100% free-forever stack: Streamlit Community Cloud + GitHub Releases
+     7-day cloud persistence + local .zip backup + open-source Python only.
+================================================================================
+"""
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -625,22 +659,41 @@ DEFAULT_VENDOR_CATEGORY_MAP = {
     ]
 }
 
+_JSON_MEM_CACHE = {}
+
+def _read_json_fast(path, default_val):
+    if not path or not os.path.exists(path):
+        return default_val() if callable(default_val) else default_val
+    try:
+        sig = os.stat(path).st_mtime_ns
+        cached = _JSON_MEM_CACHE.get(path)
+        if cached and cached[0] == sig:
+            return cached[1]
+        with open(path, 'r', encoding='utf-8') as f:
+            val = json.load(f)
+        _JSON_MEM_CACHE[path] = (sig, val)
+        return val
+    except Exception:
+        return default_val() if callable(default_val) else default_val
+
+def _write_json_fast(path, payload):
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, indent=4)
+    try:
+        _JSON_MEM_CACHE[path] = (os.stat(path).st_mtime_ns, payload)
+    except Exception:
+        _JSON_MEM_CACHE.pop(path, None)
+
 def load_vendor_category_mapping():
     path = FILE_MAP["VENDOR_CATEGORY_MAP"]
-    if os.path.exists(path):
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict):
-                return loaded
-        except Exception:
-            pass
+    loaded = _read_json_fast(path, None)
+    if isinstance(loaded, dict):
+        return loaded
     save_vendor_category_mapping(DEFAULT_VENDOR_CATEGORY_MAP)
     return {k: list(v) for k, v in DEFAULT_VENDOR_CATEGORY_MAP.items()}
 
 def save_vendor_category_mapping(mapping_dict):
-    with open(FILE_MAP["VENDOR_CATEGORY_MAP"], 'w', encoding='utf-8') as f:
-        json.dump(mapping_dict, f, indent=4)
+    _write_json_fast(FILE_MAP["VENDOR_CATEGORY_MAP"], mapping_dict)
 
 def load_all_user_vendor_category_mappings():
     data = _read_json_fast(FILE_MAP["USER_VENDOR_CATEGORY_MAP"], dict)
@@ -668,30 +721,7 @@ def load_user_tracked_vendors(username):
         return {}
     return dict(load_all_user_tracked_vendors().get(str(username), {}))
 
-_JSON_MEM_CACHE = {}
 
-def _read_json_fast(path, default_val):
-    if not path or not os.path.exists(path):
-        return default_val() if callable(default_val) else default_val
-    try:
-        sig = os.stat(path).st_mtime_ns
-        cached = _JSON_MEM_CACHE.get(path)
-        if cached and cached[0] == sig:
-            return cached[1]
-        with open(path, 'r', encoding='utf-8') as f:
-            val = json.load(f)
-        _JSON_MEM_CACHE[path] = (sig, val)
-        return val
-    except Exception:
-        return default_val() if callable(default_val) else default_val
-
-def _write_json_fast(path, payload):
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(payload, f, indent=4)
-    try:
-        _JSON_MEM_CACHE[path] = (os.stat(path).st_mtime_ns, payload)
-    except Exception:
-        _JSON_MEM_CACHE.pop(path, None)
 
 def save_user_tracked_vendors(username, tracker_dict):
     if not username:
@@ -1140,12 +1170,8 @@ DEFAULT_USERS_SEED = {
 def load_users_db():
     path = FILE_MAP["USERS_DB"]
     db = {}
-    if os.path.exists(path):
-        try:
-            with open(path, 'r') as f:
-                db = json.load(f)
-        except Exception:
-            db = {}
+    loaded_u = _read_json_fast(path, dict)
+    db = {k: dict(v) for k, v in loaded_u.items()} if isinstance(loaded_u, dict) else {}
     
     changed = False
     for u_k, u_v in DEFAULT_USERS_SEED.items():
@@ -1188,8 +1214,7 @@ def load_users_db():
     return db
 
 def save_users_db(db_dict):
-    with open(FILE_MAP["USERS_DB"], 'w') as f:
-        json.dump(db_dict, f, indent=4)
+    _write_json_fast(FILE_MAP["USERS_DB"], db_dict)
 
 USERS_DB = load_users_db()
 
@@ -2296,18 +2321,11 @@ def parse_pct_from_str(val):
         return None
 
 def load_action_plans():
-    path = FILE_MAP["ACTION_PLANS"]
-    if os.path.exists(path):
-        try:
-            with open(path, 'r') as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
+    data = _read_json_fast(FILE_MAP["ACTION_PLANS"], dict)
+    return dict(data) if isinstance(data, dict) else {}
 
 def save_action_plans(data):
-    with open(FILE_MAP["ACTION_PLANS"], 'w') as f:
-        json.dump(data, f)
+    _write_json_fast(FILE_MAP["ACTION_PLANS"], data)
 
 def _lookup_key(value):
     if pd.isna(value):
@@ -2652,34 +2670,6 @@ def get_scheduled_route_master(file_signature=()):
         st.warning(f"Could not read the uploaded Scheduled Route Master workbook: {exc}")
         return pd.DataFrame(columns=output_cols)
 
-def build_print_ready_schedule_html(df, branch_label):
-    """Build a self-contained A3 landscape sheet that can be printed or saved as PDF."""
-    title = f"National & Zonal Scheduled Route Master — {branch_label}"
-    table_html = df.to_html(index=False, escape=True, border=0, classes='schedule-table')
-    safe_title = html_module.escape(title)
-    return f'''<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{safe_title}</title>
-<style>
-@page {{ size: A3 landscape; margin: 9mm; }}
-* {{ box-sizing: border-box; }}
-body {{ margin: 0; padding: 20px; color: {selected_theme["text"]}; background: {selected_theme["navy950"]}; font: 12px/1.35 Arial, sans-serif; }}
-.toolbar {{ display: flex; justify-content: space-between; align-items: center; gap: 16px; margin: 0 0 16px; }}
-.toolbar button {{ border: 0; border-radius: 7px; background: {selected_theme["blue"]}; color: {theme_primary_text}; padding: 10px 16px; font-size: 13px; font-weight: 700; cursor: pointer; }}
-h1 {{ margin: 0 0 4px; font-size: 22px; }}
-.subtitle {{ margin: 0; color: {selected_theme["muted"]}; }}
-.schedule-table {{ width: 100%; border-collapse: collapse; font-size: 8px; }}
-.schedule-table th {{ background: {selected_theme["navy800"]}; color: {selected_theme["text"]}; text-align: left; padding: 7px 6px; }}
-.schedule-table td {{ border-bottom: 1px solid {selected_theme["line"]}; padding: 6px; vertical-align: top; }}
-.schedule-table tr:nth-child(even) td {{ background: {selected_theme["card2"]}; }}
-thead {{ display: table-header-group; }}
-tr {{ break-inside: avoid; page-break-inside: avoid; }}
-@media print {{ body {{ padding: 0; }} .toolbar button {{ display: none; }} }}
-</style></head><body>
-<div class="toolbar"><div><h1>{safe_title}</h1><p class="subtitle">Leg order follows Route No. Route TAT uses the same calculation as Vendor Performance; halt is scheduled departure minus arrival at the branch.</p></div>
-<button onclick="window.print()">Print / Save as PDF</button></div>
-{table_html}
-</body></html>'''
 
 def build_formatted_excel_bytes(df, sheet_name, report_title, percent_columns=None, width_overrides=None, paper_size=8, landscape=True):
     """Write a compact, styled Excel table with filters, frozen headers, and print setup."""
@@ -2755,144 +2745,6 @@ def build_formatted_excel_bytes(df, sheet_name, report_title, percent_columns=No
 def _clean_ro_series(series):
     return series.fillna('RO NOT MAPPED').astype(str).str.strip().str.upper().replace({'': 'RO NOT MAPPED', 'NAN': 'RO NOT MAPPED', 'NONE': 'RO NOT MAPPED'})
 
-def build_overall_issues_summary(ops_raw, pay_raw, cpk_raw=None):
-    """Create RO/zone issue and utilization rates in percentage-and-count form."""
-    ops = ops_raw.copy() if isinstance(ops_raw, pd.DataFrame) else pd.DataFrame()
-    pay = pay_raw.copy() if isinstance(pay_raw, pd.DataFrame) else pd.DataFrame()
-    cpk = cpk_raw.copy() if isinstance(cpk_raw, pd.DataFrame) else pd.DataFrame()
-    ops_ro_col = get_col(ops, ['Origin RO', 'RO Name', 'RO'])
-    pay_ro_col = get_col(pay, ['RO Name', 'Origin RO', 'RO'])
-    ops_zone_col = get_col(ops, ['Zone'])
-    pay_zone_col = get_col(pay, ['Zone'])
-    ops_rows = {}
-    pay_rows = {}
-
-    if ops_ro_col:
-        remark_col = get_col(ops, ['Remark'])
-        dep_col = get_col(ops, ['Dep_Status'])
-        arr_col = get_col(ops, ['Arr_Status'])
-        remark = ops[remark_col].fillna('').astype(str) if remark_col else pd.Series('', index=ops.index)
-        dep_status = ops[dep_col].fillna('').astype(str) if dep_col else remark
-        arr_status = ops[arr_col].fillna('').astype(str) if arr_col else remark
-        outcome_source = remark.where(remark.str.strip().ne(''), dep_status + ', ' + arr_status)
-        ops_ro = _clean_ro_series(ops[ops_ro_col])
-        ops_zone = ops[ops_zone_col].fillna('UNKNOWN ZONE').astype(str).str.strip().str.upper() if ops_zone_col else pd.Series('UNKNOWN ZONE', index=ops.index)
-        ops_zone = ops_zone.replace({'': 'UNKNOWN ZONE', 'NAN': 'UNKNOWN ZONE', 'NONE': 'UNKNOWN ZONE'})
-        outcome_patterns = {
-            '_OO': 'Ontime Dep, Ontime Arr',
-            '_OL': 'Ontime Dep, Late Arr',
-            '_LL': 'Late Dep, Late Arr',
-            '_LO': 'Late Dep, Ontime Arr'
-        }
-        grouped = pd.DataFrame({
-            '_RO': ops_ro, '_ZONE': ops_zone,
-            **{key: outcome_source.str.contains(pattern, case=False, na=False).astype(int)
-               for key, pattern in outcome_patterns.items()}
-        }).groupby(['_RO', '_ZONE'], dropna=False).agg(
-            Total_Trips=('_RO', 'size'), OO_Cnt=('_OO', 'sum'), OL_Cnt=('_OL', 'sum'),
-            LL_Cnt=('_LL', 'sum'), LO_Cnt=('_LO', 'sum')
-        )
-        for (ro, zone), row in grouped.iterrows():
-            ops_rows[(ro, zone)] = row.to_dict()
-
-    if pay_ro_col:
-        payment_masks = get_overall_payment_status_masks(pay)
-        draft_mask = payment_masks['Draft bills'].astype(int)
-        pending_mask = payment_masks['Pending bills'].astype(int)
-        payment_pending_mask = payment_masks['Payment pending / paid'].astype(int)
-        finance_pending_mask = payment_masks['Finance pending'].astype(int)
-        finance_hold_mask = payment_masks['Finance hold'].astype(int)
-        other_mask = payment_masks['Other bills'].astype(int)
-        pay_ro = _clean_ro_series(pay[pay_ro_col])
-        pay_zone = pay[pay_zone_col].fillna('UNKNOWN ZONE').astype(str).str.strip().str.upper() if pay_zone_col else pd.Series('UNKNOWN ZONE', index=pay.index)
-        pay_zone = pay_zone.replace({'': 'UNKNOWN ZONE', 'NAN': 'UNKNOWN ZONE', 'NONE': 'UNKNOWN ZONE'})
-        grouped = pd.DataFrame({
-            '_RO': pay_ro, '_ZONE': pay_zone, '_DRAFT': draft_mask,
-            '_PENDING': pending_mask, '_PAYMENT_PENDING_PAID': payment_pending_mask,
-            '_FINANCE_PENDING': finance_pending_mask, '_FINANCE_HOLD': finance_hold_mask, '_OTHER': other_mask
-        }).groupby(['_RO', '_ZONE'], dropna=False).agg(
-            Total_Bills=('_RO', 'size'), Draft_Cnt=('_DRAFT', 'sum'), Pending_Cnt=('_PENDING', 'sum'),
-            Payment_Pending_Paid_Cnt=('_PAYMENT_PENDING_PAID', 'sum'),
-            Finance_Pending_Cnt=('_FINANCE_PENDING', 'sum'), Finance_Hold_Cnt=('_FINANCE_HOLD', 'sum'),
-            Other_Cnt=('_OTHER', 'sum')
-        )
-        for (ro, zone), row in grouped.iterrows():
-            pay_rows[(ro, zone)] = row.to_dict()
-
-    utilization_rows = {}
-    if not cpk.empty:
-        try:
-            route_master = build_cpk_tables_from_raw(cpk).get('CPK_National_Zonal_UpDown', pd.DataFrame())
-            if not route_master.empty:
-                route_ro = get_col(route_master, ['VendorRO', 'RO_Clean', 'RO'])
-                route_zone = get_col(route_master, ['Zone'])
-                route_type = get_col(route_master, ['Type', 'Final_Type'])
-                util_col = get_col(route_master, ['Overall Util %', 'Utilization'])
-                route_name = get_col(route_master, ['Route (UP/DOWN)', 'Final_Route', 'Route'])
-                if route_ro and route_type and util_col:
-                    route_data = pd.DataFrame({
-                        '_RO': _clean_ro_series(route_master[route_ro]),
-                        '_ZONE': route_master[route_zone].fillna('UNKNOWN ZONE').astype(str).str.strip().str.upper() if route_zone else 'UNKNOWN ZONE',
-                        '_TYPE': route_master[route_type].fillna('').astype(str).str.strip().str.upper(),
-                        '_UTIL': pd.to_numeric(route_master[util_col], errors='coerce')
-                    })
-                    if route_name:
-                        route_data['_ROUTE'] = route_master[route_name].fillna('').astype(str).str.strip().str.upper()
-                        route_data = route_data.drop_duplicates(['_RO', '_ZONE', '_TYPE', '_ROUTE'])
-                    route_data['_ZONE'] = route_data['_ZONE'].replace({'': 'UNKNOWN ZONE', 'NAN': 'UNKNOWN ZONE', 'NONE': 'UNKNOWN ZONE'})
-                    route_data = route_data[route_data['_TYPE'].isin(['NATIONAL LH', 'ZONAL LH']) & route_data['_UTIL'].notna()]
-                    for (ro, zone), group in route_data.groupby(['_RO', '_ZONE'], dropna=False):
-                        # The summary combines national and zonal route counts; detailed
-                        # records still keep their route type for the drill-down tabs.
-                        total_routes = len(group)
-                        under_count = int(group['_UTIL'].lt(0.60).sum())
-                        efficient_count = int(group['_UTIL'].ge(0.60).sum())
-                        utilization_rows[(ro, zone)] = {
-                            'Underutilized Routes': format_pct_cnt(under_count, total_routes),
-                            'Efficiently Utilized Routes': format_pct_cnt(efficient_count, total_routes)
-                        }
-        except Exception as exc:
-            logging.warning(f"Overall Issues utilization summary warning: {exc}")
-
-    rows = []
-    for ro, zone in sorted(set(ops_rows) | set(pay_rows) | set(utilization_rows)):
-        ops_stats = ops_rows.get((ro, zone), {})
-        pay_stats = pay_rows.get((ro, zone), {})
-        trips = int(ops_stats.get('Total_Trips', 0))
-        bills = int(pay_stats.get('Total_Bills', 0))
-        oo = int(ops_stats.get('OO_Cnt', 0))
-        ol = int(ops_stats.get('OL_Cnt', 0))
-        ll = int(ops_stats.get('LL_Cnt', 0))
-        lo = int(ops_stats.get('LO_Cnt', 0))
-        draft = int(pay_stats.get('Draft_Cnt', 0))
-        pending = int(pay_stats.get('Pending_Cnt', 0))
-        payment_pending_paid = int(pay_stats.get('Payment_Pending_Paid_Cnt', 0))
-        finance_pending = int(pay_stats.get('Finance_Pending_Cnt', 0))
-        finance_hold = int(pay_stats.get('Finance_Hold_Cnt', 0))
-        other = int(pay_stats.get('Other_Cnt', 0))
-        utilization = utilization_rows.get((ro, zone), {})
-        rows.append({
-            'RO Name': ro, 'Zone': zone, 'Total Trips': trips,
-            'Ontime Dep, Ontime Arr': format_pct_cnt(oo, trips),
-            'Ontime Dep, Late Arr': format_pct_cnt(ol, trips),
-            'Late Dep, Late Arr': format_pct_cnt(ll, trips),
-            'Late Dep, Ontime Arr': format_pct_cnt(lo, trips), 'Total Bills': bills,
-            'Draft Bills': format_pct_cnt(draft, bills),
-            'Pending': format_pct_cnt(pending, bills),
-            'Payment Pending / Paid': format_pct_cnt(payment_pending_paid, bills),
-            'Finance Pending': format_pct_cnt(finance_pending, bills),
-            'Finance Hold': format_pct_cnt(finance_hold, bills),
-            'Other': format_pct_cnt(other, bills),
-            'Underutilized Routes': utilization.get('Underutilized Routes', '0.0% (0)'),
-            'Efficiently Utilized Routes': utilization.get('Efficiently Utilized Routes', '0.0% (0)')
-        })
-    return pd.DataFrame(rows, columns=[
-        'RO Name', 'Zone', 'Total Trips', 'Ontime Dep, Ontime Arr',
-        'Ontime Dep, Late Arr', 'Late Dep, Late Arr', 'Late Dep, Ontime Arr',
-        'Total Bills', 'Draft Bills', 'Pending', 'Payment Pending / Paid',
-        'Finance Pending', 'Finance Hold', 'Other', 'Underutilized Routes',
-        'Efficiently Utilized Routes'
-    ])
 
 # ==========================================
 # 3B. DYNAMIC SUMMARY CALCULATORS (With Vendor Grouping)
@@ -4061,13 +3913,40 @@ def get_processed_data_cached(file_timestamps):
                 return pd.NaT
 
         df_rte['Route Branch Code'] = df_rte['Route Branch Code'].astype(str).str.strip()
-        df_rte = df_rte[['Route Code', 'Route Branch Code', 'Route Day', 'Schedule Departure Time', 'Schedule Arrival Time']]
+        df_rte['Route Code'] = df_rte['Route Code'].astype(str).str.strip()
+        _rte_rp_lookup = df_rte.copy()
+        df_rte = df_rte[['Route Code', 'Route Branch Code', 'Route Day', 'Schedule Departure Time', 'Schedule Arrival Time']].drop_duplicates(subset=['Route Code', 'Route Branch Code'], keep='first')
+        df_leg_all['RouteCode'] = df_leg_all['RouteCode'].astype(str).str.strip()
+        df_leg_all['CD_FromBranch'] = df_leg_all['CD_FromBranch'].astype(str).str.strip()
+        df_leg_all['CD_ToBranch'] = df_leg_all['CD_ToBranch'].astype(str).str.strip()
+
         df_leg_all = df_leg_all.merge(df_rte, left_on=['RouteCode', 'CD_FromBranch'], right_on=['Route Code', 'Route Branch Code'], how='left')
         df_leg_all.rename(columns={'Route Day': 'Dep_Route_Day', 'Schedule Departure Time': 'Sch_Dep_Time_Raw'}, inplace=True)
         df_leg_all.drop(columns=['Schedule Arrival Time'], inplace=True, errors='ignore')
         
         df_leg_all = df_leg_all.merge(df_rte[['Route Code', 'Route Branch Code', 'Route Day', 'Schedule Arrival Time']], left_on=['RouteCode', 'CD_ToBranch'], right_on=['Route Code', 'Route Branch Code'], how='left')
         df_leg_all.rename(columns={'Route Day': 'Arr_Route_Day', 'Schedule Arrival Time': 'Sch_Arr_Time_Raw'}, inplace=True)
+
+        # Smart Fallback: When RouteCode changed in master, recover schedule via (Route Path + Branch)
+        if 'Route Path' in _rte_rp_lookup.columns and (df_leg_all['Dep_Route_Day'].isna().any() or df_leg_all['Arr_Route_Day'].isna().any()):
+            _rp_sub = _rte_rp_lookup[['Route Path', 'Route Branch Code', 'Route Day', 'Schedule Departure Time', 'Schedule Arrival Time']].copy()
+            _rp_sub['_RP_KEY'] = _rp_sub['Route Path'].fillna('').astype(str).str.strip().str.upper()
+            _rp_sub['_BR_KEY'] = _rp_sub['Route Branch Code'].fillna('').astype(str).str.strip().str.upper()
+            _rp_sub = _rp_sub.drop_duplicates(subset=['_RP_KEY', '_BR_KEY'], keep='first')
+            _rp_dep_map = _rp_sub.set_index(['_RP_KEY', '_BR_KEY'])[['Route Day', 'Schedule Departure Time']].to_dict('index')
+            _rp_arr_map = _rp_sub.set_index(['_RP_KEY', '_BR_KEY'])[['Route Day', 'Schedule Arrival Time']].to_dict('index')
+            _miss_dep = df_leg_all['Dep_Route_Day'].isna()
+            if _miss_dep.any():
+                _keys_d = list(zip(df_leg_all.loc[_miss_dep, 'Route Path'].fillna('').astype(str).str.strip().str.upper(),
+                                   df_leg_all.loc[_miss_dep, 'CD_FromBranch'].str.upper()))
+                df_leg_all.loc[_miss_dep, 'Dep_Route_Day'] = [(_rp_dep_map.get(k) or {}).get('Route Day', np.nan) for k in _keys_d]
+                df_leg_all.loc[_miss_dep, 'Sch_Dep_Time_Raw'] = [(_rp_dep_map.get(k) or {}).get('Schedule Departure Time', np.nan) for k in _keys_d]
+            _miss_arr = df_leg_all['Arr_Route_Day'].isna()
+            if _miss_arr.any():
+                _keys_a = list(zip(df_leg_all.loc[_miss_arr, 'Route Path'].fillna('').astype(str).str.strip().str.upper(),
+                                   df_leg_all.loc[_miss_arr, 'CD_ToBranch'].str.upper()))
+                df_leg_all.loc[_miss_arr, 'Arr_Route_Day'] = [(_rp_arr_map.get(k) or {}).get('Route Day', np.nan) for k in _keys_a]
+                df_leg_all.loc[_miss_arr, 'Sch_Arr_Time_Raw'] = [(_rp_arr_map.get(k) or {}).get('Schedule Arrival Time', np.nan) for k in _keys_a]
 
         df_leg_all['Scheduled Departure Time'] = df_leg_all.apply(lambda r: get_sch_time(r, 'Dep_Route_Day', 'Sch_Dep_Time_Raw'), axis=1)
         df_leg_all['Scheduled Arrival Time'] = df_leg_all.apply(lambda r: get_sch_time(r, 'Arr_Route_Day', 'Sch_Arr_Time_Raw'), axis=1)
@@ -4348,7 +4227,7 @@ def process_all_data():
 
         # Save instant binary pickle cache so switching modules is <0.1s with zero Excel re-read!
         status_text.text("⚙️ Saving Instant Fast-Cache...")
-        mon_sig = ("mon_sheets_v4", file_version(FILE_MAP["FINAL_OUTPUT"]))
+        mon_sig = ("mon_sheets_v5", file_version(FILE_MAP["FINAL_OUTPUT"]))
         _save_disk_pkl_cache(os.path.join(DATA_DIR, ".monitoring_sheets_fast_cache.pkl"), mon_sig, data_for_export)
 
         # Clear stale caches
@@ -4801,12 +4680,7 @@ if ven_perf_raw_view and choice != "🚚 Vendor Performance":
     ven_perf_raw_view = False
     st.rerun()
 
-if overall_issue_raw_view:
-    if st.session_state.get('role') != 'Admin' and "⚠️ Overall Issues" not in st.session_state.get('allowed_modules', []):
-        st.error('Your account does not have access to Overall Issues details.')
-        st.stop()
-    choice = "⚠️ Overall Issues"
-elif ops_remark_raw_view:
+if ops_remark_raw_view:
     if st.session_state.get('role') != 'Admin' and "📊 Operations Summary" not in st.session_state.get('allowed_modules', []):
         st.error('Your account does not have access to Operations Summary details.')
         st.stop()
@@ -5076,7 +4950,7 @@ def get_normalized_overall_payment(path, data=None, processed_signature=None):
 def _read_all_dashboard_sheets_once(path, signature):
     """Read and pre-normalize the master workbook ONCE with disk pickle cache so every switch is <0.1s."""
     pkl_path = os.path.join(DATA_DIR, ".monitoring_sheets_fast_cache.pkl")
-    sig = ("mon_sheets_v4", signature)
+    sig = ("mon_sheets_v5", signature)
     hit = _load_disk_pkl_cache(pkl_path, sig)
     if isinstance(hit, dict) and hit:
         return hit
@@ -5157,7 +5031,7 @@ def load_dashboard_data(page):
         branch_signature = file_version(branch_path) if branch_path and os.path.exists(branch_path) else None
         cb_path = FILE_MAP.get('CUSTOM_BRANCH_RO_MAP', '')
         cb_signature = file_version(cb_path) if cb_path and os.path.exists(cb_path) else None
-        page_cache_key = ('v7', page, processed_signature, payment_signature, branch_signature, cb_signature)
+        page_cache_key = ('v8', page, processed_signature, payment_signature, branch_signature, cb_signature)
         page_cache = st.session_state.setdefault('_dashboard_page_cache', {})
         if page_cache_key in page_cache:
             # Page frames are kept for this session, so module navigation avoids another
@@ -5462,22 +5336,6 @@ def render_unified_filter_bar(
 
     return df_work, state
 
-def render_crossfilter_plotly(container, fig, key, target_state_key, point_field="x"):
-    """Render a Plotly chart; clicking a bar/point updates the unified filter bar on rerun."""
-    try:
-        event = container.plotly_chart(fig, use_container_width=True, on_select="rerun", selection_mode="points", key=key)
-        sel = getattr(event, "selection", None)
-        points = sel.get("points", []) if isinstance(sel, dict) else (getattr(sel, "points", []) or [])
-        if points:
-            pt = points[0]
-            clicked = pt.get(point_field) or pt.get("hovertext") or pt.get("x") or pt.get("label")
-            if clicked is not None:
-                clicked_str = str(clicked).strip()
-                if clicked_str and st.session_state.get(target_state_key) != clicked_str:
-                    st.session_state[f"_pending_{target_state_key}"] = clicked_str
-                    st.rerun()
-    except TypeError:
-        container.plotly_chart(fig, use_container_width=True)
 
 def render_powerbi_insights(title, metrics, insights, period_note=None):
     """Render a consistent, filter-aware insight strip for each dashboard module."""
@@ -5632,20 +5490,26 @@ def render_scheduled_route_master(data):
                 st.info(f"No {spec['label'].lower()} rows for {branch_label} with these filters.")
                 continue
             render_centered_html_table(poster, height=400)
-            poster_bytes = build_formatted_excel_bytes(
-                poster, spec['label'], f"{spec['label']} · {branch_label}",
-                width_overrides=spec['widths'], paper_size=spec['paper_size'], landscape=spec['landscape']
-            )
             file_stem = f"Scheduled_{spec['key'].title()}_Poster_{safe_branch}"
-            st.download_button(
-                f"📥 Download {spec['label']} (Excel)",
-                data=poster_bytes,
-                file_name=f"{file_stem}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                type="primary",
-                key=f"schedule_poster_{spec['key']}_{safe_branch}"
-            )
+            _p_sig = (spec['key'], safe_branch, len(poster))
+            _pc1, _pc2 = st.columns([1.6, 3.4])
+            if _pc1.button(f"📥 Prepare {spec['label']} (Excel)", key=f"prep_srm_{spec['key']}_{safe_branch}", use_container_width=True, type="primary"):
+                with st.spinner(f"Building {spec['label']}..."):
+                    st.session_state[f"_srm_xl_{spec['key']}"] = (
+                        _p_sig,
+                        build_formatted_excel_bytes(
+                            poster, spec['label'], f"{spec['label']} · {branch_label}",
+                            width_overrides=spec['widths'], paper_size=spec['paper_size'], landscape=spec['landscape']
+                        )
+                    )
+            if st.session_state.get(f"_srm_xl_{spec['key']}") and st.session_state[f"_srm_xl_{spec['key']}"][0] == _p_sig:
+                _pc2.download_button(
+                    f"⬇️ Download {spec['label']} (Excel)",
+                    data=st.session_state[f"_srm_xl_{spec['key']}"][1],
+                    file_name=f"{file_stem}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"schedule_poster_{spec['key']}_{safe_branch}"
+                )
 
     master_columns = [
         'Route Code', 'RO', 'Origin', 'Origin Branch', 'Destination', 'Destination Branch', 'Destination RO',
@@ -5767,643 +5631,13 @@ def get_overall_payment_status_masks(frame):
     }
 
 # --------------------- Overall Issues: in-session drill-down and export ---------------------
-def _overall_count_from_cell(value):
-    if isinstance(value, str):
-        match = re.search(r'\(([-\d,]+)\)', value)
-        if match:
-            try:
-                return int(match.group(1).replace(',', ''))
-            except ValueError:
-                pass
-    return int(value) if isinstance(value, (int, np.integer)) else 0
 
-def build_overall_issue_export_frames(ops_raw, pay_raw, cpk_raw, ro='ALL ROS'):
-    """Return focused, purpose-built detail tables for the issue workbook."""
-    operations = ops_raw.copy() if isinstance(ops_raw, pd.DataFrame) else pd.DataFrame()
-    payments = pay_raw.copy() if isinstance(pay_raw, pd.DataFrame) else pd.DataFrame()
-    cpk = cpk_raw.copy() if isinstance(cpk_raw, pd.DataFrame) else pd.DataFrame()
 
-    ops_ro_col = get_col(operations, ['Origin RO', 'RO Name', 'RO'])
-    if ro != 'ALL ROS' and ops_ro_col:
-        operations = operations[_clean_ro_series(operations[ops_ro_col]).eq(ro)].copy()
-    remark_col = get_col(operations, ['Remark'])
-    dep_col, arr_col = get_col(operations, ['Dep_Status']), get_col(operations, ['Arr_Status'])
-    remark = operations[remark_col].fillna('').astype(str) if remark_col else pd.Series('', index=operations.index)
-    dep = operations[dep_col].fillna('').astype(str) if dep_col else remark
-    arr = operations[arr_col].fillna('').astype(str) if arr_col else remark
-    source = remark.where(remark.str.strip().ne(''), dep + ', ' + arr)
-    outcomes = ['Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr', 'Late Dep, Late Arr', 'Late Dep, Ontime Arr']
-    operations['Operations Outcome'] = ''
-    for outcome in outcomes:
-        mask = source.str.contains(outcome, case=False, na=False)
-        operations.loc[mask, 'Operations Outcome'] = outcome
-    operations = operations[operations['Operations Outcome'].ne('')].copy()
-    operations_columns = [
-        'MCD_StartDate', 'Remark', 'Operations Outcome', 'Zone', 'Origin RO', 'Route Path', 'Legwise', 'Legs',
-        'CD_FromBranch', 'CD_ToBranch', 'MasterCDNo',
-        'Scheduled Departure Time', 'Actual Departure Time',
-        'Scheduled Arrival Time', 'Actual Arrival Time'
-    ]
-    operations = operations.reindex(columns=[c for c in operations_columns if c in operations.columns]).fillna('')
 
-    pay_ro_col = get_col(payments, ['RO Name', 'Origin RO', 'RO'])
-    if ro != 'ALL ROS' and pay_ro_col:
-        payments = payments[_clean_ro_series(payments[pay_ro_col]).eq(ro)].copy()
-    status_masks = get_overall_payment_status_masks(payments)
-    payments['Payment Group'] = ''
-    for label, mask_name in [
-        ('Draft', 'Draft bills'), ('Pending', 'Pending bills'),
-        ('Payment Pending / Paid', 'Payment pending / paid'),
-        ('Finance Pending', 'Finance pending'), ('Finance Hold', 'Finance hold')
-    ]:
-        payments.loc[status_masks[mask_name], 'Payment Group'] = label
-    payments.loc[status_masks['Other bills'], 'Payment Group'] = 'Other'
-    payment_columns = [
-        'Base Date', 'Invoice Id', 'Invoice Date', 'RO Name', 'Zone', 'Vendor Name',
-        'Category', 'Amount', 'Status', 'Payment Group', 'Pending With', 'Last Approved At',
-        'Partial Payment', 'Balance Payable Amount', 'Hold Name', 'Hold Key', 'Finance Revert Remarks 1',
-        'Approver Revert Remarks'
-    ]
-    payments = payments.reindex(columns=[c for c in payment_columns if c in payments.columns]).fillna('')
 
-    utilization = pd.DataFrame()
-    if not cpk.empty:
-        try:
-            route_master = build_cpk_tables_from_raw(cpk).get('CPK_National_Zonal_UpDown', pd.DataFrame()).copy()
-            route_ro_col = get_col(route_master, ['VendorRO', 'RO_Clean', 'RO'])
-            if route_ro_col and ro != 'ALL ROS':
-                route_master = route_master[_clean_ro_series(route_master[route_ro_col]).eq(ro)].copy()
-            route_type_col = get_col(route_master, ['Type', 'Final_Type'])
-            util_col = get_col(route_master, ['Overall Util %', 'Utilization'])
-            if route_type_col and util_col:
-                route_master = route_master[route_master[route_type_col].astype(str).str.upper().isin(['NATIONAL LH', 'ZONAL LH'])].copy()
-                route_name_col = get_col(route_master, ['Route (UP/DOWN)', 'Final_Route', 'Route'])
-                route_zone_col = get_col(route_master, ['Zone'])
-                route_keys = [c for c in [route_ro_col, route_zone_col, route_type_col, route_name_col] if c]
-                if route_keys:
-                    route_master = route_master.drop_duplicates(route_keys)
-                rates = pd.to_numeric(route_master[util_col], errors='coerce')
-                if rates.dropna().gt(1).any():
-                    rates = rates / 100
-                route_master['Utilization Class'] = np.where(rates < 0.60, 'Underutilized (<60%)', 'Efficiently utilized (60%+)')
-                route_master['Route Utilization'] = (rates * 100).round(1).astype('string') + '%'
-            utilization_columns = [
-                'Zone', route_ro_col, 'Route (UP/DOWN)', route_type_col,
-                'Vehicle Count', 'Total Trips', 'Overall Util %', 'Route Utilization', 'Utilization Class'
-            ]
-            utilization = route_master.reindex(columns=[c for c in utilization_columns if c and c in route_master.columns]).fillna('')
-            utilization = utilization.rename(columns={route_ro_col: 'RO', route_type_col: 'Route Type'})
-        except Exception as exc:
-            logging.warning(f"Overall Issues utilization detail warning: {exc}")
 
-    return payments, operations, utilization
 
-def build_overall_issues_excel_bytes(summary, payment, operations, utilization, report_title):
-    """Build one polished workbook with summary and three focused data sheets."""
-    buffer = io.BytesIO()
-    sheets = [
-        ('Summary', summary, {c: 0.50 for c in summary.columns if c not in ['RO Name', 'Zone', 'Total Trips', 'Total Bills']}),
-        ('Payment', payment, {}),
-        ('Operations Performance', operations, {}),
-        ('Utilization', utilization, {'Route Utilization': 0.60, 'Overall Util %': 0.60})
-    ]
-    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-        workbook = writer.book
-        title_fmt = workbook.add_format({'bold': True, 'font_size': 16, 'font_color': '#FFFFFF', 'bg_color': '#102B46', 'valign': 'vcenter'})
-        sub_fmt = workbook.add_format({'font_color': '#42566B', 'italic': True, 'bg_color': '#EAF2F8', 'valign': 'vcenter'})
-        head_fmt = workbook.add_format({'bold': True, 'font_color': '#FFFFFF', 'bg_color': '#155E75', 'border': 1, 'border_color': '#0E7490', 'align': 'center', 'valign': 'vcenter', 'text_wrap': True})
-        base_even = workbook.add_format({'bg_color': '#F2F7FB', 'font_color': '#14283B', 'bottom': 1, 'bottom_color': '#D9E3EC', 'valign': 'vcenter', 'text_wrap': True})
-        base_odd = workbook.add_format({'bg_color': '#FFFFFF', 'font_color': '#14283B', 'bottom': 1, 'bottom_color': '#D9E3EC', 'valign': 'vcenter', 'text_wrap': True})
-        low_even = workbook.add_format({'bg_color': '#DDF3E8', 'font_color': '#14532D', 'bold': True, 'bottom': 1, 'bottom_color': '#B8DDC8', 'align': 'center'})
-        low_odd = workbook.add_format({'bg_color': '#EAF8F0', 'font_color': '#14532D', 'bold': True, 'bottom': 1, 'bottom_color': '#B8DDC8', 'align': 'center'})
-        high_even = workbook.add_format({'bg_color': '#FCE1E1', 'font_color': '#8A1C1C', 'bold': True, 'bottom': 1, 'bottom_color': '#E9BABA', 'align': 'center'})
-        high_odd = workbook.add_format({'bg_color': '#FFF0E0', 'font_color': '#8A3B0A', 'bold': True, 'bottom': 1, 'bottom_color': '#E9CBAA', 'align': 'center'})
-        row_green_fmt = workbook.add_format({'bg_color': '#E2F0D9', 'font_color': '#1F4E2B', 'bottom': 1, 'bottom_color': '#B8DDC8', 'valign': 'vcenter', 'text_wrap': True})
-        row_red_fmt = workbook.add_format({'bg_color': '#FCE4D6', 'font_color': '#7F1D1D', 'bottom': 1, 'bottom_color': '#E9BABA', 'valign': 'vcenter', 'text_wrap': True})
-        row_soft_red_fmt = workbook.add_format({'bg_color': '#FFF1F2', 'font_color': '#9F1239', 'bottom': 1, 'bottom_color': '#FECDD3', 'valign': 'vcenter', 'text_wrap': True})
-        row_yellow_fmt = workbook.add_format({'bg_color': '#FFF2CC', 'font_color': '#7F6000', 'bottom': 1, 'bottom_color': '#E9CBAA', 'valign': 'vcenter', 'text_wrap': True})
-        row_purple_fmt = workbook.add_format({'bg_color': '#E4DFEC', 'font_color': '#4C2A69', 'bottom': 1, 'bottom_color': '#D5C8E5', 'valign': 'vcenter', 'text_wrap': True})
-        for sheet_name, source_df, thresholds in sheets:
-            frame = source_df.copy() if isinstance(source_df, pd.DataFrame) else pd.DataFrame()
-            if frame.empty:
-                frame = pd.DataFrame({'Status': ['No records for the selected RO, zone, and duration.']})
-            frame = frame.reset_index(drop=True)
-            ncols = max(len(frame.columns), 1)
-            frame.to_excel(writer, sheet_name=sheet_name, startrow=2, index=False)
-            ws = writer.sheets[sheet_name]
-            ws.merge_range(0, 0, 0, ncols - 1, report_title, title_fmt)
-            ws.merge_range(1, 0, 1, ncols - 1, f"{sheet_name} · Generated {get_ist_now():%d %b %Y, %I:%M %p} IST", sub_fmt)
-            ws.set_row(0, 30); ws.set_row(1, 21); ws.set_row(2, 34)
-            for ci, col in enumerate(frame.columns):
-                ws.write(2, ci, str(col), head_fmt)
-                vals = frame[col].fillna('').astype(str).tolist()
-                width = min(max(max([len(str(col))] + [min(len(v), 55) for v in vals]) + 2, 12), 38)
-                ws.set_column(ci, ci, width)
-            for ri, (_, row) in enumerate(frame.iterrows(), start=3):
-                even = (ri - 3) % 2 == 0
-                row_label_text = ' '.join(str(row.get(col, '')).strip().lower() for col in ['Payment Group', 'Operations Outcome', 'Utilization Class'] if col in row.index)
-                if 'payment pending / paid' in row_label_text or 'efficiently' in row_label_text or 'ontime dep, ontime arr' in row_label_text:
-                    row_fmt = row_green_fmt
-                elif 'finance hold' in row_label_text or 'draft' in row_label_text or 'underutilized' in row_label_text or 'late dep, late arr' in row_label_text:
-                    row_fmt = row_red_fmt
-                elif 'ontime dep, late arr' in row_label_text:
-                    row_fmt = row_soft_red_fmt
-                elif 'finance pending' in row_label_text or 'other' in row_label_text or 'pending' in row_label_text or 'late dep, ontime arr' in row_label_text:
-                    row_fmt = row_yellow_fmt
-                else:
-                    row_fmt = base_even if even else base_odd
-                for ci, col in enumerate(frame.columns):
-                    value = row[col]
-                    if isinstance(value, np.generic):
-                        value = value.item()
-                    if value is None or (not isinstance(value, (list, dict)) and pd.isna(value)):
-                        value = ''
-                    fmt = row_fmt
-                    col_lower = str(col).strip().lower()
-                    if col_lower == 'payment pending / paid':
-                        fmt = row_green_fmt
-                    elif col_lower in ['other', 'other bills']:
-                        fmt = row_yellow_fmt
-                    elif col_lower in ['draft', 'draft bills', 'finance hold', 'underutilized routes']:
-                        fmt = row_red_fmt
-                    elif col_lower in ['finance pending', 'pending']:
-                        fmt = row_yellow_fmt
-                    elif col_lower == 'ontime dep, ontime arr':
-                        fmt = row_green_fmt
-                    elif col_lower == 'ontime dep, late arr':
-                        fmt = row_soft_red_fmt
-                    elif col_lower == 'late dep, late arr':
-                        fmt = row_red_fmt
-                    elif col_lower == 'late dep, ontime arr':
-                        fmt = row_yellow_fmt
-                    elif col_lower == 'efficiently utilized routes':
-                        fmt = row_green_fmt
-                    threshold = thresholds.get(col)
-                    if threshold is not None:
-                        pct = None if col == 'Overall Util %' and isinstance(value, (int, float)) else parse_pct_from_str(value)
-                        if pct is None and isinstance(value, (int, float)):
-                            pct = float(value) * 100 if float(value) <= 1 else float(value)
-                        if pct is not None:
-                            is_low = pct < threshold * 100
-                            if col in ('Route Utilization', 'Overall Util %'):
-                                is_low = not is_low
-                            fmt = (low_even if even else low_odd) if is_low else (high_even if even else high_odd)
-                    if col_lower == 'payment pending / paid':
-                        fmt = row_green_fmt
-                    elif col_lower in ['draft', 'draft bills', 'finance hold', 'underutilized routes']:
-                        fmt = row_red_fmt
-                    elif col_lower in ['finance pending', 'pending', 'other', 'other bills']:
-                        fmt = row_yellow_fmt
-                    elif col_lower in ['ontime dep, ontime arr', 'efficiently utilized routes']:
-                        fmt = row_green_fmt
-                    elif col_lower == 'ontime dep, late arr':
-                        fmt = row_soft_red_fmt
-                    elif col_lower == 'late dep, late arr':
-                        fmt = row_red_fmt
-                    elif col_lower == 'late dep, ontime arr':
-                        fmt = row_yellow_fmt
-                    ws.write(ri, ci, value, fmt)
-                ws.set_row(ri, 23)
-            ws.autofilter(2, 0, len(frame) + 2, max(len(frame.columns) - 1, 0))
-            ws.freeze_panes(3, 0)
-            ws.set_landscape(); ws.fit_to_pages(1, 0); ws.repeat_rows(2)
-            ws.set_margins(0.25, 0.25, 0.4, 0.4)
-            ws.set_header('&LTrackon Command Center&R&P')
-            ws.set_footer('&LConfidential report&RPage &P of &N')
-    return buffer.getvalue()
 
-def _overall_issue_pivot_selection(frame, group_columns, count_label, key, default_frame=None):
-    """Show a compact pivot; selecting a row narrows the raw records below it."""
-    if frame.empty or not all(column in frame.columns for column in group_columns):
-        st.info('No records for this section in the selected window.')
-        return default_frame.copy() if isinstance(default_frame, pd.DataFrame) else frame
-    pivot = frame.groupby(group_columns, dropna=False).size().reset_index(name=count_label)
-    pivot = pivot.sort_values(count_label, ascending=False).reset_index(drop=True)
-    try:
-        event = st.dataframe(
-            style_ui_dataframe(pivot), use_container_width=True, hide_index=True, height=210,
-            on_select='rerun', selection_mode='single-row', key=key
-        )
-        selection = getattr(event, 'selection', {})
-        rows = getattr(selection, 'rows', None) if not isinstance(selection, dict) else selection.get('rows')
-        if rows:
-            selected_index = rows[-1]
-            if isinstance(selected_index, int) and 0 <= selected_index < len(pivot):
-                selected = pivot.iloc[selected_index]
-                narrowed = frame
-                for column in group_columns:
-                    value = selected[column]
-                    narrowed = narrowed[narrowed[column].fillna('').astype(str).eq(str(value))]
-                st.caption(f"Pivot selection: {int(selected[count_label]):,} matching records")
-                return narrowed.copy()
-    except TypeError:
-        st.dataframe(style_ui_dataframe(pivot), use_container_width=True, hide_index=True, height=210)
-    return default_frame.copy() if isinstance(default_frame, pd.DataFrame) else frame
-
-def render_overall_issue_raw_page(data, query):
-    """Show focused issue details with summaries, filters and one formatted workbook."""
-    st.markdown('## Issue detail records')
-    st.caption('Only the selected issue category is shown. Select a summary row to narrow its records, or download the selected issue.')
-    ops_all, pay_all = get_overall_issue_frames(data)
-    cpk_all = get_overall_cpk_frame(data)
-    default_start, default_end = get_overall_issue_date_bounds(ops_all, pay_all, cpk_all)
-    try:
-        start_date = datetime.date.fromisoformat(query.get('issues_start', ''))
-        end_date = datetime.date.fromisoformat(query.get('issues_end', ''))
-    except Exception:
-        start_date, end_date = default_start, default_end
-    if start_date > end_date:
-        start_date, end_date = end_date, start_date
-    zone = query.get('issues_zone', 'ALL ZONES') or 'ALL ZONES'
-    issue_type = query.get('issues_type', 'Ontime Dep, Ontime Arr') or 'Ontime Dep, Ontime Arr'
-    valid_types = [
-        'Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr', 'Late Dep, Late Arr', 'Late Dep, Ontime Arr',
-        'Draft bills', 'Pending bills', 'Payment pending / paid', 'Finance pending', 'Finance hold', 'Other bills',
-        'Underutilized routes', 'Efficiently utilized routes'
-    ]
-    if issue_type not in valid_types:
-        issue_type = 'Ontime Dep, Ontime Arr'
-    ops_base, pay_base = filter_overall_issue_frames(ops_all, pay_all, start_date, end_date, zone)
-    cpk_base = filter_overall_utilization_frame(cpk_all, start_date, end_date, zone)
-    all_ro = {'ALL ROS'}
-    for frame, candidates in [
-        (ops_base, ['Origin RO', 'RO Name', 'RO']),
-        (pay_base, ['RO Name', 'Origin RO', 'RO']),
-        (cpk_base, ['RO_Clean', 'VendorRO', 'RO'])
-    ]:
-        col = get_col(frame, candidates)
-        if col:
-            all_ro.update(_clean_ro_series(frame[col]).tolist())
-    ro_options = ['ALL ROS'] + sorted(x for x in all_ro if x != 'ALL ROS')
-    requested_ro = query.get('issues_ro', 'ALL ROS') or 'ALL ROS'
-    if requested_ro not in ro_options:
-        requested_ro = 'ALL ROS'
-    route_options = {'ALL ROUTES'}
-    for frame, candidates in [
-        (ops_base, ['Route Path', 'Route']),
-        (cpk_base, ['Final_Route', 'Route (UP/DOWN)', 'Route'])
-    ]:
-        col = get_col(frame, candidates)
-        if col:
-            route_options.update(frame[col].dropna().astype(str).str.strip().tolist())
-    route_options = ['ALL ROUTES'] + sorted(x for x in route_options if x and x != 'ALL ROUTES')
-    requested_route = query.get('issues_route', 'ALL ROUTES') or 'ALL ROUTES'
-    if requested_route not in route_options:
-        requested_route = 'ALL ROUTES'
-    filter_ro_col, filter_route_col = st.columns(2)
-    selected_ro = filter_ro_col.selectbox('Filter by RO', ro_options, index=ro_options.index(requested_ro), key='overall_issues_raw_ro')
-    selected_route = filter_route_col.selectbox('Filter by route', route_options, index=route_options.index(requested_route), key='overall_issues_raw_route')
-
-    def ro_filter(frame, candidates):
-        col = get_col(frame, candidates)
-        if selected_ro == 'ALL ROS':
-            return frame.copy()
-        return frame[_clean_ro_series(frame[col]).eq(selected_ro)].copy() if col else frame.iloc[0:0].copy()
-
-    operations, payments, cpk = (
-        ro_filter(ops_base, ['Origin RO', 'RO Name', 'RO']),
-        ro_filter(pay_base, ['RO Name', 'Origin RO', 'RO']),
-        ro_filter(cpk_base, ['RO_Clean', 'VendorRO', 'RO'])
-    )
-    route_applies_to_payment = issue_type.lower() in [
-        'draft bills', 'pending bills', 'payment pending / paid', 'finance pending', 'finance hold', 'other bills'
-    ]
-    if selected_route != 'ALL ROUTES':
-        ops_route_col = get_col(operations, ['Route Path', 'Route'])
-        cpk_route_col = get_col(cpk, ['Final_Route', 'Route (UP/DOWN)', 'Route'])
-        if ops_route_col:
-            operations = operations[operations[ops_route_col].fillna('').astype(str).str.strip().eq(selected_route)].copy()
-        if cpk_route_col:
-            cpk = cpk[cpk[cpk_route_col].fillna('').astype(str).str.strip().eq(selected_route)].copy()
-    if route_applies_to_payment and selected_route != 'ALL ROUTES':
-        st.info('Payment records do not contain a route field, so the route filter is ignored for this payment issue.')
-
-    summary = build_overall_issues_summary(operations, payments, cpk)
-    payments, operations, utilization = build_overall_issue_export_frames(operations, payments, cpk, 'ALL ROS')
-    operations_issues = [
-        'Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr', 'Late Dep, Late Arr', 'Late Dep, Ontime Arr'
-    ]
-    payment_groups = {
-        'Draft bills': 'Draft', 'Pending bills': 'Pending',
-        'Payment pending / paid': 'Payment Pending / Paid',
-        'Finance pending': 'Finance Pending', 'Finance hold': 'Finance Hold', 'Other bills': 'Other'
-    }
-    if issue_type in operations_issues:
-        focused = operations[operations.get('Operations Outcome', pd.Series('', index=operations.index)).eq(issue_type)].copy()
-        denominator = len(operations)
-    elif issue_type in payment_groups:
-        focused = payments[payments.get('Payment Group', pd.Series('', index=payments.index)).eq(payment_groups[issue_type])].copy()
-        denominator = len(payments)
-    else:
-        class_col = get_col(utilization, ['Utilization Class'])
-        is_under = issue_type == 'Underutilized routes'
-        wanted = 'Underutilized' if is_under else 'Efficiently'
-        focused = utilization[utilization[class_col].astype(str).str.contains(wanted, case=False, na=False)].copy() if class_col else utilization.iloc[0:0].copy()
-        denominator = len(utilization)
-    issue_count = len(focused)
-    issue_pct = issue_count / denominator * 100 if denominator else 0
-    safe_issue_key = re.sub(r'[^A-Za-z0-9]+', '_', issue_type).strip('_')
-    pivot_suffix = f"_{safe_issue_key}_{start_date:%Y%m%d}_{end_date:%Y%m%d}_{selected_ro}_{selected_route}"
-    st.caption(f"{issue_type} · {selected_ro} · {zone} · {start_date:%d %b %Y} to {end_date:%d %b %Y} · {selected_route}")
-    m1, m2, m3 = st.columns(3)
-    m1.metric('Selected issue rate', f'{issue_pct:.1f}%')
-    m2.metric('Matching records', f'{issue_count:,}')
-    m3.metric('Selected denominator', f'{denominator:,}')
-
-    if issue_type in operations_issues:
-        st.markdown('### Operations Performance')
-        view = _overall_issue_pivot_selection(
-            focused, ['Origin RO', 'Route Path', 'Operations Outcome'], 'Trips',
-            f'overall_issues_ops_pivot{pivot_suffix}', focused
-        )
-        compact_view = compact_detail_frame(view, 'ops_raw')
-        if compact_view.empty:
-            st.info('No matching operations records for this issue.')
-        else:
-            render_centered_html_table(compact_view, height=420)
-    elif issue_type in payment_groups:
-        st.markdown('### Payment')
-        view = _overall_issue_pivot_selection(
-            focused, ['RO Name', 'Payment Group'], 'Bills',
-            f'overall_issues_payment_pivot{pivot_suffix}', focused
-        )
-        compact_view = compact_detail_frame(view, 'pay_raw')
-        if compact_view.empty:
-            st.info('No matching payment records for this issue.')
-        else:
-            render_centered_html_table(compact_view, height=420)
-    else:
-        st.markdown('### Utilization')
-        util_ro_col = get_col(focused, ['RO'])
-        util_route_col = get_col(focused, ['Route'])
-        util_type_col = get_col(focused, ['Route Type'])
-        util_class_col = get_col(focused, ['Utilization Class'])
-        util_group_cols = [c for c in [util_ro_col, util_route_col, util_type_col, util_class_col] if c]
-        view = _overall_issue_pivot_selection(
-            focused, util_group_cols, 'Routes', f'overall_issues_util_pivot{pivot_suffix}', focused
-        ) if util_group_cols else focused
-        compact_view = compact_detail_frame(view, 'cpk_raw')
-        if compact_view.empty:
-            st.info('No matching utilization records for this issue.')
-        else:
-            render_centered_html_table(compact_view, height=420)
-
-    focused_kind = 'ops_raw' if issue_type in operations_issues else ('pay_raw' if issue_type in payment_groups else 'cpk_raw')
-    focused_compact = compact_detail_frame(focused, focused_kind)
-    if not focused_compact.empty:
-        focused_excel = io.BytesIO()
-        with pd.ExcelWriter(focused_excel, engine='xlsxwriter') as writer:
-            write_styled_sheet_to_excel(writer, focused_compact, 'Selected_Issue_Raw', sheet_type=focused_kind)
-        st.download_button(
-            f'📥 Download only {issue_type} raw records (formatted Excel)',
-            data=focused_excel.getvalue(),
-            file_name=f"Overall_Issue_{safe_issue_key}_{selected_ro}_{start_date:%Y%m%d}_{end_date:%Y%m%d}.xlsx",
-            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            key='overall_issues_focused_download'
-        )
-
-    title = f"Overall Issues · {selected_ro} · {zone} · {start_date:%d %b %Y} to {end_date:%d %b %Y}"
-    excel_bytes = build_overall_issues_excel_bytes(summary, payments, operations, utilization, title)
-    safe_ro = re.sub(r'[^A-Za-z0-9_-]+', '_', selected_ro).strip('_') or 'ALL_ROS'
-    st.download_button(
-        '📥 Download Summary + Payment + Operations + Utilization (formatted Excel)',
-        data=excel_bytes,
-        file_name=f"Overall_Issues_{safe_ro}_{start_date:%Y%m%d}_{end_date:%Y%m%d}.xlsx",
-        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        type='primary', key='overall_issues_raw_excel'
-    )
-
-def _overall_issue_link_markup(issue_type, ro, zone, start_date, end_date, route='ALL ROUTES'):
-    params = {
-        'issues_raw': '1',
-        'issues_auth': create_overall_issue_access_token(st.session_state.get('username', '')),
-        'issues_ro': str(ro), 'issues_route': str(route), 'issues_zone': str(zone),
-        'issues_type': str(issue_type), 'issues_start': start_date.isoformat(),
-        'issues_end': end_date.isoformat()
-    }
-    params_json = json.dumps(params, ensure_ascii=True).replace('</', '<\\/')
-    base_url_json = json.dumps(get_overall_issue_query_url(), ensure_ascii=True).replace('</', '<\\/')
-    return params_json, base_url_json
-
-def render_overall_issues_metric_cards(metric_specs, zone=None, start_date=None, end_date=None,
-                                       ro='ALL ROS', route='ALL ROUTES'):
-    issue_lookup = {
-        'Ontime Dep, Ontime Arr': 'Ontime Dep, Ontime Arr',
-        'Ontime Dep, Late Arr': 'Ontime Dep, Late Arr',
-        'Late Dep, Late Arr': 'Late Dep, Late Arr',
-        'Late Dep, Ontime Arr': 'Late Dep, Ontime Arr',
-        'Draft Bills': 'Draft bills', 'Pending': 'Pending bills',
-        'Payment Pending / Paid': 'Payment pending / paid',
-        'Finance Pending': 'Finance pending', 'Finance Hold': 'Finance hold', 'Other': 'Other bills',
-        'Underutilized Routes': 'Underutilized routes',
-        'Efficiently Utilized Routes': 'Efficiently utilized routes'
-    }
-    gauge_colors = {
-        'Ontime Dep, Ontime Arr': ('#16a34a', '#f0fdf4', '#bbf7d0', '🟢'),
-        'Ontime Dep, Late Arr': ('#f87171', '#fff1f2', '#fecdd3', '🌸'),
-        'Late Dep, Late Arr': ('#dc2626', '#fef2f2', '#fecaca', '🔴'),
-        'Late Dep, Ontime Arr': ('#f59e0b', '#fffbeb', '#fde68a', '🟡'),
-        'Draft Bills': ('#dc2626', '#fef2f2', '#fecaca', '🔴'),
-        'Pending': ('#f59e0b', '#fffbeb', '#fde68a', '🟡'),
-        'Payment Pending / Paid': ('#16a34a', '#f0fdf4', '#bbf7d0', '🟢'),
-        'Finance Pending': ('#f59e0b', '#fffbeb', '#fde68a', '🟡'),
-        'Finance Hold': ('#dc2626', '#fef2f2', '#fecaca', '🔴'),
-        'Other': ('#f59e0b', '#fffbeb', '#fde68a', '🟡'),
-        'Underutilized Routes': ('#dc2626', '#fef2f2', '#fecaca', '🔴'),
-        'Efficiently Utilized Routes': ('#16a34a', '#f0fdf4', '#bbf7d0', '🟢')
-    }
-    gauges = []
-    for label, count, total, unit in metric_specs:
-        issue = issue_lookup.get(label)
-        if not issue:
-            continue
-        pct = min(100, max(0, count / total * 100)) if total else 0
-        color, surface, border, icon = gauge_colors[label]
-        if not THEME_IS_LIGHT:
-            if label in {'Ontime Dep, Ontime Arr', 'Payment Pending / Paid', 'Efficiently Utilized Routes'}:
-                tone_key = 'green'
-            elif label in {'Ontime Dep, Late Arr'}:
-                tone_key = 'soft_red'
-            elif label in {'Late Dep, Ontime Arr', 'Draft Bills', 'Finance Hold', 'Underutilized Routes'}:
-                tone_key = 'red'
-            elif label == 'Late Dep, Late Arr':
-                tone_key = 'red'
-            else:
-                tone_key = 'yellow'
-            surface = THEME_STATUS_PALETTE[tone_key][0]
-            border = selected_theme['line']
-        params_json, base_url_json = _overall_issue_link_markup(issue, ro, zone or 'ALL ZONES', start_date, end_date, route)
-        gauge_dash = 201.06 * pct / 100
-        gauges.append(f'''<a class="gauge-link" href="#" data-params="{html_module.escape(params_json, quote=True)}" data-base="{html_module.escape(base_url_json, quote=True)}">
-          <div class="gauge-card" style="background:{surface};border-color:{border}">
-            <div class="gauge-label">{icon} {html_module.escape(label)}</div>
-            <svg viewBox="0 0 160 108" role="img" aria-label="{pct:.1f} percent">
-              <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="{html_module.escape(selected_theme['line'])}" stroke-width="11" stroke-linecap="round" pathLength="201.06"/>
-              <path d="M 16 88 A 64 64 0 0 1 144 88" fill="none" stroke="{color}" stroke-width="11" stroke-linecap="round" stroke-dasharray="{gauge_dash:.2f} 201.06" pathLength="201.06"/>
-              <text x="80" y="83" text-anchor="middle" font-size="22" font-weight="750" fill="{html_module.escape(selected_theme['text'])}">{pct:.1f}%</text>
-              <text x="16" y="104" text-anchor="middle" font-size="9" fill="{html_module.escape(selected_theme['muted'])}">0%</text>
-              <text x="144" y="104" text-anchor="middle" font-size="9" fill="{html_module.escape(selected_theme['muted'])}">100%</text>
-            </svg>
-            <div class="gauge-caption">{count:,} of {total:,} {html_module.escape(unit)}</div>
-          </div>
-        </a>''')
-    markup = '''<!doctype html><html><head><meta charset="utf-8"><style>
-    * { box-sizing:border-box; } body { margin:0; font:12px/1.35 Arial,sans-serif; background:#f4f7fb; color:#172033; }
-    .grid { display:grid; grid-template-columns:repeat(4,minmax(150px,1fr)); gap:10px; }
-    .gauge-link { color:inherit; text-decoration:none; min-width:0; }
-    .gauge-link:hover .gauge-card { transform:translateY(-2px); box-shadow:0 10px 24px rgba(15,23,42,.11); }
-    .gauge-card { min-width:0; min-height:148px; text-align:center; border:1px solid #dbe4ee; border-radius:15px; padding:.65rem .45rem .55rem; box-shadow:0 6px 18px rgba(15,23,42,.055); transition:transform .14s ease,box-shadow .14s ease; }
-    .gauge-label { min-height:2.25rem; color:#172033; font-size:.78rem; font-weight:700; display:flex; justify-content:center; align-items:center; }
-    svg { display:block; width:min(100%,160px); height:auto; margin:.05rem auto -.15rem; overflow:visible; }
-    .gauge-caption { color:#64748b; font-size:.7rem; font-weight:600; }
-    @media(max-width:900px) { .grid { grid-template-columns:repeat(2,minmax(140px,1fr)); } }
-    @media(max-width:520px) { .grid { grid-template-columns:1fr; } }
-    </style></head><body><div class="grid">CARD_HTML</div><script>
-    let lastGaugeOpenAt = 0;
-    document.querySelectorAll('.gauge-link').forEach((link) => link.addEventListener('click', (event) => {
-      event.preventDefault();
-      const now = Date.now();
-      if (now - lastGaugeOpenAt < 650) return;
-      lastGaugeOpenAt = now;
-      try { const base = JSON.parse(link.dataset.base) || document.referrer; const target = new URL(base);
-        Object.entries(JSON.parse(link.dataset.params)).forEach(([key,value]) => target.searchParams.set(key,value));
-        window.open(target.toString(), '_blank', 'noopener,noreferrer');
-      } catch (error) { window.alert('Could not open issue details. Please open the dashboard in a browser tab and try again.'); }
-    }));
-    </script></body></html>'''.replace('CARD_HTML', ''.join(gauges))
-    markup = (markup.replace('background:#f4f7fb; color:#172033;',
-                             f"background:{selected_theme['navy950']}; color:{selected_theme['text']};")
-              .replace('border:1px solid #dbe4ee;', f"border:1px solid {selected_theme['line']};")
-              .replace('color:#172033;', f"color:{selected_theme['text']};")
-              .replace('color:#64748b;', f"color:{selected_theme['muted']};"))
-    st.components.v1.html(markup, height=560, scrolling=False)
-
-def render_overall_issues_clickable_table(summary, start_date=None, end_date=None,
-                                           zone='ALL ZONES', route='ALL ROUTES'):
-    """Render rate/count cells as focused, signed new-tab drill-down links."""
-    issue_lookup = {
-        'Ontime Dep, Ontime Arr': 'Ontime Dep, Ontime Arr',
-        'Ontime Dep, Late Arr': 'Ontime Dep, Late Arr',
-        'Late Dep, Late Arr': 'Late Dep, Late Arr',
-        'Late Dep, Ontime Arr': 'Late Dep, Ontime Arr',
-        'Draft Bills': 'Draft bills', 'Pending': 'Pending bills',
-        'Payment Pending / Paid': 'Payment pending / paid',
-        'Finance Pending': 'Finance pending', 'Finance Hold': 'Finance hold', 'Other': 'Other bills',
-        'Underutilized Routes': 'Underutilized routes',
-        'Efficiently Utilized Routes': 'Efficiently utilized routes'
-    }
-    all_columns = [
-        'RO Name', 'Zone', 'Total Trips',
-        'Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr', 'Late Dep, Late Arr', 'Late Dep, Ontime Arr',
-        'Total Bills', 'Draft Bills', 'Pending', 'Payment Pending / Paid', 'Finance Pending', 'Finance Hold', 'Other',
-        'Underutilized Routes', 'Efficiently Utilized Routes'
-    ]
-    columns = [c for c in all_columns if c in summary.columns]
-    header_html = ''.join(f'<th title="{html_module.escape(str(col), quote=True)}">{html_module.escape(str(col))}</th>' for col in columns)
-    rows_html = []
-    for _, row in summary.iterrows():
-        cells = []
-        for col in columns:
-            value = html_module.escape(str(row.get(col, '')))
-            if col in issue_lookup:
-                pct = parse_pct_from_str(str(row.get(col, '')))
-                if col == 'Ontime Dep, Ontime Arr':
-                    tone = 'good'
-                elif col == 'Ontime Dep, Late Arr':
-                    tone = 'soft-red' if pct is not None and pct > 0 else 'good'
-                elif col == 'Late Dep, Late Arr':
-                    tone = 'bad' if pct is not None and pct > 0 else 'good'
-                elif col == 'Late Dep, Ontime Arr':
-                    tone = 'warn' if pct is not None and pct > 0 else 'good'
-                elif col in ['Pending', 'Finance Pending', 'Other']:
-                    tone = 'warn' if pct is not None and pct > 0 else 'good'
-                elif col in ['Finance Hold', 'Draft Bills', 'Underutilized Routes']:
-                    tone = 'bad' if pct is not None and pct > 0 else 'good'
-                elif col in ['Payment Pending / Paid', 'Efficiently Utilized Routes']:
-                    tone = 'good'
-                else:
-                    tone = 'good'
-                params_json, base_url_json = _overall_issue_link_markup(
-                    issue_lookup[col], row.get('RO Name', 'ALL ROS'), zone, start_date, end_date, route
-                )
-                cells.append(f'<td><a class="issue-cell {tone}" href="#" data-params="{html_module.escape(params_json, quote=True)}" '
-                             f'data-base="{html_module.escape(base_url_json, quote=True)}">{value}</a></td>')
-            else:
-                cells.append(f'<td>{value}</td>')
-        rows_html.append('<tr>' + ''.join(cells) + '</tr>')
-    markup = '''<!doctype html><html><head><meta charset="utf-8"><style>
-    * { box-sizing:border-box; } body { margin:0; font:12px/1.35 Arial,sans-serif; color:#e5eef9; background:#091521; }
-    .wrap { width:100%; height:560px; overflow:auto; border:1px solid #33475b; border-radius:12px; scrollbar-gutter:stable; scrollbar-color:#64748b #e2e8f0; scrollbar-width:auto; }
-    .wrap::-webkit-scrollbar { width:12px; height:12px; }
-    .wrap::-webkit-scrollbar-track { background:#e2e8f0; border-radius:8px; }
-    .wrap::-webkit-scrollbar-thumb { background:#64748b; border:2px solid #e2e8f0; border-radius:8px; }
-    table { border-collapse:separate; border-spacing:0; width:max-content; min-width:100%; }
-    th { position:sticky; top:0; z-index:2; background:#182b40; color:#bdd1e5; text-align:center; vertical-align:middle; white-space:nowrap; padding:10px 11px; border-bottom:1px solid #3b4c60; }
-    td { white-space:nowrap; text-align:center; vertical-align:middle; padding:8px 11px; border-bottom:1px solid rgba(148,163,184,.13); }
-    tr:nth-child(even) td { background:rgba(30,49,69,.44); }
-    th:nth-child(1), td:nth-child(1) { position:sticky; left:0; min-width:132px; z-index:3; }
-    th:nth-child(2), td:nth-child(2) { position:sticky; left:132px; min-width:105px; z-index:3; }
-    th:nth-child(3), td:nth-child(3) { position:sticky; left:237px; min-width:84px; z-index:3; }
-    th:nth-child(-n+3) { background:#182b40; z-index:4; }
-    tr:nth-child(odd) td:nth-child(-n+3) { background:#091521; }
-    tr:nth-child(even) td:nth-child(-n+3) { background:#122b40; }
-    .issue-cell { display:block; margin:-8px -11px; padding:8px 11px; color:inherit; text-decoration:none; font-weight:700; }
-    .issue-cell.good { background:rgba(52,211,153,.15); color:#a7f3d0; }
-    .issue-cell.soft-red { background:rgba(244,63,94,.18); color:#fda4af; }
-    .issue-cell.warn { background:rgba(250,204,21,.16); color:#fde68a; }
-    .issue-cell.bad { background:rgba(248,113,113,.22); color:#fecaca; }
-    .issue-cell.recover { background:rgba(192,132,252,.18); color:#e9d5ff; }
-    .status-cell { font-weight:700; }
-    .status-cell.good { background:rgba(52,211,153,.15); color:#a7f3d0; }
-    .status-cell.warn { background:rgba(250,204,21,.16); color:#fde68a; }
-    .status-cell.bad { background:rgba(248,113,113,.22); color:#fecaca; }
-    .issue-cell:hover { outline:2px solid #67e8f9; outline-offset:-2px; filter:brightness(1.18); }
-    </style></head><body><div class="wrap"><table><thead><tr>HEADER_HTML</tr></thead><tbody>ROWS_HTML</tbody></table></div><script>
-    let lastIssueOpenAt = 0;
-    document.querySelectorAll('.issue-cell').forEach((link) => link.addEventListener('click', (event) => {
-      event.preventDefault();
-      const now = Date.now();
-      if (now - lastIssueOpenAt < 650) return;
-      lastIssueOpenAt = now;
-      try { const base = JSON.parse(link.dataset.base) || document.referrer; const target = new URL(base);
-        Object.entries(JSON.parse(link.dataset.params)).forEach(([key,value]) => target.searchParams.set(key,value));
-        window.open(target.toString(), '_blank', 'noopener,noreferrer');
-      } catch (error) { window.alert('Could not open issue details. Please open the dashboard in a browser tab and try again.'); }
-    }));
-    </script></body></html>'''.replace('HEADER_HTML', header_html).replace('ROWS_HTML', ''.join(rows_html))
-    issue_status_styles = {
-        'good': THEME_STATUS_PALETTE['green'],
-        'soft-red': THEME_STATUS_PALETTE['soft_red'],
-        'warn': THEME_STATUS_PALETTE['yellow'],
-        'bad': THEME_STATUS_PALETTE['red'],
-        'recover': THEME_STATUS_PALETTE['purple']
-    }
-    issue_theme_colors = {
-        'color:#e5eef9; background:#091521;': f"color:{selected_theme['text']}; background:{selected_theme['navy950']};",
-        'border:1px solid #33475b;': f"border:1px solid {selected_theme['line']};",
-        'background:#182b40; color:#bdd1e5;': f"background:{selected_theme['navy800']}; color:{selected_theme['text']};",
-        'th:nth-child(-n+3) { background:#182b40; z-index:4; }': f"th:nth-child(-n+3) {{ background:{selected_theme['navy800']}; z-index:4; }}",
-        'border-bottom:1px solid #3b4c60;': f"border-bottom:1px solid {selected_theme['line']};",
-        'rgba(30,49,69,.44)': f"color-mix(in srgb,{selected_theme['navy800']} 70%,transparent)",
-        'rgba(148,163,184,.13)': f"color-mix(in srgb,{selected_theme['line']} 65%,transparent)",
-        'background:#091521;': f"background:{selected_theme['navy950']};",
-        'background:#122b40;': f"background:{selected_theme['navy800']};",
-        '#e2e8f0': selected_theme['navy800'],
-        '#64748b': selected_theme['muted'],
-        '#67e8f9': selected_theme['accent']
-    }
-    base_issue_status_styles = {
-        'good': 'rgba(52,211,153,.15); color:#a7f3d0;',
-        'soft-red': 'rgba(244,63,94,.18); color:#fda4af;',
-        'warn': 'rgba(250,204,21,.16); color:#fde68a;',
-        'bad': 'rgba(248,113,113,.22); color:#fecaca;',
-        'recover': 'rgba(192,132,252,.18); color:#e9d5ff;'
-    }
-    for issue_tone, (issue_bg, issue_text) in issue_status_styles.items():
-        issue_theme_colors[base_issue_status_styles[issue_tone]] = f"{issue_bg}; color:{issue_text};"
-    for old_color, new_color in issue_theme_colors.items():
-        markup = markup.replace(old_color, new_color)
-    st.components.v1.html(markup, height=580, scrolling=False)
 
 def _max_consecutive_days(date_iterable):
     """Return longest consecutive-day streak of issues for repeat offender detection."""
@@ -6445,22 +5679,28 @@ def _delay_str_to_hrs(val):
 
 def build_daily_overall_issues_pack(ops_df, ven_df, pay_df, cpk_df, group_by_mode="Branch-wise"):
     """
-    Build structured, module-wise issue intelligence tables (strictly Ops, Vendor Delays, Payments, Utilization).
-    All Trips / Additional / Manual Audit is intentionally excluded.
+    Decision-first Escalation & Overall Issues Engine.
+    Produces worst-first sorted tables with plain-English written escalation remarks
+    for Branch, Branch+Route, RO, Zone, Vendor+Leg, Payments, and Utilization.
+    (All Trips / Additional / Manual Audit is strictly excluded.)
     """
     pack = {
-        "ops_summary": pd.DataFrame(),
+        "top_actions": pd.DataFrame(),
+        "zone_summary": pd.DataFrame(),
+        "ro_summary": pd.DataFrame(),
         "branch_repeat": pd.DataFrame(),
-        "vendor_repeat": pd.DataFrame(),
-        "vendor_route_repeat": pd.DataFrame(),
+        "branch_route_repeat": pd.DataFrame(),
+        "vendor_leg_repeat": pd.DataFrame(),
+        "vendor_rollup": pd.DataFrame(),
         "payment_summary": pd.DataFrame(),
         "utilization_summary": pd.DataFrame(),
         "ops_raw_exc": pd.DataFrame(),
         "ven_raw_exc": pd.DataFrame(),
         "pay_raw_exc": pd.DataFrame(),
     }
+    priority_rows = []
 
-    # --- 1. OPERATIONS ISSUES + BRANCH REPEAT OFFENDERS ---
+    # --- 1. OPERATIONS: PURE BRANCH, BRANCH+ROUTE, RO, AND ZONE ESCALATIONS ---
     if isinstance(ops_df, pd.DataFrame) and not ops_df.empty:
         o = ops_df.copy()
         if '_OpsRemarkOutcome' not in o.columns:
@@ -6470,97 +5710,102 @@ def build_daily_overall_issues_pack(ops_df, ven_df, pay_df, cpk_df, group_by_mod
         o['_zone'] = o.get('Zone', pd.Series('UNKNOWN ZONE', index=o.index)).fillna('UNKNOWN ZONE').astype(str).str.strip().str.upper()
         o['_brn'] = o.get('CD_FromBranch', pd.Series('', index=o.index)).fillna('').astype(str).str.strip().str.upper()
         o.loc[o['_brn'].eq(''), '_brn'] = o['_ro']
+        o['_route'] = o.get('Route Path', pd.Series('', index=o.index)).fillna('').astype(str).str.strip()
 
         out_s = o['_OpsRemarkOutcome'].fillna('Other').astype(str)
         o['_oo'] = out_s.eq('Ontime Dep, Ontime Arr').astype(int)
         o['_ol'] = out_s.eq('Ontime Dep, Late Arr').astype(int)
         o['_ll'] = out_s.eq('Late Dep, Late Arr').astype(int)
         o['_lo'] = out_s.eq('Late Dep, Ontime Arr').astype(int)
-        o['_late_dep'] = out_s.str.contains('Late Dep|No Departure', case=False, regex=True, na=False).astype(int)
-        o['_late_arr'] = out_s.str.contains('Late Arr', case=False, regex=True, na=False).astype(int)
+        o['_ld'] = out_s.str.contains('Late Dep|No Departure', case=False, regex=True, na=False).astype(int)
+        o['_la'] = out_s.str.contains('Late Arr', case=False, regex=True, na=False).astype(int)
 
-        if group_by_mode == "Zone-wise":
-            g_cols = ['_zone']
-            ren = {'_zone': 'Zone'}
-        elif group_by_mode == "RO-wise":
-            g_cols = ['_zone', '_ro']
-            ren = {'_zone': 'Zone', '_ro': 'RO Name'}
-        else:
-            g_cols = ['_zone', '_ro', '_brn']
-            ren = {'_zone': 'Zone', '_ro': 'RO Name', '_brn': 'Origin Branch'}
+        def _agg_ops_level(frame, g_cols, ren_map, level_kind):
+            rows = []
+            for keys, grp in frame.groupby(g_cols, dropna=False):
+                if not isinstance(keys, tuple):
+                    keys = (keys,)
+                tot = len(grp)
+                oo, ol, ll, lo = int(grp['_oo'].sum()), int(grp['_ol'].sum()), int(grp['_ll'].sum()), int(grp['_lo'].sum())
+                ld = int(grp['_ld'].sum())
+                if level_kind in ("branch_repeat", "branch_route") and ld == 0 and ll == 0:
+                    continue
+                ld_dates = grp.loc[grp['_ld'] == 1, '_dt'].dropna().tolist()
+                rep_days = len(set(ld_dates))
+                streak = _max_consecutive_days(ld_dates)
+                ld_pct = (ld / tot * 100.0) if tot else 0.0
+                if rep_days >= 3 or streak >= 3 or (ld >= 5 and ld_pct >= 30):
+                    status = "🔴 Chronic Repeat"
+                elif rep_days >= 2 or ld >= 2:
+                    status = "🟡 Watchlist"
+                else:
+                    status = "🟢 Controlled"
 
-        rows_o = []
-        for keys, grp in o.groupby(g_cols, dropna=False):
-            if not isinstance(keys, tuple):
-                keys = (keys,)
-            tot = len(grp)
-            oo, ol, ll, lo = int(grp['_oo'].sum()), int(grp['_ol'].sum()), int(grp['_ll'].sum()), int(grp['_lo'].sum())
-            ld, la = int(grp['_late_dep'].sum()), int(grp['_late_arr'].sum())
-            ld_dates = grp.loc[grp['_late_dep'] == 1, '_dt'].dropna().tolist()
-            distinct_ld_days = len(set(ld_dates))
-            max_streak = _max_consecutive_days(ld_dates)
-            ld_pct = (ld / tot * 100.0) if tot else 0.0
-            if distinct_ld_days >= 3 or max_streak >= 3 or (ld >= 5 and ld_pct >= 30):
-                rep_status = "🔴 Chronic Repeat"
-            elif distinct_ld_days >= 2 or ld >= 2:
-                rep_status = "🟡 Watchlist"
-            else:
-                rep_status = "🟢 Controlled"
-            rd = {ren[k]: v for k, v in zip(g_cols, keys)}
-            rd.update({
-                'Total Trips': tot,
-                'Ontime Dep, Ontime Arr': format_pct_cnt(oo, tot),
-                'Late Departure': format_pct_cnt(ld, tot),
-                'Late Dep, Late Arr': format_pct_cnt(ll, tot),
-                'Ontime Dep, Late Arr': format_pct_cnt(ol, tot),
-                'Late Dep, Ontime Arr': format_pct_cnt(lo, tot),
-                'Repeat Days': distinct_ld_days,
-                'Max Streak': f"{max_streak}d",
-                'Status': rep_status,
-                '_sort_ld': ld,
-                '_sort_days': distinct_ld_days
+                rd = {ren_map[k]: v for k, v in zip(g_cols, keys)}
+                if level_kind == "branch_repeat":
+                    remark_en = (
+                        f"Branch {rd['Origin Branch']} ({rd['RO Name']}) dispatched {ld} of {tot} vehicles late ({ld_pct:.1f}%) "
+                        f"across {rep_days} repeat days (max streak {streak}d); {ll} trips resulted in late arrival — escalate to {rd['RO Name']} RM."
+                    )
+                elif level_kind == "branch_route":
+                    remark_en = (
+                        f"Branch {rd['Origin Branch']} dispatched {ld} of {tot} vehicles late ({ld_pct:.1f}%) on route "
+                        f"{rd['Route Path']} across {rep_days} days (max streak {streak}d) — fix loading cutoff at {rd['Origin Branch']}."
+                    )
+                elif level_kind == "ro":
+                    bad_brn = grp.loc[grp['_ld'] == 1, '_brn'].value_counts().head(1)
+                    b_note = f" Worst branch: {bad_brn.index[0]} ({int(bad_brn.iloc[0])} late dep)." if not bad_brn.empty else ""
+                    remark_en = (
+                        f"RO {rd['RO Name']} recorded {ld} late departures out of {tot} trips ({ld_pct:.1f}%) across {rep_days} days.{b_note}"
+                        if ld > 0 else f"RO {rd['RO Name']} maintained 0 late departures ({oo}/{tot} fully on-time)."
+                    )
+                else:
+                    bad_ro = grp.loc[grp['_ld'] == 1, '_ro'].value_counts().head(1)
+                    r_note = f" Top defaulting RO: {bad_ro.index[0]} ({int(bad_ro.iloc[0])} late dep)." if not bad_ro.empty else ""
+                    remark_en = (
+                        f"{rd['Zone']} Zone recorded {ld} late departures out of {tot} trips ({ld_pct:.1f}%).{r_note}"
+                        if ld > 0 else f"{rd['Zone']} Zone recorded 0 late departures across {tot} trips."
+                    )
+
+                rd.update({
+                    'Total Trips': tot,
+                    'Ontime Dep, Ontime Arr': format_pct_cnt(oo, tot),
+                    'Late Departure': format_pct_cnt(ld, tot),
+                    'Late Dep, Late Arr': format_pct_cnt(ll, tot),
+                    'Ontime Dep, Late Arr': format_pct_cnt(ol, tot),
+                    'Late Dep, Ontime Arr': format_pct_cnt(lo, tot),
+                    'Repeat Days': rep_days,
+                    'Max Streak': f"{streak}d",
+                    'Status': status,
+                    'Escalation Remark': remark_en,
+                    '_s1': rep_days, '_s2': ld, '_s3': ld_pct
+                })
+                rows.append(rd)
+            df_out = pd.DataFrame(rows)
+            if not df_out.empty:
+                df_out = df_out.sort_values(by=['_s1', '_s2', '_s3', 'Total Trips'], ascending=[False, False, False, False]).drop(columns=['_s1', '_s2', '_s3']).reset_index(drop=True)
+            return df_out
+
+        # Pure Branch-level (NO route grouping mixed in!)
+        pack["branch_repeat"] = _agg_ops_level(o, ['_brn', '_ro', '_zone'], {'_brn': 'Origin Branch', '_ro': 'RO Name', '_zone': 'Zone'}, "branch_repeat")
+        # Separate Branch + Route level with written English sentences
+        pack["branch_route_repeat"] = _agg_ops_level(o, ['_brn', '_ro', '_zone', '_route'], {'_brn': 'Origin Branch', '_ro': 'RO Name', '_zone': 'Zone', '_route': 'Route Path'}, "branch_route")
+        # RO-wise & Zone-wise
+        pack["ro_summary"] = _agg_ops_level(o, ['_zone', '_ro'], {'_zone': 'Zone', '_ro': 'RO Name'}, "ro")
+        pack["zone_summary"] = _agg_ops_level(o, ['_zone'], {'_zone': 'Zone'}, "zone")
+        pack["ops_raw_exc"] = o[(o['_ld'] == 1) | (o['_la'] == 1)].drop(columns=['_dt', '_ro', '_zone', '_brn', '_route', '_oo', '_ol', '_ll', '_lo', '_ld', '_la'], errors='ignore').copy()
+
+        for _, r in pack["branch_repeat"].head(5).iterrows():
+            priority_rows.append({
+                "Priority": "P1 - Branch Late Dep",
+                "Module": "Operations",
+                "Entity": f"{r['Origin Branch']} ({r['RO Name']})",
+                "Impact": f"{r['Late Departure']} · {r['Repeat Days']}d repeat",
+                "Status": r['Status'],
+                "Escalation Remark": r['Escalation Remark']
             })
-            rows_o.append(rd)
-        df_os = pd.DataFrame(rows_o)
-        if not df_os.empty:
-            df_os = df_os.sort_values(by=['_sort_days', '_sort_ld', 'Total Trips'], ascending=[False, False, False]).drop(columns=['_sort_ld', '_sort_days']).reset_index(drop=True)
-        pack["ops_summary"] = df_os
 
-        # Always compute dedicated Branch Repeat Offenders table (Branch-level, sorted worst first)
-        brn_rows = []
-        for (zn, ro, brn), grp in o.groupby(['_zone', '_ro', '_brn'], dropna=False):
-            tot = len(grp)
-            ld = int(grp['_late_dep'].sum())
-            ll = int(grp['_ll'].sum())
-            ol = int(grp['_ol'].sum())
-            if ld == 0 and ll == 0 and ol == 0:
-                continue
-            ld_dates = grp.loc[grp['_late_dep'] == 1, '_dt'].dropna().tolist()
-            d_days = len(set(ld_dates))
-            streak = _max_consecutive_days(ld_dates)
-            top_routes = grp.loc[grp['_late_dep'] == 1, 'Route Path'].dropna().astype(str).value_counts().head(2).index.tolist() if 'Route Path' in grp.columns else []
-            rep_tag = "🔴 Chronic Repeat" if (d_days >= 3 or streak >= 3 or ld >= 6) else ("🟡 Watchlist" if (d_days >= 2 or ld >= 2) else "🟢 Isolated")
-            brn_rows.append({
-                'Origin Branch': brn,
-                'RO Name': ro,
-                'Zone': zn,
-                'Total Trips': tot,
-                'Late Departure': format_pct_cnt(ld, tot),
-                'Late Dep, Late Arr': format_pct_cnt(ll, tot),
-                'Ontime Dep, Late Arr': format_pct_cnt(ol, tot),
-                'Repeat Days': d_days,
-                'Max Streak': f"{streak}d",
-                'Top Impacted Routes': ', '.join(top_routes) or '—',
-                'Status': rep_tag,
-                '_s1': d_days, '_s2': ld
-            })
-        df_br = pd.DataFrame(brn_rows)
-        if not df_br.empty:
-            df_br = df_br.sort_values(by=['_s1', '_s2', 'Total Trips'], ascending=[False, False, False]).drop(columns=['_s1', '_s2']).reset_index(drop=True)
-        pack["branch_repeat"] = df_br
-        pack["ops_raw_exc"] = o[(o['_late_dep'] == 1) | (o['_late_arr'] == 1)].drop(columns=['_dt', '_ro', '_zone', '_brn', '_oo', '_ol', '_ll', '_lo', '_late_dep', '_late_arr'], errors='ignore').copy()
-
-    # --- 2. VENDOR REPEAT DELAY TRACKER (Strictly SCHEDULED) ---
+    # --- 2. VENDOR REPEAT DELAY TRACKER (WITH LEGWISE & LEGS DIRECTLY!) ---
     if isinstance(ven_df, pd.DataFrame) and not ven_df.empty:
         v = ven_df.copy()
         st_col = 'Remark with 15 min waiver'
@@ -6571,18 +5816,80 @@ def build_daily_overall_issues_pack(ops_df, ven_df, pay_df, cpk_df, group_by_mod
         v['_it'] = v_st.eq('In-Transit').astype(int)
         v['_delay_hrs'] = v.get('Delay Hours', pd.Series('', index=v.index)).apply(_delay_str_to_hrs)
 
-        v_rows = []
+        # Primary Table: Vendor + Origin RO + Route Path + Legwise + Legs (sorted worst-first!)
+        vl_cols = [c for c in ['VendorName', 'Origin RO', 'Route Path', 'Legwise', 'Legs'] if c in v.columns]
+        vl_rows = []
+        if vl_cols:
+            for keys, grp in v.groupby(vl_cols, dropna=False):
+                lt = int(grp['_lt'].sum())
+                if lt == 0:
+                    continue
+                if not isinstance(keys, tuple):
+                    keys = (keys,)
+                tot = len(grp)
+                ot, it = int(grp['_ot'].sum()), int(grp['_it'].sum())
+                lt_grp = grp[grp['_lt'] == 1]
+                lt_dates = lt_grp['_dt'].dropna().tolist()
+                lt_days = len(set(lt_dates))
+                streak = _max_consecutive_days(lt_dates)
+                avg_d = float(lt_grp['_delay_hrs'].dropna().clip(lower=0).mean()) if lt_grp['_delay_hrs'].notna().any() else 0.0
+                lt_pct = (lt / tot * 100.0) if tot else 0.0
+                tag = "🔴 Chronic Repeat" if (lt_days >= 3 or streak >= 3 or lt >= 4) else ("🟡 Watchlist" if (lt_days >= 2 or lt >= 2) else "🟢 Isolated")
+                rd = dict(zip(vl_cols, keys))
+                v_lbl = str(rd.pop('VendorName', 'Unknown')).strip()
+                ro_lbl = str(rd.get('Origin RO', '')).strip()
+                rt_lbl = str(rd.get('Route Path', '')).strip()
+                lg_lbl = str(rd.get('Legwise', '')).strip()
+                lgs_lbl = str(rd.get('Legs', '')).strip()
+                avg_str = format_hrs_safe(avg_d) if avg_d > 0 else '0:00'
+                rem_en = (
+                    f"Vendor {v_lbl} arrived late on {lt} of {tot} trips ({lt_pct:.1f}%) on {rt_lbl} {lg_lbl} ({lgs_lbl}) "
+                    f"across {lt_days} days with avg delay {avg_str} hrs — issue SLA warning."
+                )
+                row_out = {'Vendor': v_lbl}
+                row_out.update(rd)
+                row_out.update({
+                    'Total Trips': tot,
+                    'Ontime Arrival': format_pct_cnt(ot, tot),
+                    'Late Arrival': format_pct_cnt(lt, tot),
+                    'In-Transit': format_pct_cnt(it, tot),
+                    'Late Days': lt_days,
+                    'Max Streak': f"{streak}d",
+                    'Avg Delay (Hrs)': avg_str,
+                    'Status': tag,
+                    'Escalation Remark': rem_en,
+                    '_s1': lt_days, '_s2': lt, '_s3': lt_pct
+                })
+                vl_rows.append(row_out)
+        df_vl = pd.DataFrame(vl_rows)
+        if not df_vl.empty:
+            df_vl = df_vl.sort_values(by=['_s1', '_s2', '_s3', 'Total Trips'], ascending=[False, False, False, False]).drop(columns=['_s1', '_s2', '_s3']).reset_index(drop=True)
+        pack["vendor_leg_repeat"] = df_vl
+
+        # Vendor Rollup (1 row per vendor)
+        vr_rows = []
         for v_name, grp in v.groupby('VendorName', dropna=False):
             tot = len(grp)
             ot, lt, it = int(grp['_ot'].sum()), int(grp['_lt'].sum()), int(grp['_it'].sum())
             lt_grp = grp[grp['_lt'] == 1]
-            lt_days = len(set(lt_grp['_dt'].dropna().tolist()))
-            lt_streak = _max_consecutive_days(lt_grp['_dt'].dropna().tolist())
+            lt_dates = lt_grp['_dt'].dropna().tolist()
+            lt_days = len(set(lt_dates))
+            streak = _max_consecutive_days(lt_dates)
             avg_d = float(lt_grp['_delay_hrs'].dropna().clip(lower=0).mean()) if not lt_grp.empty and lt_grp['_delay_hrs'].notna().any() else 0.0
             ot_pct = (ot / tot * 100.0) if tot else 0.0
+            lt_pct = (lt / tot * 100.0) if tot else 0.0
             tag = "🔴 Action Needed" if (lt_days >= 3 or ot_pct < 70) else ("🟡 Watch" if (lt_days >= 2 or ot_pct < 85) else "🟢 Strong")
-            worst_rt = lt_grp['Route Path'].dropna().astype(str).value_counts().head(1).index.tolist() if 'Route Path' in lt_grp.columns and not lt_grp.empty else []
-            v_rows.append({
+            worst_leg = "—"
+            if not lt_grp.empty and {'Route Path', 'Legwise', 'Legs'}.issubset(lt_grp.columns):
+                wl_s = (lt_grp['Route Path'].astype(str) + " | " + lt_grp['Legwise'].astype(str) + " (" + lt_grp['Legs'].astype(str) + ")").value_counts()
+                if not wl_s.empty:
+                    worst_leg = f"{wl_s.index[0]} ({int(wl_s.iloc[0])} late)"
+            avg_str = format_hrs_safe(avg_d) if avg_d > 0 else '0:00'
+            rem_v = (
+                f"Vendor {v_name} delayed {lt} of {tot} trips ({lt_pct:.1f}%) across {lt_days} days (avg delay {avg_str} hrs). Worst leg: {worst_leg}."
+                if lt > 0 else f"Vendor {v_name} achieved 0 late arrivals across {tot} trips."
+            )
+            vr_rows.append({
                 'Vendor': str(v_name).strip() or 'Unknown',
                 'ROs': int(grp['Origin RO'].nunique()) if 'Origin RO' in grp.columns else 0,
                 'Total Trips': tot,
@@ -6590,52 +5897,30 @@ def build_daily_overall_issues_pack(ops_df, ven_df, pay_df, cpk_df, group_by_mod
                 'Late Arrival': format_pct_cnt(lt, tot),
                 'In-Transit': format_pct_cnt(it, tot),
                 'Late Days': lt_days,
-                'Max Streak': f"{lt_streak}d",
-                'Avg Delay (Hrs)': format_hrs_safe(avg_d) if avg_d > 0 else '0:00',
-                'Worst Route': worst_rt[0] if worst_rt else '—',
+                'Max Streak': f"{streak}d",
+                'Avg Delay (Hrs)': avg_str,
+                'Worst Route & Leg': worst_leg,
                 'Status': tag,
+                'Escalation Remark': rem_v,
                 '_s1': lt, '_s2': lt_days
             })
-        df_vr = pd.DataFrame(v_rows)
+        df_vr = pd.DataFrame(vr_rows)
         if not df_vr.empty:
             df_vr = df_vr.sort_values(by=['_s1', '_s2', 'Total Trips'], ascending=[False, False, False]).drop(columns=['_s1', '_s2']).reset_index(drop=True)
-        pack["vendor_repeat"] = df_vr
-
-        # Vendor + Route + Leg Repeat Offenders (only rows with >= 1 late arrival)
-        vr_cols = [c for c in ['Origin RO', 'VendorName', 'Route Path', 'Legwise', 'Legs'] if c in v.columns]
-        vrl_rows = []
-        if vr_cols:
-            for keys, grp in v.groupby(vr_cols, dropna=False):
-                lt = int(grp['_lt'].sum())
-                if lt == 0:
-                    continue
-                if not isinstance(keys, tuple):
-                    keys = (keys,)
-                tot = len(grp)
-                ot = int(grp['_ot'].sum())
-                lt_grp = grp[grp['_lt'] == 1]
-                lt_days = len(set(lt_grp['_dt'].dropna().tolist()))
-                avg_d = float(lt_grp['_delay_hrs'].dropna().clip(lower=0).mean()) if lt_grp['_delay_hrs'].notna().any() else 0.0
-                rd = dict(zip(vr_cols, keys))
-                if 'VendorName' in rd:
-                    rd['Vendor'] = rd.pop('VendorName')
-                rd.update({
-                    'Total Trips': tot,
-                    'Ontime Arrival': format_pct_cnt(ot, tot),
-                    'Late Arrival': format_pct_cnt(lt, tot),
-                    'Late Days': lt_days,
-                    'Avg Delay (Hrs)': format_hrs_safe(avg_d) if avg_d > 0 else '0:00',
-                    'Status': '🔴 Chronic Repeat' if lt_days >= 3 else ('🟡 Watchlist' if lt_days >= 2 else '🟢 Isolated'),
-                    '_s': lt
-                })
-                vrl_rows.append(rd)
-        df_vrl = pd.DataFrame(vrl_rows)
-        if not df_vrl.empty:
-            df_vrl = df_vrl.sort_values(by=['Late Days', '_s', 'Total Trips'], ascending=[False, False, False]).drop(columns=['_s']).reset_index(drop=True)
-        pack["vendor_route_repeat"] = df_vrl
+        pack["vendor_rollup"] = df_vr
         pack["ven_raw_exc"] = v[v['_lt'] == 1].drop(columns=['_dt', '_ot', '_lt', '_it', '_delay_hrs'], errors='ignore').copy()
 
-    # --- 3. PAYMENT STUCK ISSUES ---
+        for _, r in pack["vendor_leg_repeat"].head(5).iterrows():
+            priority_rows.append({
+                "Priority": "P1 - Vendor Leg Delay",
+                "Module": "Vendor SLA",
+                "Entity": f"{r['Vendor']} · {r.get('Legwise','')} ({r.get('Legs','')})",
+                "Impact": f"{r['Late Arrival']} · Avg {r['Avg Delay (Hrs)']}h",
+                "Status": r['Status'],
+                "Escalation Remark": r['Escalation Remark']
+            })
+
+    # --- 3. PAYMENT STUCK BILLS AUDIT ---
     if isinstance(pay_df, pd.DataFrame) and not pay_df.empty:
         p = pay_df.copy()
         if 'Payment Group' not in p.columns:
@@ -6652,14 +5937,21 @@ def build_daily_overall_issues_pack(ops_df, ven_df, pay_df, cpk_df, group_by_mod
             for gv, grp in p.groupby(p_grp_col, dropna=False):
                 tot = len(grp)
                 stuck_m = grp['Payment Group'].isin(['Draft', 'Cost Control Pending', 'Finance Pending', 'Finance Hold'])
+                stuck_cnt = int(stuck_m.sum())
                 stuck_amt = float(grp.loc[stuck_m, '_amt'].sum())
                 avg_dp = int(round(grp.loc[stuck_m, '_days'].mean())) if stuck_m.any() else 0
+                dr_c = int(grp['Payment Group'].eq('Draft').sum())
+                fh_c = int(grp['Payment Group'].eq('Finance Hold').sum())
                 rd = {p_lbl: gv, 'Total Bills': tot}
                 for bn in b_names:
                     rd[bn] = format_pct_cnt(int(grp['Payment Group'].eq(bn).sum()), tot)
                 rd['Stuck Amount'] = f"₹{stuck_amt:,.2f}"
                 rd['Avg Pending Days'] = avg_dp
-                rd['_s'] = int(stuck_m.sum())
+                rd['Escalation Remark'] = (
+                    f"{gv} has {stuck_cnt} stuck bills worth ₹{stuck_amt:,.0f} (Draft: {dr_c}, Finance Hold: {fh_c}, avg {avg_dp}d pending) — clear bottlenecks."
+                    if stuck_cnt > 0 else f"{gv} has 0 stuck bills across {tot} invoices."
+                )
+                rd['_s'] = stuck_cnt
                 p_rows.append(rd)
             df_ps = pd.DataFrame(p_rows)
             if not df_ps.empty:
@@ -6667,101 +5959,131 @@ def build_daily_overall_issues_pack(ops_df, ven_df, pay_df, cpk_df, group_by_mod
             pack["payment_summary"] = df_ps
             pack["pay_raw_exc"] = p[p['Payment Group'].isin(['Draft', 'Cost Control Pending', 'Finance Pending', 'Finance Hold'])].drop(columns=['_ro', '_zone', '_amt', '_days'], errors='ignore').copy()
 
-    # --- 4. UTILIZATION ISSUES (<60% Routes) ---
+            for _, r in df_ps.head(3).iterrows():
+                if r.get('Avg Pending Days', 0) > 0:
+                    priority_rows.append({
+                        "Priority": "P2 - Payment Bottleneck",
+                        "Module": "Payments",
+                        "Entity": str(r[p_lbl]),
+                        "Impact": f"{r['Stuck Amount']} · Avg {r['Avg Pending Days']}d",
+                        "Status": "🟡 Watchlist",
+                        "Escalation Remark": r['Escalation Remark']
+                    })
+
+    # --- 4. UTILIZATION RED FLAGS (<60% ROUTES) ---
     if isinstance(cpk_df, pd.DataFrame) and not cpk_df.empty:
         try:
             rm_u = build_cpk_tables_from_raw(cpk_df).get('CPK_National_Zonal_UpDown', pd.DataFrame()).copy()
             if not rm_u.empty:
                 rm_u['_util_val'] = pd.to_numeric(rm_u.get('Overall Util %', 0), errors='coerce').fillna(0.0)
                 rm_u['Utilization Class'] = np.where(rm_u['_util_val'] < 0.60, 'Underutilized (<60%)', 'Efficiently Utilized (60%+)')
+                rm_u['_cpk_num'] = pd.to_numeric(rm_u.get('Overall CPK', 0), errors='coerce').fillna(0.0)
+                rm_u['Escalation Remark'] = [
+                    (f"Route {rt} ({ro}) ran at {uv*100:.1f}% utilization (CPK ₹{cpk_v:.2f}) — review vehicle downsizing or load consolidation."
+                     if uv < 0.60 else f"Route {rt} ({ro}) ran efficiently at {uv*100:.1f}% utilization.")
+                    for rt, ro, uv, cpk_v in zip(rm_u.get('Route (UP/DOWN)', ''), rm_u.get('VendorRO', ''), rm_u['_util_val'], rm_u['_cpk_num'])
+                ]
                 rm_u['Overall Util %'] = rm_u['_util_val'].apply(lambda x: f"{x * 100:.1f}%")
-                if 'Overall CPK' in rm_u.columns:
-                    rm_u['Overall CPK'] = pd.to_numeric(rm_u['Overall CPK'], errors='coerce').fillna(0).apply(lambda x: f"₹{x:.2f}")
+                rm_u['Overall CPK'] = rm_u['_cpk_num'].apply(lambda x: f"₹{x:.2f}")
                 if 'Total Trip Cost' in rm_u.columns:
                     rm_u['Total Trip Cost'] = pd.to_numeric(rm_u['Total Trip Cost'], errors='coerce').fillna(0.0)
-                keep_u = ['Zone', 'VendorRO', 'Route (UP/DOWN)', 'Type', 'Total Trips', 'Overall Util %', 'Overall CPK', 'Total Trip Cost', 'Vendor(s)', 'Utilization Class']
+                keep_u = ['Zone', 'VendorRO', 'Route (UP/DOWN)', 'Type', 'Total Trips', 'Overall Util %', 'Overall CPK', 'Total Trip Cost', 'Vendor(s)', 'Utilization Class', 'Escalation Remark']
                 rm_u = rm_u.sort_values(by='_util_val', ascending=True)[[c for c in keep_u if c in rm_u.columns]].reset_index(drop=True)
                 pack["utilization_summary"] = rm_u
+
+                for _, r in rm_u[rm_u['Utilization Class'].astype(str).str.contains('Underutilized', na=False)].head(3).iterrows():
+                    priority_rows.append({
+                        "Priority": "P2 - Low Utilization",
+                        "Module": "Utilization",
+                        "Entity": f"{r.get('VendorRO','')} · {r.get('Route (UP/DOWN)','')}",
+                        "Impact": f"Util {r.get('Overall Util %','')} · CPK {r.get('Overall CPK','')}",
+                        "Status": "🔴 Action Needed",
+                        "Escalation Remark": r['Escalation Remark']
+                    })
         except Exception as exc:
             logging.warning(f"Utilization issues build warning: {exc}")
 
+    pack["top_actions"] = pd.DataFrame(priority_rows)
     return pack
 
+
 def build_daily_overall_issues_excel_bytes(pack, report_title):
-    """Build the Auto-Generated Daily Overall Issues Excel workbook (5 clean styled sheets)."""
+    """Build the 10-Sheet Decision-First Escalation & Overall Issues Excel Workbook."""
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-        write_styled_sheet_to_excel(writer, pack.get("ops_summary", pd.DataFrame()), "1_Ops_Issues_Summary", sheet_type="generic", preserve_order=True)
-        write_styled_sheet_to_excel(writer, pack.get("branch_repeat", pd.DataFrame()), "2_Branch_Repeat_Offenders", sheet_type="generic", preserve_order=True)
-        write_styled_sheet_to_excel(writer, pack.get("vendor_repeat", pd.DataFrame()), "3_Vendor_Repeat_Delays", sheet_type="generic", preserve_order=True)
-        write_styled_sheet_to_excel(writer, pack.get("vendor_route_repeat", pd.DataFrame()), "4_Vendor_Route_Delays", sheet_type="generic", preserve_order=True)
-        write_styled_sheet_to_excel(writer, pack.get("payment_summary", pd.DataFrame()), "5_Payment_Stuck_Audit", sheet_type="generic", preserve_order=True)
-        if not pack.get("utilization_summary", pd.DataFrame()).empty:
-            write_styled_sheet_to_excel(writer, pack["utilization_summary"], "6_Utilization_Issues", sheet_type="generic", preserve_order=True)
+        sheets_plan = [
+            ("1_Top_Priority_Actions", pack.get("top_actions", pd.DataFrame()), "generic"),
+            ("2_Zone_Escalations", pack.get("zone_summary", pd.DataFrame()), "generic"),
+            ("3_RO_Escalations", pack.get("ro_summary", pd.DataFrame()), "generic"),
+            ("4_Branch_Chronic_Repeats", pack.get("branch_repeat", pd.DataFrame()), "generic"),
+            ("5_Branch_Route_Escalations", pack.get("branch_route_repeat", pd.DataFrame()), "generic"),
+            ("6_Vendor_Leg_Delays", pack.get("vendor_leg_repeat", pd.DataFrame()), "generic"),
+            ("7_Vendor_Rollup", pack.get("vendor_rollup", pd.DataFrame()), "generic"),
+            ("8_Payment_Stuck_Audit", pack.get("payment_summary", pd.DataFrame()), "generic"),
+            ("9_Utilization_Red_Flags", pack.get("utilization_summary", pd.DataFrame()), "generic"),
+        ]
+        for sh_name, df_sh, stype in sheets_plan:
+            if isinstance(df_sh, pd.DataFrame) and not df_sh.empty:
+                write_styled_sheet_to_excel(writer, df_sh, sh_name, sheet_type=stype, preserve_order=True)
         if not pack.get("ops_raw_exc", pd.DataFrame()).empty:
-            write_styled_sheet_to_excel(writer, compact_detail_frame(pack["ops_raw_exc"], "ops_raw"), "7_Raw_Ops_Exceptions", sheet_type="ops_raw", preserve_order=True)
+            write_styled_sheet_to_excel(writer, compact_detail_frame(pack["ops_raw_exc"], "ops_raw"), "10_Raw_Ops_Exceptions", sheet_type="ops_raw", preserve_order=True)
         if not pack.get("ven_raw_exc", pd.DataFrame()).empty:
-            write_styled_sheet_to_excel(writer, compact_detail_frame(pack["ven_raw_exc"], "ven_raw"), "8_Raw_Vendor_Delays", sheet_type="ven_raw", preserve_order=True)
+            write_styled_sheet_to_excel(writer, compact_detail_frame(pack["ven_raw_exc"], "ven_raw"), "11_Raw_Vendor_Delays", sheet_type="ven_raw", preserve_order=True)
     return buf.getvalue()
 
+
 def build_daily_overall_issues_email_text(pack, scope_label, dur_label):
-    """Build crisp, executive-ready email text highlighting Branch Repeat Offenders & Vendor Repeat Delays."""
+    """Build plain-English decision & escalation brief for email / WhatsApp."""
     lines = [
         "Dear Team,",
         "",
-        f"Please find the Daily Overall Issues & Repeat Offenders Summary for {scope_label} ({dur_label}):",
+        f"Please find the Escalation & Overall Issues Action Brief for {scope_label} ({dur_label}):",
         ""
     ]
     br = pack.get("branch_repeat", pd.DataFrame())
     if not br.empty:
-        lines.append("📌 TOP BRANCH REPEAT OFFENDERS (LATE DEPARTURES)")
-        lines.append("==========================================================")
+        lines.append("1. TOP BRANCH CHRONIC REPEAT OFFENDERS (LATE DEPARTURES)")
+        lines.append("----------------------------------------------------------")
         for _, r in br.head(8).iterrows():
-            lines.append(
-                f"  • {r['Origin Branch']} ({r['RO Name']}) | Trips: {r['Total Trips']} | "
-                f"Late Dep: {r['Late Departure']} | Repeat Days: {r['Repeat Days']} (Streak: {r['Max Streak']}) | {r['Status']}"
-            )
+            lines.append(f"  - {r['Escalation Remark']}")
         lines.append("")
 
-    vr = pack.get("vendor_repeat", pd.DataFrame())
-    if not vr.empty:
-        vr_bad = vr[vr['Status'].astype(str).str.contains('Action|Watch', na=False)].head(8)
-        if not vr_bad.empty:
-            lines.append("📌 TOP VENDOR REPEAT DELAYS (LATE ARRIVALS)")
-            lines.append("==========================================================")
-            for _, r in vr_bad.iterrows():
-                lines.append(
-                    f"  • {r['Vendor']} | Trips: {r['Total Trips']} | Late: {r['Late Arrival']} | "
-                    f"Late Days: {r['Late Days']} | Avg Delay: {r['Avg Delay (Hrs)']} | Worst: {r['Worst Route']}"
-                )
-            lines.append("")
+    brr = pack.get("branch_route_repeat", pd.DataFrame())
+    if not brr.empty:
+        lines.append("2. TOP BRANCH + ROUTE LATE DEPARTURE ESCALATIONS")
+        lines.append("----------------------------------------------------------")
+        for _, r in brr.head(8).iterrows():
+            lines.append(f"  - {r['Escalation Remark']}")
+        lines.append("")
+
+    vl = pack.get("vendor_leg_repeat", pd.DataFrame())
+    if not vl.empty:
+        lines.append("3. TOP VENDOR REPEAT LEG DELAYS (LATE ARRIVALS)")
+        lines.append("----------------------------------------------------------")
+        for _, r in vl.head(8).iterrows():
+            lines.append(f"  - {r['Escalation Remark']}")
+        lines.append("")
+
+    ro_s = pack.get("ro_summary", pd.DataFrame())
+    if not ro_s.empty:
+        lines.append("4. RO-WISE SUMMARY (TOP DEFAULTING ROs)")
+        lines.append("----------------------------------------------------------")
+        for _, r in ro_s.head(6).iterrows():
+            lines.append(f"  - {r['Escalation Remark']}")
+        lines.append("")
 
     ps = pack.get("payment_summary", pd.DataFrame())
     if not ps.empty:
-        lines.append("📌 PAYMENT STUCK BILLS SUMMARY (TOP ROs)")
-        lines.append("==========================================================")
+        lines.append("5. PAYMENT STUCK BILLS AUDIT")
+        lines.append("----------------------------------------------------------")
         for _, r in ps.head(6).iterrows():
-            k_lbl = r.get('RO Name', r.get('Zone', ''))
-            lines.append(
-                f"  • {k_lbl} | Bills: {r['Total Bills']} | Draft: {r['Draft']} | "
-                f"Finance Hold: {r['Finance Hold']} | Stuck Amt: {r['Stuck Amount']}"
-            )
+            lines.append(f"  - {r['Escalation Remark']}")
         lines.append("")
 
-    us = pack.get("utilization_summary", pd.DataFrame())
-    if not us.empty:
-        u_low = us[us['Utilization Class'].astype(str).str.contains('Underutilized', na=False)]
-        if not u_low.empty:
-            lines.append(f"📌 UNDERUTILIZED ROUTES (<60%): {len(u_low)} of {len(us)} National/Zonal routes")
-            lines.append("==========================================================")
-            for _, r in u_low.head(5).iterrows():
-                lines.append(f"  • {r.get('VendorRO','')} | {r.get('Route (UP/DOWN)','')} | Util: {r.get('Overall Util %','')} | CPK: {r.get('Overall CPK','')}")
-            lines.append("")
-
     lines.extend([
-        "Complete multi-sheet Daily Overall Issues Excel report is attached for verification & ground action.",
+        "Complete decision-ready Escalation Excel workbook is attached. Kindly review and confirm corrective action.",
         "",
-        "Thanks,",
+        "Regards,",
         "Ajay Singh Rawat",
         "Fleet Operation Executive"
     ])
@@ -6769,16 +6091,18 @@ def build_daily_overall_issues_email_text(pack, scope_label, dur_label):
 
 
 def render_overall_issues(data):
-    st.markdown('## ⚠️ Overall Issues Command Center')
-    if overall_issue_raw_view:
-        render_overall_issue_raw_page(data, issue_query)
-        return
-    st.caption('Module-wise & Branch-wise issue intelligence · Instant Call Lookup · Repeat Offenders · Auto-Generated Daily Report (Ops, Vendor Delays, Payments & Utilization only).')
+    st.markdown('## ⚠️ Overall Issues & Escalation Command Center')
+    st.caption('Decision-first, worst-first escalations in plain English · Dynamic Call Lookup · Branch / RO / Zone / Vendor+Leg accountability · 1-Click Escalation Excel.')
 
     ops_all, pay_all_raw = get_overall_issue_frames(data)
     ven_all = data.get('Vendor_Perf_Raw', pd.DataFrame()).copy()
     if not ven_all.empty and not st.session_state.get('all_vendors', True):
         ven_all = filter_df_by_user_vendors(ven_all, 'VendorName')
+    # Default Vendor Delays in Overall Issues to National + Zonal scheduled SLA (clean, zero Feeder noise)
+    if not ven_all.empty and 'LH Type' in ven_all.columns:
+        _oi_ven_lh = ven_all['LH Type'].astype(str).isin(['National LH', 'Zonal LH'])
+        if _oi_ven_lh.any():
+            ven_all = ven_all[_oi_ven_lh].copy()
     cpk_all = get_overall_cpk_frame(data)
     pay_all = prepare_payment_dashboard_frame(pay_all_raw) if not pay_all_raw.empty else pd.DataFrame()
 
@@ -6788,7 +6112,7 @@ def render_overall_issues(data):
 
     all_start, all_end = get_overall_issue_date_bounds(ops_all, pay_all, cpk_all)
 
-    # Global Sticky Filter Strip (Timeline Presets + Zone + RO + Branch + Vendor + Invoice Month + Group By)
+    # Global Sticky Filter Strip (Timeline Presets + Cascading Zone -> RO -> Branch -> Vendor + Invoice Month)
     with st.container():
         st.markdown('<div class="pbi-sticky-anchor"></div>', unsafe_allow_html=True)
         sd_k, ed_k = "oi_v2_sd", "oi_v2_ed"
@@ -6822,87 +6146,104 @@ def render_overall_issues(data):
         if start_date > end_date:
             start_date, end_date = end_date, start_date
 
-        # Gather Zones, ROs, Branches, Vendors, Months
-        zones_s, ros_s, brns_s, vens_s, months_s = set(), set(), set(), set(), set()
-        for fr in [ops_all, ven_all, pay_all, cpk_all]:
+        # Step 1: Date-filter base frames first so dropdowns are 100% dynamic & cascading!
+        ops_f, pay_f = filter_overall_issue_frames(ops_all, pay_all, start_date, end_date, "ALL ZONES")
+        cpk_f = filter_overall_utilization_frame(cpk_all, start_date, end_date, "ALL ZONES")
+        ven_f = ven_all.copy()
+        if not ven_f.empty:
+            v_dc = get_col(ven_f, ['Date'])
+            if v_dc:
+                v_pd = pd.to_datetime(ven_f[v_dc], dayfirst=True, errors='coerce')
+                ven_f = ven_f[v_pd.dt.date.between(start_date, end_date)].copy()
+
+        f1, f2, f3, f4, f5 = st.columns([0.95, 1.0, 1.0, 1.3, 1.0])
+
+        # Zone dropdown
+        zones_s = set()
+        for fr in [ops_f, ven_f, pay_f, cpk_f]:
             zc = get_col(fr, ['Zone'])
-            if zc:
+            if zc and not fr.empty:
                 zones_s.update(fr[zc].dropna().astype(str).str.strip().str.upper().tolist())
-            rc = get_col(fr, ['Origin RO', 'RO Name', 'RO_Clean', 'VendorRO'])
-            if rc:
-                ros_s.update(_clean_ro_series(fr[rc]).tolist())
-            vc = get_col(fr, ['VendorName', 'Vendor Name'])
-            if vc:
-                vens_s.update(fr[vc].dropna().astype(str).str.strip().tolist())
-        for fr in [ops_all, ven_all]:
-            bc = get_col(fr, ['CD_FromBranch'])
-            if bc:
-                brns_s.update(fr[bc].dropna().astype(str).str.strip().str.upper().tolist())
-        if not pay_all.empty and 'Invoice Month' in pay_all.columns:
-            months_s.update(pay_all['Invoice Month'].dropna().astype(str).str.strip().tolist())
-
-        f1, f2, f3, f4, f5, f6 = st.columns([0.9, 1.0, 1.0, 1.2, 0.95, 1.0])
         zone_opts = ["ALL"] + sorted(x for x in zones_s if x and x not in ('NAN', 'NONE'))
-        ro_opts = ["ALL"] + sorted(x for x in ros_s if x and x not in ('NAN', 'NONE'))
-        brn_opts = ["ALL"] + sorted(x for x in brns_s if x and x not in ('NAN', 'NONE'))
-        ven_opts = ["ALL"] + sorted(x for x in vens_s if x and x not in ('NAN', 'NONE'))
-        month_opts = ["ALL"] + _sort_month_labels_desc([x for x in months_s if x and x not in ('NAN', 'NONE')])
-
-        for fk, fopts in [("oi_v2_zone", zone_opts), ("oi_v2_ro", ro_opts), ("oi_v2_brn", brn_opts), ("oi_v2_ven", ven_opts), ("oi_v2_month", month_opts)]:
-            if st.session_state.get(fk) not in fopts:
-                st.session_state[fk] = "ALL"
-
+        if st.session_state.get("oi_v2_zone") not in zone_opts:
+            st.session_state["oi_v2_zone"] = "ALL"
         sel_zone = f1.selectbox("Zone:", zone_opts, key="oi_v2_zone")
+        if sel_zone != "ALL":
+            if not ops_f.empty and 'Zone' in ops_f.columns:
+                ops_f = ops_f[ops_f['Zone'].fillna('').astype(str).str.strip().str.upper().eq(sel_zone)].copy()
+            if not ven_f.empty and 'Zone' in ven_f.columns:
+                ven_f = ven_f[ven_f['Zone'].fillna('').astype(str).str.strip().str.upper().eq(sel_zone)].copy()
+            if not pay_f.empty and 'Zone' in pay_f.columns:
+                pay_f = pay_f[pay_f['Zone'].fillna('').astype(str).str.strip().str.upper().eq(sel_zone)].copy()
+            if not cpk_f.empty and 'Zone' in cpk_f.columns:
+                cpk_f = cpk_f[cpk_f['Zone'].fillna('').astype(str).str.strip().str.upper().eq(sel_zone)].copy()
+
+        # Cascading RO dropdown
+        ros_s = set()
+        for fr, cands in [(ops_f, ['Origin RO']), (ven_f, ['Origin RO']), (pay_f, ['RO Name']), (cpk_f, ['RO_Clean', 'VendorRO'])]:
+            rc = get_col(fr, cands)
+            if rc and not fr.empty:
+                ros_s.update(_clean_ro_series(fr[rc]).tolist())
+        ro_opts = ["ALL"] + sorted(x for x in ros_s if x and x not in ('NAN', 'NONE'))
+        if st.session_state.get("oi_v2_ro") not in ro_opts:
+            st.session_state["oi_v2_ro"] = "ALL"
         sel_ro = f2.selectbox("RO:", ro_opts, key="oi_v2_ro")
+        if sel_ro != "ALL":
+            if not ops_f.empty and 'Origin RO' in ops_f.columns:
+                ops_f = ops_f[_clean_ro_series(ops_f['Origin RO']).eq(sel_ro)].copy()
+            if not ven_f.empty and 'Origin RO' in ven_f.columns:
+                ven_f = ven_f[_clean_ro_series(ven_f['Origin RO']).eq(sel_ro)].copy()
+            if not pay_f.empty and 'RO Name' in pay_f.columns:
+                pay_f = pay_f[_clean_ro_series(pay_f['RO Name']).eq(sel_ro)].copy()
+            if not cpk_f.empty and 'RO_Clean' in cpk_f.columns:
+                cpk_f = cpk_f[_clean_ro_series(cpk_f['RO_Clean']).eq(sel_ro)].copy()
+
+        # Cascading Branch dropdown
+        brns_s = set()
+        for fr in [ops_f, ven_f]:
+            bc = get_col(fr, ['CD_FromBranch'])
+            if bc and not fr.empty:
+                brns_s.update(fr[bc].dropna().astype(str).str.strip().str.upper().tolist())
+        brn_opts = ["ALL"] + sorted(x for x in brns_s if x and x not in ('NAN', 'NONE'))
+        if st.session_state.get("oi_v2_brn") not in brn_opts:
+            st.session_state["oi_v2_brn"] = "ALL"
         sel_brn = f3.selectbox("Origin Branch:", brn_opts, key="oi_v2_brn")
+        if sel_brn != "ALL":
+            if not ops_f.empty and 'CD_FromBranch' in ops_f.columns:
+                ops_f = ops_f[ops_f['CD_FromBranch'].fillna('').astype(str).str.strip().str.upper().eq(sel_brn)].copy()
+            if not ven_f.empty and 'CD_FromBranch' in ven_f.columns:
+                ven_f = ven_f[ven_f['CD_FromBranch'].fillna('').astype(str).str.strip().str.upper().eq(sel_brn)].copy()
+
+        # Cascading Vendor dropdown
+        vens_s = set()
+        for fr in [ops_f, ven_f, pay_f, cpk_f]:
+            vc = get_col(fr, ['VendorName', 'Vendor Name'])
+            if vc and not fr.empty:
+                vens_s.update(fr[vc].dropna().astype(str).str.strip().tolist())
+        ven_opts = ["ALL"] + sorted(x for x in vens_s if x and x not in ('NAN', 'NONE'))
+        if st.session_state.get("oi_v2_ven") not in ven_opts:
+            st.session_state["oi_v2_ven"] = "ALL"
         sel_ven = f4.selectbox("Vendor:", ven_opts, key="oi_v2_ven")
+        if sel_ven != "ALL":
+            if not ops_f.empty and 'VendorName' in ops_f.columns:
+                ops_f = ops_f[ops_f['VendorName'].fillna('').astype(str).str.strip().eq(sel_ven)].copy()
+            if not ven_f.empty and 'VendorName' in ven_f.columns:
+                ven_f = ven_f[ven_f['VendorName'].fillna('').astype(str).str.strip().eq(sel_ven)].copy()
+            if not pay_f.empty and 'Vendor Name' in pay_f.columns:
+                pay_f = pay_f[pay_f['Vendor Name'].fillna('').astype(str).str.strip().eq(sel_ven)].copy()
+            if not cpk_f.empty and 'VendorName' in cpk_f.columns:
+                cpk_f = cpk_f[cpk_f['VendorName'].fillna('').astype(str).str.strip().eq(sel_ven)].copy()
+
+        # Invoice Month dropdown
+        months_s = set(pay_f['Invoice Month'].dropna().astype(str).str.strip().tolist()) if (not pay_f.empty and 'Invoice Month' in pay_f.columns) else set()
+        month_opts = ["ALL"] + _sort_month_labels_desc([x for x in months_s if x and x not in ('NAN', 'NONE')])
+        if st.session_state.get("oi_v2_month") not in month_opts:
+            st.session_state["oi_v2_month"] = "ALL"
         sel_month = f5.selectbox("Invoice Month:", month_opts, key="oi_v2_month")
-        grp_mode = f6.selectbox("Group By:", ["Branch-wise", "RO-wise", "Zone-wise"], key="oi_v2_grp")
+        if sel_month != "ALL" and not pay_f.empty and 'Invoice Month' in pay_f.columns:
+            pay_f = pay_f[pay_f['Invoice Month'].astype(str).eq(sel_month)].copy()
 
-    # Apply Date + Filters to each module cleanly
-    z_arg = "ALL ZONES" if sel_zone == "ALL" else sel_zone
-    ops_f, pay_f = filter_overall_issue_frames(ops_all, pay_all, start_date, end_date, z_arg)
-    cpk_f = filter_overall_utilization_frame(cpk_all, start_date, end_date, z_arg)
-
-    ven_f = ven_all.copy()
-    if not ven_f.empty:
-        v_dc = get_col(ven_f, ['Date'])
-        if v_dc:
-            v_pd = pd.to_datetime(ven_f[v_dc], dayfirst=True, errors='coerce')
-            ven_f = ven_f[v_pd.dt.date.between(start_date, end_date)].copy()
-        if sel_zone != "ALL" and 'Zone' in ven_f.columns:
-            ven_f = ven_f[ven_f['Zone'].fillna('').astype(str).str.strip().str.upper().eq(sel_zone)].copy()
-
-    if sel_ro != "ALL":
-        if not ops_f.empty and 'Origin RO' in ops_f.columns:
-            ops_f = ops_f[_clean_ro_series(ops_f['Origin RO']).eq(sel_ro)].copy()
-        if not ven_f.empty and 'Origin RO' in ven_f.columns:
-            ven_f = ven_f[_clean_ro_series(ven_f['Origin RO']).eq(sel_ro)].copy()
-        if not pay_f.empty and 'RO Name' in pay_f.columns:
-            pay_f = pay_f[_clean_ro_series(pay_f['RO Name']).eq(sel_ro)].copy()
-        if not cpk_f.empty and 'RO_Clean' in cpk_f.columns:
-            cpk_f = cpk_f[_clean_ro_series(cpk_f['RO_Clean']).eq(sel_ro)].copy()
-
-    if sel_brn != "ALL":
-        if not ops_f.empty and 'CD_FromBranch' in ops_f.columns:
-            ops_f = ops_f[ops_f['CD_FromBranch'].fillna('').astype(str).str.strip().str.upper().eq(sel_brn)].copy()
-        if not ven_f.empty and 'CD_FromBranch' in ven_f.columns:
-            ven_f = ven_f[ven_f['CD_FromBranch'].fillna('').astype(str).str.strip().str.upper().eq(sel_brn)].copy()
-
-    if sel_ven != "ALL":
-        if not ops_f.empty and 'VendorName' in ops_f.columns:
-            ops_f = ops_f[ops_f['VendorName'].fillna('').astype(str).str.strip().eq(sel_ven)].copy()
-        if not ven_f.empty and 'VendorName' in ven_f.columns:
-            ven_f = ven_f[ven_f['VendorName'].fillna('').astype(str).str.strip().eq(sel_ven)].copy()
-        if not pay_f.empty and 'Vendor Name' in pay_f.columns:
-            pay_f = pay_f[pay_f['Vendor Name'].fillna('').astype(str).str.strip().eq(sel_ven)].copy()
-        if not cpk_f.empty and 'VendorName' in cpk_f.columns:
-            cpk_f = cpk_f[cpk_f['VendorName'].fillna('').astype(str).str.strip().eq(sel_ven)].copy()
-
-    if sel_month != "ALL" and not pay_f.empty and 'Invoice Month' in pay_f.columns:
-        pay_f = pay_f[pay_f['Invoice Month'].astype(str).eq(sel_month)].copy()
-
-    pack = build_daily_overall_issues_pack(ops_f, ven_f, pay_f, cpk_f, group_by_mode=grp_mode)
+    pack = build_daily_overall_issues_pack(ops_f, ven_f, pay_f, cpk_f, group_by_mode="RO-wise")
     dur_lbl = f"{start_date:%d %b %Y} to {end_date:%d %b %Y}"
     scope_lbl = " · ".join([x for x in [
         sel_zone if sel_zone != "ALL" else "All Zones",
@@ -6912,61 +6253,7 @@ def render_overall_issues(data):
         sel_month if sel_month != "ALL" else ""
     ] if x])
 
-    # =========================================================
-    # ⚡ INSTANT CALL LOOKUP (2-Second Phone Answer Card)
-    # =========================================================
-    with st.expander("📞 Instant Call Lookup — Phone par 2 Second mein Branch / RO / Vendor ki Poori Kundli", expanded=False):
-        lc1, lc2 = st.columns([1.2, 2.2])
-        lookup_type = lc1.radio("Lookup By:", ["Origin Branch", "RO", "Vendor"], horizontal=True, key="oi_call_lkp_type")
-        if lookup_type == "Origin Branch":
-            lkp_pool = sorted(x for x in brns_s if x and x not in ('NAN', 'NONE'))
-        elif lookup_type == "RO":
-            lkp_pool = sorted(x for x in ros_s if x and x not in ('NAN', 'NONE'))
-        else:
-            lkp_pool = sorted(x for x in vens_s if x and x not in ('NAN', 'NONE'))
-        lkp_val = lc2.selectbox(f"Select {lookup_type} (type to search):", ["-- Select --"] + lkp_pool, key="oi_call_lkp_val")
-
-        if lkp_val != "-- Select --":
-            if lookup_type == "Origin Branch":
-                co = ops_f[ops_f['CD_FromBranch'].fillna('').astype(str).str.strip().str.upper().eq(lkp_val)] if 'CD_FromBranch' in ops_f.columns else pd.DataFrame()
-                cv = ven_f[ven_f['CD_FromBranch'].fillna('').astype(str).str.strip().str.upper().eq(lkp_val)] if 'CD_FromBranch' in ven_f.columns else pd.DataFrame()
-                mapped_ro_q = str(co['Origin RO'].iloc[0]) if not co.empty and 'Origin RO' in co.columns else ""
-                cp = pay_f[_clean_ro_series(pay_f['RO Name']).eq(mapped_ro_q)] if (mapped_ro_q and not pay_f.empty and 'RO Name' in pay_f.columns) else pd.DataFrame()
-                cu = cpk_f[_clean_ro_series(cpk_f['RO_Clean']).eq(mapped_ro_q)] if (mapped_ro_q and not cpk_f.empty and 'RO_Clean' in cpk_f.columns) else pd.DataFrame()
-            elif lookup_type == "RO":
-                co = ops_f[_clean_ro_series(ops_f['Origin RO']).eq(lkp_val)] if 'Origin RO' in ops_f.columns else pd.DataFrame()
-                cv = ven_f[_clean_ro_series(ven_f['Origin RO']).eq(lkp_val)] if 'Origin RO' in ven_f.columns else pd.DataFrame()
-                cp = pay_f[_clean_ro_series(pay_f['RO Name']).eq(lkp_val)] if not pay_f.empty and 'RO Name' in pay_f.columns else pd.DataFrame()
-                cu = cpk_f[_clean_ro_series(cpk_f['RO_Clean']).eq(lkp_val)] if not cpk_f.empty and 'RO_Clean' in cpk_f.columns else pd.DataFrame()
-            else:
-                co = ops_f[ops_f['VendorName'].fillna('').astype(str).str.strip().eq(lkp_val)] if 'VendorName' in ops_f.columns else pd.DataFrame()
-                cv = ven_f[ven_f['VendorName'].fillna('').astype(str).str.strip().eq(lkp_val)] if 'VendorName' in ven_f.columns else pd.DataFrame()
-                cp = pay_f[pay_f['Vendor Name'].fillna('').astype(str).str.strip().eq(lkp_val)] if not pay_f.empty and 'Vendor Name' in pay_f.columns else pd.DataFrame()
-                cu = cpk_f[cpk_f['VendorName'].fillna('').astype(str).str.strip().eq(lkp_val)] if not cpk_f.empty and 'VendorName' in cpk_f.columns else pd.DataFrame()
-
-            c_pack = build_daily_overall_issues_pack(co, cv, cp, cu, group_by_mode="Branch-wise")
-            cm1, cm2, cm3, cm4 = st.columns(4)
-            cm1.metric("Ops Late Dep / Total", f"{len(c_pack['ops_raw_exc']):,} / {len(co):,}")
-            cm2.metric("Vendor Late / Total", f"{len(c_pack['ven_raw_exc']):,} / {len(cv):,}")
-            stuck_p_amt = pd.to_numeric(c_pack['pay_raw_exc'].get('Amount', 0), errors='coerce').fillna(0).sum() if not c_pack['pay_raw_exc'].empty else 0.0
-            cm3.metric("Stuck Bills (₹)", f"{len(c_pack['pay_raw_exc']):,} (₹{stuck_p_amt/1e5:.2f}L)")
-            u_df_c = c_pack['utilization_summary']
-            u_bad_c = int(u_df_c['Utilization Class'].astype(str).str.contains('Underutilized', na=False).sum()) if not u_df_c.empty else 0
-            cm4.metric("Underutilized Routes", f"{u_bad_c:,} / {len(u_df_c):,}")
-
-            call_script = (
-                f"📞 {lookup_type}: {lkp_val} ({dur_lbl})\n"
-                f"• Ops Exceptions: {len(c_pack['ops_raw_exc'])} / {len(co)} trips\n"
-                f"• Vendor Late Arrivals: {len(c_pack['ven_raw_exc'])} / {len(cv)} trips\n"
-                f"• Stuck Payment Bills: {len(c_pack['pay_raw_exc'])} (₹{stuck_p_amt:,.0f})\n"
-                f"• Underutilized Routes (<60%): {u_bad_c} / {len(u_df_c)}"
-            )
-            st.code(call_script, language=None)
-            if not c_pack['ops_raw_exc'].empty:
-                st.caption("Recent Operations Exceptions:")
-                render_centered_html_table(compact_detail_frame(c_pack['ops_raw_exc'], 'ops_raw'), height=260)
-
-    # Top KPI Strip
+    # Top Action Strip: KPIs + Quick 1-Click Escalation Excel Download right at top!
     ops_tot = len(ops_f)
     ops_exc = len(pack['ops_raw_exc'])
     chronic_brns = int(pack['branch_repeat']['Status'].astype(str).str.contains('Chronic', na=False).sum()) if not pack['branch_repeat'].empty else 0
@@ -6982,72 +6269,207 @@ def render_overall_issues(data):
     k4.metric("Stuck Payment Bills", f"{pay_stuck_cnt:,}", delta=f"of {len(pay_f):,} bills", delta_color="off")
     k5.metric("Routes < 60% Util", f"{util_under_cnt:,}", delta=f"of {len(util_df_top):,} routes", delta_color="off")
 
-    # 5 Clean Module-Wise Tabs (ZERO All Trips / Manual Audit!)
+    # =========================================================
+    # ⚡ DYNAMIC INSTANT CALL LOOKUP (Cascading, 4 Sub-Tabs + English Brief + Excel)
+    # =========================================================
+    with st.expander("📞 Dynamic Instant Call Lookup — 2-Second Phone Decision Desk (Branch / RO / Zone / Vendor)", expanded=True):
+        lc1, lc2 = st.columns([1.4, 2.2])
+        lookup_type = lc1.radio("Lookup By:", ["Origin Branch", "RO", "Zone", "Vendor"], horizontal=True, key="oi_call_lkp_type")
+        if lookup_type == "Origin Branch":
+            lkp_pool = sorted(x for x in brns_s if x and x not in ('NAN', 'NONE'))
+        elif lookup_type == "RO":
+            lkp_pool = sorted(x for x in ros_s if x and x not in ('NAN', 'NONE'))
+        elif lookup_type == "Zone":
+            lkp_pool = sorted(x for x in zones_s if x and x not in ('NAN', 'NONE'))
+        else:
+            lkp_pool = sorted(x for x in vens_s if x and x not in ('NAN', 'NONE'))
+
+        lkp_opts = ["-- Select to pull live call brief --"] + lkp_pool
+        if st.session_state.get("oi_call_lkp_val") not in lkp_opts:
+            st.session_state["oi_call_lkp_val"] = lkp_opts[0]
+        lkp_val = lc2.selectbox(f"Select {lookup_type} (live from active filters):", lkp_opts, key="oi_call_lkp_val")
+
+        if lkp_val != lkp_opts[0]:
+            if lookup_type == "Origin Branch":
+                co = ops_f[ops_f['CD_FromBranch'].fillna('').astype(str).str.strip().str.upper().eq(lkp_val)] if 'CD_FromBranch' in ops_f.columns else pd.DataFrame()
+                cv = ven_f[ven_f['CD_FromBranch'].fillna('').astype(str).str.strip().str.upper().eq(lkp_val)] if 'CD_FromBranch' in ven_f.columns else pd.DataFrame()
+                mapped_ro_q = str(co['Origin RO'].iloc[0]) if not co.empty and 'Origin RO' in co.columns else (str(cv['Origin RO'].iloc[0]) if not cv.empty and 'Origin RO' in cv.columns else "")
+                cp = pay_f[_clean_ro_series(pay_f['RO Name']).eq(mapped_ro_q)] if (mapped_ro_q and not pay_f.empty and 'RO Name' in pay_f.columns) else pd.DataFrame()
+                cu = cpk_f[_clean_ro_series(cpk_f['RO_Clean']).eq(mapped_ro_q)] if (mapped_ro_q and not cpk_f.empty and 'RO_Clean' in cpk_f.columns) else pd.DataFrame()
+            elif lookup_type == "RO":
+                co = ops_f[_clean_ro_series(ops_f['Origin RO']).eq(lkp_val)] if 'Origin RO' in ops_f.columns else pd.DataFrame()
+                cv = ven_f[_clean_ro_series(ven_f['Origin RO']).eq(lkp_val)] if 'Origin RO' in ven_f.columns else pd.DataFrame()
+                cp = pay_f[_clean_ro_series(pay_f['RO Name']).eq(lkp_val)] if not pay_f.empty and 'RO Name' in pay_f.columns else pd.DataFrame()
+                cu = cpk_f[_clean_ro_series(cpk_f['RO_Clean']).eq(lkp_val)] if not cpk_f.empty and 'RO_Clean' in cpk_f.columns else pd.DataFrame()
+            elif lookup_type == "Zone":
+                co = ops_f[ops_f['Zone'].fillna('').astype(str).str.strip().str.upper().eq(lkp_val)] if 'Zone' in ops_f.columns else pd.DataFrame()
+                cv = ven_f[ven_f['Zone'].fillna('').astype(str).str.strip().str.upper().eq(lkp_val)] if 'Zone' in ven_f.columns else pd.DataFrame()
+                cp = pay_f[pay_f['Zone'].fillna('').astype(str).str.strip().str.upper().eq(lkp_val)] if not pay_f.empty and 'Zone' in pay_f.columns else pd.DataFrame()
+                cu = cpk_f[cpk_f['Zone'].fillna('').astype(str).str.strip().str.upper().eq(lkp_val)] if not cpk_f.empty and 'Zone' in cpk_f.columns else pd.DataFrame()
+            else:
+                co = ops_f[ops_f['VendorName'].fillna('').astype(str).str.strip().eq(lkp_val)] if 'VendorName' in ops_f.columns else pd.DataFrame()
+                cv = ven_f[ven_f['VendorName'].fillna('').astype(str).str.strip().eq(lkp_val)] if 'VendorName' in ven_f.columns else pd.DataFrame()
+                cp = pay_f[pay_f['Vendor Name'].fillna('').astype(str).str.strip().eq(lkp_val)] if not pay_f.empty and 'Vendor Name' in pay_f.columns else pd.DataFrame()
+                cu = cpk_f[cpk_f['VendorName'].fillna('').astype(str).str.strip().eq(lkp_val)] if not cpk_f.empty and 'VendorName' in cpk_f.columns else pd.DataFrame()
+
+            c_pack = build_daily_overall_issues_pack(co, cv, cp, cu, group_by_mode="RO-wise")
+            cm1, cm2, cm3, cm4 = st.columns(4)
+            cm1.metric("Ops Late / Total", f"{len(c_pack['ops_raw_exc']):,} / {len(co):,}")
+            cm2.metric("Vendor Late / Total", f"{len(c_pack['ven_raw_exc']):,} / {len(cv):,}")
+            stuck_p_amt = pd.to_numeric(c_pack['pay_raw_exc'].get('Amount', 0), errors='coerce').fillna(0).sum() if not c_pack['pay_raw_exc'].empty else 0.0
+            cm3.metric("Stuck Bills (₹)", f"{len(c_pack['pay_raw_exc']):,} (₹{stuck_p_amt/1e5:.2f}L)")
+            u_df_c = c_pack['utilization_summary']
+            u_bad_c = int(u_df_c['Utilization Class'].astype(str).str.contains('Underutilized', na=False).sum()) if not u_df_c.empty else 0
+            cm4.metric("Routes < 60% Util", f"{u_bad_c:,} / {len(u_df_c):,}")
+
+            # Build plain-English written escalation bullets for the call
+            brief_lines = [f"CALL DECISION BRIEF | {lookup_type}: {lkp_val} ({dur_lbl})"]
+            if not c_pack["branch_route_repeat"].empty:
+                for _, rr in c_pack["branch_route_repeat"].head(3).iterrows():
+                    brief_lines.append(f"- [Ops] {rr['Escalation Remark']}")
+            elif not co.empty:
+                brief_lines.append(f"- [Ops] 0 late departures across {len(co)} scheduled trips.")
+            if not c_pack["vendor_leg_repeat"].empty:
+                for _, rr in c_pack["vendor_leg_repeat"].head(3).iterrows():
+                    brief_lines.append(f"- [Vendor] {rr['Escalation Remark']}")
+            elif not cv.empty:
+                brief_lines.append(f"- [Vendor] 0 late arrivals across {len(cv)} scheduled trips.")
+            if not c_pack["payment_summary"].empty:
+                brief_lines.append(f"- [Payment] {c_pack['payment_summary'].iloc[0]['Escalation Remark']}")
+            if u_bad_c > 0:
+                brief_lines.append(f"- [Utilization] {u_bad_c} of {len(u_df_c)} routes operating below 60% capacity.")
+            st.code("\n".join(brief_lines), language=None)
+
+            ct1, ct2, ct3, ct4 = st.tabs([
+                f"📊 Ops ({len(c_pack['ops_raw_exc'])})",
+                f"🚚 Vendor Delays ({len(c_pack['ven_raw_exc'])})",
+                f"💳 Stuck Bills ({len(c_pack['pay_raw_exc'])})",
+                f"💰 Util ({len(u_df_c)})"
+            ])
+            with ct1:
+                if not c_pack["branch_route_repeat"].empty:
+                    render_centered_html_table(c_pack["branch_route_repeat"], height=260)
+                if not c_pack["ops_raw_exc"].empty:
+                    render_centered_html_table(compact_detail_frame(c_pack["ops_raw_exc"], "ops_raw"), height=280)
+                else:
+                    st.success("Zero operations exceptions for this selection.")
+            with ct2:
+                if not c_pack["vendor_leg_repeat"].empty:
+                    render_centered_html_table(c_pack["vendor_leg_repeat"], height=260)
+                if not c_pack["ven_raw_exc"].empty:
+                    render_centered_html_table(compact_detail_frame(c_pack["ven_raw_exc"], "ven_raw"), height=280)
+                else:
+                    st.success("Zero vendor late arrivals for this selection.")
+            with ct3:
+                if not c_pack["pay_raw_exc"].empty:
+                    render_centered_html_table(compact_detail_frame(c_pack["pay_raw_exc"].head(200), "pay_raw"), height=300, max_rows=200)
+                else:
+                    st.success("Zero stuck payment bills for this selection.")
+            with ct4:
+                if not u_df_c.empty:
+                    render_centered_html_table(u_df_c, height=280)
+                else:
+                    st.info("No route utilization records mapped.")
+
+            _c_xl1, _c_xl2 = st.columns([1.6, 3.4])
+            _c_sig = (lookup_type, lkp_val, dur_lbl)
+            if _c_xl1.button(f"📥 Prepare {lkp_val} Call Escalation Excel", key="oi_call_prep_xl", type="primary", use_container_width=True):
+                st.session_state["_oi_call_xl"] = (
+                    _c_sig,
+                    build_daily_overall_issues_excel_bytes(c_pack, f"Call Escalation Brief · {lookup_type}: {lkp_val} · {dur_lbl}")
+                )
+            if st.session_state.get("_oi_call_xl") and st.session_state["_oi_call_xl"][0] == _c_sig:
+                _c_xl2.download_button(
+                    f"⬇️ Download {lkp_val} Escalation Excel",
+                    data=st.session_state["_oi_call_xl"][1],
+                    file_name=f"Escalation_{re.sub(r'[^A-Za-z0-9_-]+','_',lkp_val)}_{start_date:%Y%m%d}_{end_date:%Y%m%d}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="oi_call_dl_xl"
+                )
+
+    # 5 Clean Decision-First Module Tabs (ZERO All Trips / Manual Audit!)
     oi_t1, oi_t2, oi_t3, oi_t4, oi_t5 = st.tabs([
-        "📊 1. Operations & Branch Repeat",
-        "🚚 2. Vendor Repeat Delays",
-        "💳 3. Payment Stuck Bills",
-        "💰 4. Utilization (<60%)",
-        "📦 5. Auto Daily Overall Issues Report"
+        "📊 1. Operations Escalations (Branch / RO / Zone)",
+        "🚚 2. Vendor Repeat Leg Delays",
+        "💳 3. Payment Stuck Audit",
+        "💰 4. Utilization Red Flags (<60%)",
+        "🚨 5. Master Escalation Excel & Brief"
     ])
 
     with oi_t1:
-        st.markdown(f"### 📊 Operations Issues ({grp_mode}) · `{scope_lbl}`")
-        render_centered_html_table(pack["ops_summary"], height=440)
-        st.markdown("### 🔥 Branch-wise Chronic Repeat Offenders (Late Departures)")
+        st.markdown(f"### 🔥 Branch-wise Chronic Repeat Offenders (Pure Branch Level — Zero Route Mixing) · `{scope_lbl}`")
         render_centered_html_table(pack["branch_repeat"], height=420)
+
+        st.markdown("### 🛣️ Branch + Route Written Escalations (Exact Late Departure Accountability)")
+        render_centered_html_table(pack["branch_route_repeat"], height=420)
+
+        st.markdown("### 🏢 RO-wise & Zone-wise Operations Escalation Summary")
+        _rz_c1, _rz_c2 = st.tabs(["🏢 RO-wise Summary", "🗺️ Zone-wise Summary"])
+        with _rz_c1:
+            render_centered_html_table(pack["ro_summary"], height=400)
+        with _rz_c2:
+            render_centered_html_table(pack["zone_summary"], height=320)
+
         if not pack["ops_raw_exc"].empty:
             brn_picks = ["ALL BRANCHES"] + sorted(pack["ops_raw_exc"].get('CD_FromBranch', pd.Series(dtype=str)).dropna().astype(str).str.strip().str.upper().unique().tolist())
             sel_o_raw_b = st.selectbox("🔎 Inspect Raw Ops Exceptions by Branch:", brn_picks, key="oi_t1_raw_pick")
             o_raw_v = pack["ops_raw_exc"] if sel_o_raw_b == "ALL BRANCHES" else pack["ops_raw_exc"][pack["ops_raw_exc"]['CD_FromBranch'].fillna('').astype(str).str.strip().str.upper().eq(sel_o_raw_b)]
-            render_centered_html_table(compact_detail_frame(o_raw_v, 'ops_raw'), height=400)
+            render_centered_html_table(compact_detail_frame(o_raw_v, 'ops_raw'), height=380)
 
     with oi_t2:
-        st.markdown(f"### 🚚 Vendor-wise Repeat Delay Tracker · `{scope_lbl}`")
-        render_centered_html_table(pack["vendor_repeat"], height=440)
-        st.markdown("### 🛣️ Repeatedly Delayed Vendor + Route + Leg")
-        render_centered_html_table(pack["vendor_route_repeat"], height=420)
+        st.markdown(f"### 🚚 Vendor Repeat Delay Tracker (With Legwise & Legs) · `{scope_lbl}`")
+        render_centered_html_table(pack["vendor_leg_repeat"], height=460)
+
+        st.markdown("### 📋 Vendor-wise Rollup Summary")
+        render_centered_html_table(pack["vendor_rollup"], height=380)
+
         if not pack["ven_raw_exc"].empty:
             v_picks = ["ALL VENDORS"] + sorted(pack["ven_raw_exc"].get('VendorName', pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
             sel_v_raw = st.selectbox("🔎 Inspect Raw Vendor Late Arrivals:", v_picks, key="oi_t2_raw_pick")
             v_raw_v = pack["ven_raw_exc"] if sel_v_raw == "ALL VENDORS" else pack["ven_raw_exc"][pack["ven_raw_exc"]['VendorName'].astype(str).eq(sel_v_raw)]
-            render_centered_html_table(compact_detail_frame(v_raw_v, 'ven_raw'), height=400)
+            render_centered_html_table(compact_detail_frame(v_raw_v, 'ven_raw'), height=380)
 
     with oi_t3:
-        st.markdown(f"### 💳 Payment Stuck Bills Audit · `{scope_lbl}`")
+        st.markdown(f"### 💳 Payment Stuck Bills Escalation Audit · `{scope_lbl}`")
         render_centered_html_table(pack["payment_summary"], height=440)
         if not pack["pay_raw_exc"].empty:
             p_picks = ["ALL ROS"] + sorted(_clean_ro_series(pack["pay_raw_exc"]['RO Name']).unique().tolist()) if 'RO Name' in pack["pay_raw_exc"].columns else ["ALL ROS"]
             sel_p_raw = st.selectbox("🔎 Inspect Stuck Invoices by RO:", p_picks, key="oi_t3_raw_pick")
             p_raw_v = pack["pay_raw_exc"] if sel_p_raw == "ALL ROS" else pack["pay_raw_exc"][_clean_ro_series(pack["pay_raw_exc"]['RO Name']).eq(sel_p_raw)]
-            render_centered_html_table(compact_detail_frame(p_raw_v.head(400), 'pay_raw'), height=420, max_rows=400)
+            render_centered_html_table(compact_detail_frame(p_raw_v.head(400), 'pay_raw'), height=400, max_rows=400)
 
     with oi_t4:
-        st.markdown(f"### 💰 Route Utilization Issues (<60% Underutilized) · `{scope_lbl}`")
-        render_centered_html_table(pack["utilization_summary"], height=480)
+        st.markdown(f"### 💰 Route Utilization Red Flags (<60% Underutilized) · `{scope_lbl}`")
+        render_centered_html_table(pack["utilization_summary"], height=460)
 
     with oi_t5:
-        st.markdown(f"### 📦 Auto-Generated Daily Overall Issues Report · `{dur_lbl}`")
-        st.caption("Verify all sheets below and download your multi-sheet Daily Overall Issues Excel in 1 click (also available in Communication Hub → Tab 4 to mail directly!).")
-        c_dl1, c_dl2 = st.columns([1.6, 3.4])
-        if c_dl1.button("⚙️ Prepare Daily Overall Issues Excel", key="oi_prep_daily_excel_btn", type="primary", use_container_width=True):
-            with st.spinner("Generating multi-sheet Daily Overall Issues Excel..."):
-                st.session_state["_oi_daily_excel_bytes"] = build_daily_overall_issues_excel_bytes(
-                    pack, f"Daily Overall Issues · {scope_lbl} · {dur_lbl}"
+        st.markdown(f"### 🚨 Master Escalation Action Report · `{dur_lbl}`")
+        st.caption("Download this single Excel workbook to act immediately without browsing the site — sorted worst-first with plain-English escalation remarks across Zone, RO, Branch, Branch+Route, Vendor+Leg, Payments & Utilization.")
+        if not pack["top_actions"].empty:
+            st.markdown("#### 🎯 Top Priority Escalations (Immediate Action)")
+            render_centered_html_table(pack["top_actions"], height=360, show_grand_total=False)
+
+        c_dl1, c_dl2 = st.columns([1.8, 3.2])
+        _oi_xl_sig = (scope_lbl, dur_lbl, ops_exc, ven_late_cnt, pay_stuck_cnt)
+        if c_dl1.button("⚙️ Prepare Master Escalation Report (Excel)", key="oi_prep_daily_excel_btn", type="primary", use_container_width=True):
+            with st.spinner("Generating 10-sheet Master Escalation Excel..."):
+                st.session_state["_oi_daily_excel_bytes"] = (
+                    _oi_xl_sig,
+                    build_daily_overall_issues_excel_bytes(pack, f"Master Escalation Report · {scope_lbl} · {dur_lbl}")
                 )
-        if st.session_state.get("_oi_daily_excel_bytes"):
+        if st.session_state.get("_oi_daily_excel_bytes") and st.session_state["_oi_daily_excel_bytes"][0] == _oi_xl_sig:
             c_dl2.download_button(
-                "📥 Download Daily Overall Issues Report (Multi-Sheet Excel)",
-                data=st.session_state["_oi_daily_excel_bytes"],
-                file_name=f"Daily_Overall_Issues_{start_date:%Y%m%d}_{end_date:%Y%m%d}.xlsx",
+                "📥 Download Master Escalation Action Report (Excel)",
+                data=st.session_state["_oi_daily_excel_bytes"][1],
+                file_name=f"Trackon_Escalation_Action_Report_{start_date:%Y%m%d}_{end_date:%Y%m%d}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="oi_dl_daily_excel_btn"
             )
-        st.markdown("#### Quick Email / WhatsApp Summary Preview")
+        st.markdown("#### 📝 Copy-Ready English Escalation Brief (Email / WhatsApp)")
         st.text_area(
-            "Copy or verify before emailing:",
+            "Verify or copy before sending:",
             value=build_daily_overall_issues_email_text(pack, scope_lbl, dur_lbl),
-            height=280,
+            height=300,
             key="oi_daily_mail_preview"
         )
 
@@ -7185,7 +6607,7 @@ def render_ops_remark_gauges(ops_outcome_counts, ops_total_trips, ops_outcome_la
     for outcome_label, outcome_tone, outcome_icon in ops_outcome_labels:
         outcome_count = ops_outcome_counts[outcome_label]
         primary_outcome = outcome_label in {
-            'Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr',
+            'Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr', 'Late Departure',
             'Late Dep, Late Arr', 'Late Dep, Ontime Arr'
         }
         if not (primary_outcome or outcome_count > 0):
@@ -7391,7 +6813,7 @@ def render_centered_html_table(
         'Amount', 'Base Amount', 'Cost'
     }
     bold_set = set(bold_cols or []) | {
-        'Origin RO', 'RO', 'RO Name', 'VendorRO', 'RO_Clean', 'Legwise', 'Zone',
+        'Origin RO', 'Origin Branch', 'RO', 'RO Name', 'VendorRO', 'RO_Clean', 'Legwise', 'Zone',
         'Vendor', 'VendorName', 'Vendor Name', 'Invoice Month', 'User ID', 'Route Code', 'Module Name'
     }
     pill_set = set(pill_cols or []) | {
@@ -7529,6 +6951,8 @@ def render_centered_html_table(
                 if tone and tone in pal:
                     bg, fg, acc = pal[tone]
                     style = f'background:{bg};color:{fg};font-weight:800;box-shadow:inset 3px 0 0 {acc};'
+            elif col in ('Escalation Remark', 'Decision Remark', 'Action Plan Details'):
+                cls = ' class="c-remark"'
             elif col in bold_set:
                 cls = ' class="c-bold"'
             tds.append(f'<td{cls} style="{style}">{safe_txt}</td>' if style else f'<td{cls}>{safe_txt}</td>')
@@ -7580,7 +7004,10 @@ def render_centered_html_table(
         f'tfoot tr.gt-row td:first-child {{ z-index:7; }}'
         f'tbody tr:nth-child(odd) td:first-child {{ background:{pal["row_even"]}; }}'
         f'tbody tr:nth-child(even) td:first-child {{ background:{pal["row_odd"]}; }}'
-        f'.tbl-compact thead th {{ padding:6px 9px; font-size:11.8px; }} .tbl-compact tbody td {{ padding:5px 9px; font-size:11.8px; }} .tbl-compact tfoot tr.gt-row td {{ padding:6px 9px; font-size:11.8px; }}'
+        f'table.tbl-compact thead th {{ padding:4px 8px !important; font-size:11.3px !important; }}'
+        f'table.tbl-compact tbody td {{ padding:3px 8px !important; font-size:11.3px !important; line-height:1.2 !important; }}'
+        f'table.tbl-compact tfoot tr.gt-row td {{ padding:5px 8px !important; font-size:11.3px !important; }}'
+        f'td.c-remark {{ text-align:left !important; white-space:normal !important; min-width:290px; max-width:440px; line-height:1.35; font-size:12px; }}'
         f'thead th:last-child, tbody td:last-child, tfoot td:last-child {{ border-right:none; }}'
         f'tbody tr:nth-child(odd) {{ background:{pal["row_even"]}; }}'
         f'tbody tr:nth-child(even) {{ background:{pal["row_odd"]}; }}'
@@ -7609,6 +7036,10 @@ def render_centered_html_table(
         f'    const s = (txt || "").trim();'
         f'    const pctM = s.match(/^(-?\d+(?:\.\d+)?)%/);'
         f'    if(pctM) return parseFloat(pctM[1]);'
+        f'    const dayM = s.match(/^(\d+)d$/i);'
+        f'    if(dayM) return parseInt(dayM[1], 10);'
+        f'    const hmM = s.match(/^(-?)(\d+):(\d{2})$/);'
+        f'    if(hmM) return (hmM[1] === "-" ? -1 : 1) * (parseInt(hmM[2], 10) * 60 + parseInt(hmM[3], 10));'
         f'    const numS = s.replace(/[₹,]/g, "");'
         f'    if(numS !== "" && !isNaN(numS)) return parseFloat(numS);'
         f'    return s.toLowerCase();'
@@ -7675,20 +7106,35 @@ def render_centered_html_table(
         f'    cntSpan.textContent = "Showing " + vis.toLocaleString() + " of " + totalAll.toLocaleString();'
         f'    recalcVisibleGrandTotal(q);'
         f'  }});'
+        f'  function fallbackCopyText(text){{'
+        f'    const ta = document.createElement("textarea");'
+        f'    ta.value = text;'
+        f'    ta.style.position = "fixed"; ta.style.top = "-9999px"; ta.style.left = "-9999px";'
+        f'    document.body.appendChild(ta);'
+        f'    ta.focus(); ta.select();'
+        f'    let ok = false;'
+        f'    try {{ ok = document.execCommand("copy"); }} catch(e) {{ ok = false; }}'
+        f'    document.body.removeChild(ta);'
+        f'    return ok;'
+        f'  }}'
         f'  copyBtn.addEventListener("click", () => {{'
         f'    const lines = [];'
         f'    const hCells = Array.from(tbl.querySelectorAll("thead th")).map(h => h.textContent.replace(/[⇅▲▼]/g,"").trim());'
         f'    lines.push(hCells.join("\t"));'
         f'    tbody.querySelectorAll("tr").forEach(tr => {{'
         f'      if(tr.style.display === "none") return;'
-        f'      lines.push(Array.from(tr.children).map(td => td.textContent.trim()).join("\t"));'
+        f'      lines.push(Array.from(tr.children).map(td => td.textContent.replace(/\s+/g," ").trim()).join("\t"));'
         f'    }});'
         f'    const gt = tbl.querySelector("tfoot tr");'
         f'    if(gt) lines.push(Array.from(gt.children).map(td => td.textContent.trim()).join("\t"));'
-        f'    navigator.clipboard.writeText(lines.join("\n")).then(() => {{'
-        f'      copyBtn.textContent = "✅ Copied!";'
-        f'      setTimeout(() => copyBtn.textContent = "📋 Copy", 1500);'
-        f'    }}).catch(() => {{}});'
+        f'    const payload = lines.join("\n");'
+        f'    const done = (ok) => {{'
+        f'      copyBtn.textContent = ok ? "✅ Copied!" : "⚠️ Press Ctrl+C";'
+        f'      setTimeout(() => copyBtn.textContent = "📋 Copy", 1800);'
+        f'    }};'
+        f'    if(navigator.clipboard && window.isSecureContext){{'
+        f'      navigator.clipboard.writeText(payload).then(() => done(true)).catch(() => done(fallbackCopyText(payload)));'
+        f'    }} else {{ done(fallbackCopyText(payload)); }}'
         f'  }});'
         f'}})();'
         f'</script>'
@@ -7763,77 +7209,6 @@ def _ops_window_semantic_palette():
         'neutral': ('rgba(148,163,184,.12)', selected_theme['muted'], '#64748b')
     }
 
-def style_ops_window_dataframe(df_in):
-    """Clean table styling: neutral zebra rows, bold highlighted counts, and soft status pills."""
-    if df_in is None or df_in.empty:
-        return df_in
-    pal = _ops_window_semantic_palette()
-
-    def pill_css(tone_key):
-        bg, fg, accent = pal[tone_key]
-        return f'background-color: {bg}; color: {fg}; font-weight: 800; border-left: 3px solid {accent}; text-align: center;'
-
-    def classify_text(val_str):
-        s = val_str.lower()
-        if 'ontime dep, ontime arr' in s:
-            return 'good'
-        if 'late dep, late arr' in s or 'no dep' in s:
-            return 'bad'
-        if 'ontime dep, late arr' in s:
-            return 'soft_bad'
-        if 'late dep, ontime arr' in s:
-            return 'recover'
-        if 'in-transit' in s or 'missing' in s:
-            return 'warn'
-        return 'neutral'
-
-    def style_frame(frame):
-        styles = pd.DataFrame('', index=frame.index, columns=frame.columns)
-        for i, idx in enumerate(frame.index):
-            base_bg = pal['row_even'] if i % 2 == 0 else pal['row_odd']
-            styles.loc[idx, :] = f'background-color: {base_bg}; color: {pal["text"]}; text-align: center;'
-
-        for col in frame.columns:
-            c_low = str(col).lower()
-            if col == 'Remark':
-                for idx, val in frame[col].items():
-                    styles.loc[idx, col] = pill_css(classify_text(str(val)))
-            elif col == 'Ontime Dep, Ontime Arr':
-                for idx, val in frame[col].items():
-                    pct = parse_pct_from_str(str(val))
-                    if pct is None or pct == 0:
-                        styles.loc[idx, col] = pill_css('bad' if pct == 0 else 'neutral')
-                    elif pct >= 70:
-                        styles.loc[idx, col] = pill_css('good')
-                    elif pct >= 40:
-                        styles.loc[idx, col] = pill_css('warn')
-                    else:
-                        styles.loc[idx, col] = pill_css('bad')
-            elif 'remark %' in c_low:
-                remark_series = frame['Remark'] if 'Remark' in frame.columns else pd.Series('', index=frame.index)
-                for idx, val in frame[col].items():
-                    styles.loc[idx, col] = pill_css(classify_text(str(remark_series.loc[idx])))
-            elif col in ('Total Trips', 'Trips', 'Count'):
-                for idx in frame.index:
-                    styles.loc[idx, col] = f'background-color: {pal["num_bg"]}; color: {pal["num_fg"]}; font-weight: 850; text-align: center;'
-            elif col in ('Origin RO', 'Legwise'):
-                for idx in frame.index:
-                    styles.loc[idx, col] += ' font-weight: 700;'
-        return styles
-
-    return (
-        df_in.style
-        .apply(style_frame, axis=None)
-        .set_properties(**{'border-color': pal['border'], 'font-size': '13px', 'padding': '8px 10px', 'text-align': 'center', 'vertical-align': 'middle'})
-        .set_table_styles([
-            {'selector': 'th', 'props': [
-                ('background-color', pal['header_bg']), ('color', pal['header_text']),
-                ('font-weight', '800'), ('border-color', pal['border']), ('padding', '9px 10px'),
-                ('text-align', 'center')
-            ]},
-            {'selector': 'td', 'props': [('text-align', 'center'), ('vertical-align', 'middle')]}
-        ], overwrite=False)
-    )
 
 def build_ops_window_excel_bytes(breakdown_df, raw_df, report_title):
     """Build a clean 2-sheet Excel workbook (Route_Leg_Breakdown + Detailed_Raw_Trips)."""
@@ -8935,20 +8310,23 @@ def render_vendor_perf_raw_window(data, query):
     st.markdown(f"### 📄 Detailed Raw Trip Records ({len(raw_clean):,} rows)")
     render_centered_html_table(raw_clean, height=580)
 
-    ven_win_buf = io.BytesIO()
-    with pd.ExcelWriter(ven_win_buf, engine='xlsxwriter') as writer:
-        write_styled_sheet_to_excel(writer, breakdown_df, f'{view_mode[:20]}_Summary', sheet_type='generic', preserve_order=True)
-        write_styled_sheet_to_excel(writer, raw_clean, 'Detailed_Raw_Trips', sheet_type='ven_raw')
     safe_v_title = re.sub(r'[^A-Za-z0-9_-]+', '_', title_label).strip('_') or 'Vendor_Perf'
-    st.download_button(
-        f"📥 Download {title_label} ({view_mode}) Report (Excel)",
-        data=ven_win_buf.getvalue(),
-        file_name=f"Vendor_{safe_v_title}_{get_ist_now():%d_%b_%Y}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary",
-        use_container_width=True,
-        key="ven_win_download_btn"
-    )
+    _vw_c1, _vw_c2 = st.columns([1.6, 3.4])
+    if _vw_c1.button(f"📥 Prepare {title_label} Excel", key="ven_win_prep_btn", type="primary", use_container_width=True):
+        with st.spinner("Generating Excel..."):
+            ven_win_buf = io.BytesIO()
+            with pd.ExcelWriter(ven_win_buf, engine='xlsxwriter') as writer:
+                write_styled_sheet_to_excel(writer, breakdown_df, f'{view_mode[:20]}_Summary', sheet_type='generic', preserve_order=True)
+                write_styled_sheet_to_excel(writer, raw_clean, 'Detailed_Raw_Trips', sheet_type='ven_raw')
+            st.session_state["_ven_win_xl_bytes"] = ven_win_buf.getvalue()
+    if st.session_state.get("_ven_win_xl_bytes"):
+        _vw_c2.download_button(
+            f"⬇️ Download {title_label} ({view_mode}) Report (Excel)",
+            data=st.session_state["_ven_win_xl_bytes"],
+            file_name=f"Vendor_{safe_v_title}_{get_ist_now():%d_%b_%Y}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="ven_win_download_btn"
+        )
 
 # -------------------------------------------------------------
 # A. DAILY STANDUP (Operations Summary)
@@ -9064,83 +8442,127 @@ elif choice == "📊 Operations Summary":
         }
         render_ops_remark_gauges(ops_outcome_counts, ops_total_trips, ops_outcome_labels, ops_gauge_context)
 
-        # Clean, Logical Operations Route & Leg Summary Table (Matching Vendor Performance Style)
+        # Dynamic Operations Performance Views: Route & Leg-wise, RO-wise, Branch-wise, Zone-wise
         st.markdown("---")
-        st.markdown("### 📋 Route & Leg Operations Summary")
+        _ops_hdr_c1, _ops_hdr_c2 = st.columns([2.2, 1.4])
+        ops_view_mode = _ops_hdr_c2.selectbox(
+            "Group Performance By:",
+            ["RO-wise", "Branch-wise", "Route & Leg-wise", "Zone-wise"],
+            key="ops_main_group_mode"
+        )
+        _ops_hdr_c1.markdown(f"### 📋 Operations Performance ({ops_view_mode})")
 
-        ops_leg_keys = [c for c in ['Origin RO', 'Route Path', 'Legwise', 'Legs'] if c in raw_status.columns]
-        if ops_leg_keys:
-            ops_tbl = raw_status.copy()
-            ops_out_s = ops_tbl['_OpsRemarkOutcome'].fillna('Other').astype(str)
-            primary_outcomes = [
-                'Ontime Dep, Ontime Arr',
-                'Ontime Dep, Late Arr',
-                'Late Dep, Late Arr',
-                'Late Dep, Ontime Arr'
-            ]
-            extra_outcomes = [
-                lbl for lbl, _, _ in OPS_REMARK_OUTCOME_LABELS
-                if lbl not in primary_outcomes and int(ops_outcome_counts.get(lbl, 0)) > 0
-            ]
+        def _build_ops_grouped_view(src_df, mode):
+            work = src_df.copy()
+            if 'Origin Branch' not in work.columns:
+                work['Origin Branch'] = work.get('CD_FromBranch', work.get('Origin RO', '')).fillna('').astype(str).str.strip().str.upper()
+            primary_outcomes = ['Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr', 'Late Dep, Late Arr', 'Late Dep, Ontime Arr']
+            extra_outcomes = [lbl for lbl, _, _ in OPS_REMARK_OUTCOME_LABELS if lbl not in primary_outcomes and int(ops_outcome_counts.get(lbl, 0)) > 0]
             shown_outcomes = primary_outcomes + extra_outcomes
+            key_map = {
+                "Route & Leg-wise": [c for c in ['Origin RO', 'Route Path', 'Legwise', 'Legs'] if c in work.columns],
+                "RO-wise": [c for c in ['Zone', 'Origin RO'] if c in work.columns],
+                "Branch-wise": [c for c in ['Zone', 'Origin RO', 'Origin Branch'] if c in work.columns],
+                "Zone-wise": [c for c in ['Zone'] if c in work.columns],
+            }
+            g_keys = key_map.get(mode, ['Origin RO'])
+            piv = work.groupby(g_keys + ['_OpsRemarkOutcome'], dropna=False).size().unstack('_OpsRemarkOutcome', fill_value=0)
+            piv = piv.reindex(columns=shown_outcomes, fill_value=0)
+            tot_s = work.groupby(g_keys, dropna=False).size().rename('Total Trips')
+            res = tot_s.to_frame().join(piv).reset_index()
 
-            ops_piv = ops_tbl.groupby(ops_leg_keys + ['_OpsRemarkOutcome'], dropna=False).size().unstack('_OpsRemarkOutcome', fill_value=0)
-            ops_piv = ops_piv.reindex(columns=shown_outcomes, fill_value=0)
-            ops_tot = ops_tbl.groupby(ops_leg_keys, dropna=False).size().rename('Total Trips')
-            ops_summary_df = ops_tot.to_frame().join(ops_piv).reset_index()
+            oo_c = res['Ontime Dep, Ontime Arr'].astype(int) if 'Ontime Dep, Ontime Arr' in res.columns else pd.Series(0, index=res.index)
+            ld_cols = [c for c in shown_outcomes if 'Late Dep' in c or 'No Departure' in c]
+            ld_c = res[ld_cols].sum(axis=1).astype(int) if ld_cols else pd.Series(0, index=res.index)
+            tot_c = res['Total Trips'].astype(int)
+            oo_pct = np.where(tot_c > 0, oo_c / tot_c * 100.0, 0.0)
+            ld_pct = np.where(tot_c > 0, ld_c / tot_c * 100.0, 0.0)
 
-            oo_cnts = ops_summary_df['Ontime Dep, Ontime Arr'].astype(int) if 'Ontime Dep, Ontime Arr' in ops_summary_df.columns else pd.Series(0, index=ops_summary_df.index)
-            tot_cnts = ops_summary_df['Total Trips'].astype(int)
-            oo_pct_num = np.where(tot_cnts > 0, oo_cnts / tot_cnts * 100.0, 0.0)
+            # Plain-English decision remarks
+            remarks = []
+            for idx_r, row_r in res.iterrows():
+                t_v, ld_v, oo_v = int(tot_c.loc[idx_r]), int(ld_c.loc[idx_r]), int(oo_c.loc[idx_r])
+                ld_p = (ld_v / t_v * 100.0) if t_v else 0.0
+                if mode == "Branch-wise":
+                    ent = f"Branch {row_r.get('Origin Branch', '')} ({row_r.get('Origin RO', '')})"
+                elif mode == "RO-wise":
+                    ent = f"RO {row_r.get('Origin RO', '')}"
+                elif mode == "Zone-wise":
+                    ent = f"{row_r.get('Zone', '')} Zone"
+                else:
+                    ent = f"{row_r.get('Route Path', '')} {row_r.get('Legwise', '')}"
+                if ld_v == 0:
+                    remarks.append(f"{ent} achieved 0 late departures ({oo_v}/{t_v} on-time).")
+                elif ld_p >= 25 or ld_v >= 5:
+                    remarks.append(f"{ent} had {ld_v} late departures out of {t_v} trips ({ld_p:.1f}%) — immediate escalation required.")
+                else:
+                    remarks.append(f"{ent} recorded {ld_v} late departures out of {t_v} trips ({ld_p:.1f}%) — monitor closely.")
 
+            res['Late Departure'] = [format_pct_cnt(c, t) for c, t in zip(ld_c, tot_c)]
             for lbl in shown_outcomes:
-                ops_summary_df[lbl] = [format_pct_cnt(c, t) for c, t in zip(ops_summary_df[lbl], tot_cnts)]
+                res[lbl] = [format_pct_cnt(c, t) for c, t in zip(res[lbl], tot_c)]
+            res['Status'] = np.where(oo_pct >= 85, '🟢 Strong', np.where(oo_pct >= 70, '🟡 Watch', '🔴 Action Needed'))
+            res['Decision Remark'] = remarks
+            res['_sort_ld'] = ld_c
+            res['_sort_pct'] = ld_pct
 
-            ops_summary_df['Status'] = np.where(oo_pct_num >= 85, '🟢 Strong', np.where(oo_pct_num >= 70, '🟡 Watch', '🔴 Action Needed'))
-            ops_summary_df['_leg_n'] = extract_leg_num_val(ops_summary_df['Legwise']) if 'Legwise' in ops_summary_df.columns else 999
-            ops_summary_df = ops_summary_df.sort_values(
-                by=[c for c in ['Origin RO', 'Route Path', '_leg_n'] if c in ops_summary_df.columns],
-                ascending=True
-            ).drop(columns=['_leg_n'], errors='ignore').reset_index(drop=True)
+            front_o = g_keys + ['Total Trips', 'Ontime Dep, Ontime Arr', 'Late Departure'] + [c for c in shown_outcomes if c != 'Ontime Dep, Ontime Arr'] + ['Status', 'Decision Remark']
+            if mode == "Route & Leg-wise":
+                res['_leg_n'] = extract_leg_num_val(res['Legwise']) if 'Legwise' in res.columns else 999
+                res = res.sort_values(by=[c for c in ['Origin RO', 'Route Path', '_leg_n'] if c in res.columns], ascending=True)
+            else:
+                res = res.sort_values(by=['_sort_ld', '_sort_pct', 'Total Trips'], ascending=[False, False, False])
+            return res[[c for c in front_o if c in res.columns]].reset_index(drop=True), g_keys
 
-            render_centered_html_table(ops_summary_df, height=520)
+        ops_summary_df, active_ops_keys = _build_ops_grouped_view(raw_status, ops_view_mode)
+        render_centered_html_table(ops_summary_df, height=520)
 
-            # Clean 1-line Raw Trip Inspector
-            ops_drill_opts = ["Select a Route & Leg to inspect raw trips..."] + [
-                f"{r.get('Origin RO', '')} | {r.get('Route Path', '')} | {r.get('Legwise', '')} ({r.get('Total Trips', 0)} trips)"
-                for _, r in ops_summary_df.iterrows()
-            ]
-            chosen_ops_drill = st.selectbox("🔎 Inspect Raw Trips:", ops_drill_opts, key="ops_main_raw_inspector")
-            if chosen_ops_drill != ops_drill_opts[0]:
-                o_idx = ops_drill_opts.index(chosen_ops_drill) - 1
-                if 0 <= o_idx < len(ops_summary_df):
-                    sel_or = ops_summary_df.iloc[o_idx]
-                    o_raw = raw_status[
-                        raw_status['Origin RO'].astype(str).eq(str(sel_or['Origin RO']))
-                        & raw_status['Route Path'].astype(str).eq(str(sel_or['Route Path']))
-                        & raw_status['Legwise'].astype(str).eq(str(sel_or['Legwise']))
-                    ].drop(columns=['_OpsRemarkOutcome', '_RemarkOutcome'], errors='ignore').copy()
-                    o_raw_clean = clean_dataframe_for_excel(o_raw, sheet_type="ops_raw")
-                    st.markdown(f"#### 📄 `{sel_or['Origin RO']}` · `{sel_or['Route Path']}` · `{sel_or['Legwise']}` (**{len(o_raw_clean):,} trips**)")
-                    render_centered_html_table(o_raw_clean, height=400)
+        # Dynamic Raw Trip Inspector matching the selected Group By mode
+        ops_drill_opts = [f"Select a {ops_view_mode.replace('-wise', '')} row to inspect raw trips..."] + [
+            " | ".join(str(r.get(k, '')) for k in active_ops_keys) + f" ({r.get('Total Trips', 0)} trips)"
+            for _, r in ops_summary_df.iterrows()
+        ]
+        chosen_ops_drill = st.selectbox("🔎 Inspect Raw Trips:", ops_drill_opts, key="ops_main_raw_inspector")
+        if chosen_ops_drill != ops_drill_opts[0]:
+            o_idx = ops_drill_opts.index(chosen_ops_drill) - 1
+            if 0 <= o_idx < len(ops_summary_df):
+                sel_or = ops_summary_df.iloc[o_idx]
+                work_insp = raw_status.copy()
+                if 'Origin Branch' not in work_insp.columns:
+                    work_insp['Origin Branch'] = work_insp.get('CD_FromBranch', work_insp.get('Origin RO', '')).fillna('').astype(str).str.strip().str.upper()
+                m_insp = pd.Series(True, index=work_insp.index)
+                for k_col in active_ops_keys:
+                    m_insp &= work_insp[k_col].fillna('').astype(str).str.strip().eq(str(sel_or[k_col]).strip())
+                o_raw = work_insp[m_insp].drop(columns=['_OpsRemarkOutcome', '_RemarkOutcome'], errors='ignore').copy()
+                o_raw_clean = clean_dataframe_for_excel(o_raw, sheet_type="ops_raw")
+                lbl_sel = " · ".join(str(sel_or[k]) for k in active_ops_keys)
+                st.markdown(f"#### 📄 `{lbl_sel}` (**{len(o_raw_clean):,} trips**)")
+                render_centered_html_table(o_raw_clean, height=400)
 
-            # On-demand Styled Excel Export
-            ops_dl1, ops_dl2 = st.columns([1.6, 3.4])
-            if ops_dl1.button("📥 Prepare Styled Excel Report", key="ops_prepare_excel_btn", type="primary", use_container_width=True):
-                with st.spinner("Generating styled Operations Excel..."):
-                    dl_buf_o = io.BytesIO()
-                    with pd.ExcelWriter(dl_buf_o, engine='xlsxwriter') as writer:
-                        write_styled_sheet_to_excel(writer, ops_summary_df, 'Operations_Summary', sheet_type="generic", preserve_order=True)
-                        write_styled_sheet_to_excel(writer, raw_status.drop(columns=['_OpsRemarkOutcome', '_RemarkOutcome'], errors='ignore'), 'Operations_Raw', sheet_type="ops_raw")
-                    st.session_state["_ops_excel_ready_bytes"] = dl_buf_o.getvalue()
-            if st.session_state.get("_ops_excel_ready_bytes"):
-                ops_dl2.download_button(
-                    "⬇️ Download Operations Summary Report (Excel)",
-                    data=st.session_state["_ops_excel_ready_bytes"],
-                    file_name=f"Operations_Summary_Report_{get_ist_now():%d_%b_%Y}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="ops_ready_download_btn"
-                )
+        # On-demand Styled Excel Export (Includes Zone, RO, Branch, Route-Leg & Raw sheets!)
+        ops_dl1, ops_dl2 = st.columns([1.8, 3.2])
+        if ops_dl1.button("📥 Prepare Multi-View Operations Excel", key="ops_prepare_excel_btn", type="primary", use_container_width=True):
+            with st.spinner("Generating styled Operations Excel (RO + Branch + Zone + Route-Leg + Raw)..."):
+                _z_df, _ = _build_ops_grouped_view(raw_status, "Zone-wise")
+                _ro_df, _ = _build_ops_grouped_view(raw_status, "RO-wise")
+                _br_df, _ = _build_ops_grouped_view(raw_status, "Branch-wise")
+                _rl_df, _ = _build_ops_grouped_view(raw_status, "Route & Leg-wise")
+                dl_buf_o = io.BytesIO()
+                with pd.ExcelWriter(dl_buf_o, engine='xlsxwriter') as writer:
+                    write_styled_sheet_to_excel(writer, _ro_df, '1_RO_Performance', sheet_type="generic", preserve_order=True)
+                    write_styled_sheet_to_excel(writer, _br_df, '2_Branch_Performance', sheet_type="generic", preserve_order=True)
+                    write_styled_sheet_to_excel(writer, _z_df, '3_Zone_Performance', sheet_type="generic", preserve_order=True)
+                    write_styled_sheet_to_excel(writer, _rl_df, '4_Route_Leg_Summary', sheet_type="generic", preserve_order=True)
+                    write_styled_sheet_to_excel(writer, raw_status.drop(columns=['_OpsRemarkOutcome', '_RemarkOutcome'], errors='ignore'), '5_Operations_Raw', sheet_type="ops_raw")
+                st.session_state["_ops_excel_ready_bytes"] = dl_buf_o.getvalue()
+        if st.session_state.get("_ops_excel_ready_bytes"):
+            ops_dl2.download_button(
+                "⬇️ Download Operations Multi-View Report (Excel)",
+                data=st.session_state["_ops_excel_ready_bytes"],
+                file_name=f"Operations_Performance_Report_{get_ist_now():%d_%b_%Y}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="ops_ready_download_btn"
+            )
 
 
 # -------------------------------------------------------------
@@ -9179,9 +8601,14 @@ elif choice == "🚚 Vendor Performance":
         search_q = ven_filters["search"]
 
         if 'LH Type' in df_vperf_raw.columns:
-            _v_lh_opts = ["ALL LH TYPES"] + sorted(x for x in df_vperf_raw['LH Type'].dropna().astype(str).unique().tolist() if x)
-            _sel_v_lh = st.selectbox("🛣️ Filter LH Type (Scheduled Only):", _v_lh_opts, key="ven_main_lh_filter")
-            if _sel_v_lh != "ALL LH TYPES":
+            _avail_lh = sorted(x for x in df_vperf_raw['LH Type'].dropna().astype(str).unique().tolist() if x)
+            _v_lh_opts = ["National LH + Zonal LH (Default SLA)", "ALL SCHEDULED (All LH Types)"] + _avail_lh
+            if st.session_state.get("ven_main_lh_filter") not in _v_lh_opts:
+                st.session_state["ven_main_lh_filter"] = "National LH + Zonal LH (Default SLA)"
+            _sel_v_lh = st.selectbox("🛣️ LH Type Scope (Scheduled Only — Non-Scheduled Excluded):", _v_lh_opts, key="ven_main_lh_filter")
+            if _sel_v_lh == "National LH + Zonal LH (Default SLA)":
+                df_vperf_raw = df_vperf_raw[df_vperf_raw['LH Type'].astype(str).isin(['National LH', 'Zonal LH'])].copy()
+            elif _sel_v_lh != "ALL SCHEDULED (All LH Types)":
                 df_vperf_raw = df_vperf_raw[df_vperf_raw['LH Type'].astype(str).eq(_sel_v_lh)].copy()
         df_vperf_sum = build_vendor_summary_from_raw(df_vperf_raw)
         if df_vperf_sum.empty:
@@ -10307,7 +9734,7 @@ elif choice == "📱 Communication Hub":
             db1.download_button(
                 "⬇️ Download Daily Overall Issues Excel",
                 data=st.session_state["_hub_daily_xl"][1],
-                file_name=f"Daily_Overall_Issues_{d_scope_lbl}_{get_ist_now():%d_%b_%Y}.xlsx",
+                file_name=f"Trackon_Escalation_Report_{d_scope_lbl}_{get_ist_now():%d_%b_%Y}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
                 key="hub_daily_dl_btn"
@@ -10320,7 +9747,7 @@ elif choice == "📱 Communication Hub":
         st.markdown("#### 🔥 Verification Preview: Branch Repeat Offenders (Late Departures)")
         render_centered_html_table(d_pack["branch_repeat"], height=360)
         st.markdown("#### 🚚 Verification Preview: Vendor Repeat Delays (Late Arrivals)")
-        render_centered_html_table(d_pack["vendor_repeat"], height=360)
+        render_centered_html_table(d_pack["vendor_leg_repeat"], height=360)
         st.markdown("#### 💳 Verification Preview: Stuck Payment Bills by RO")
         render_centered_html_table(d_pack["payment_summary"], height=340)
 
@@ -10674,11 +10101,7 @@ elif choice == "📝 Today's Call Action Plan":
         
         render_centered_html_table(df_ap, height=460)
         
-        output_ap = io.BytesIO()
-        with pd.ExcelWriter(output_ap, engine='xlsxwriter') as writer:
-            write_styled_sheet_to_excel(writer, df_ap, 'Action_Plans', sheet_type="mom")
-                
-        email_body = "Namaste Team,\n\nPlease find the Action Plans discussed in today's call below:\n\n"
+        email_body = "Dear Team,\n\nPlease find the Action Plans discussed in today's call below:\n\n"
         current_mod = ""
         for _, r in df_ap.iterrows():
             if r['Module Name'] != current_mod:
@@ -10693,14 +10116,20 @@ elif choice == "📝 Today's Call Action Plan":
         st.markdown("### 📤 Export & Share")
         
         c1, c2 = st.columns(2)
-        c1.download_button(
-            "1️⃣ Download Action Plan (Excel) 📥", 
-            data=output_ap.getvalue(), 
-            file_name=f"Action_Plan_MOM_{datetime.datetime.now().strftime('%d%b%Y')}.xlsx", 
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
-            use_container_width=True,
-            type="primary"
-        )
+        if c1.button("1️⃣ Prepare Action Plan (Excel) 📥", key="ap_prep_xl_btn", use_container_width=True, type="primary"):
+            _ap_buf = io.BytesIO()
+            with pd.ExcelWriter(_ap_buf, engine='xlsxwriter') as writer:
+                write_styled_sheet_to_excel(writer, df_ap, 'Action_Plans', sheet_type="mom")
+            st.session_state["_ap_xl_bytes"] = _ap_buf.getvalue()
+        if st.session_state.get("_ap_xl_bytes"):
+            c1.download_button(
+                "⬇️ Download Action Plan (Excel)",
+                data=st.session_state["_ap_xl_bytes"],
+                file_name=f"Action_Plan_MOM_{get_ist_now():%d%b%Y}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="ap_dl_xl_btn"
+            )
         
         encoded_msg = urllib.parse.quote(email_body)
         subject = urllib.parse.quote(f"Today's Call Action Plan (MOM) - {datetime.datetime.now().strftime('%d %b %Y')}")
