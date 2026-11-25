@@ -607,8 +607,12 @@ FILE_MAP = {
     "USERS_DB": os.path.join(DATA_DIR, "users_master.json"),
     "VENDOR_CATEGORY_MAP": os.path.join(DATA_DIR, "vendor_category_mapping.json"),
     "USER_VENDOR_CATEGORY_MAP": os.path.join(DATA_DIR, "user_vendor_category_mappings.json"),
-    "USER_TRACKED_VENDORS": os.path.join(DATA_DIR, "user_tracked_vendors.json")
+    "USER_TRACKED_VENDORS": os.path.join(DATA_DIR, "user_tracked_vendors.json"),
+    "DATA_META": os.path.join(DATA_DIR, "data_meta.json")
 }
+
+DATA_RETENTION_DAYS = 7
+DATA_RETENTION_TTL_SECS = DATA_RETENTION_DAYS * 86400
 
 DEFAULT_VENDOR_CATEGORY_MAP = {
     "Vehicle Vendors bill": [
@@ -1476,6 +1480,282 @@ def get_file_time(key):
         return datetime.datetime.fromtimestamp(ts).strftime('%d %b %Y, %I:%M %p')
     return "Not Uploaded Yet ❌"
 
+# ---------------------------------------------------------
+# 3A. BULK FOLDER AUTO-DETECTOR & 7-DAY SNAPSHOT PERSISTENCE
+# ---------------------------------------------------------
+SLOT_LABELS = {
+    "PAYMENT": "1. Payment Data",
+    "LEGWISE": "2. Legwise Report",
+    "ROUTE_MASTER": "3. Scheduled Route Master",
+    "BRANCH_MASTER": "4. RO & Branch List",
+    "MCD_VENDOR": "5. MCD Vendor Monitoring",
+    "CPK_UTIL": "6. CPK & Util Raw File",
+    "ROUTE_LOOKUP": "7. Route Lookup File",
+}
+
+def _peek_xlsx_structure(file_bytes):
+    """Fast header-only peek of an uploaded .xlsx file (zero full read, <30ms)."""
+    sheet_names = []
+    headers_lower = set()
+    try:
+        with zipfile.ZipFile(io.BytesIO(file_bytes), 'r') as zf:
+            names = set(zf.namelist())
+            shared_strings = []
+            if 'xl/sharedStrings.xml' in names:
+                with zf.open('xl/sharedStrings.xml') as ss_f:
+                    for _, elem in ET.iterparse(ss_f, events=('end',)):
+                        if elem.tag.endswith('}si') or elem.tag == 'si':
+                            shared_strings.append(''.join(t.text or '' for t in elem.iter() if t.tag.endswith('}t') or t.tag == 't'))
+                            elem.clear()
+                            if len(shared_strings) >= 400:
+                                break
+            wb_xml = ET.fromstring(zf.read('xl/workbook.xml'))
+            rels_xml = ET.fromstring(zf.read('xl/_rels/workbook.xml.rels'))
+            rel_map = {}
+            for rel in rels_xml:
+                rid = rel.attrib.get('Id')
+                target = rel.attrib.get('Target', '')
+                if rid and target:
+                    rel_map[rid] = target.lstrip('/') if target.startswith('/') else ('xl/' + target if not target.startswith('xl/') else target)
+            sheet_paths = []
+            for sh in wb_xml.iter():
+                if sh.tag.endswith('}sheet') or sh.tag == 'sheet':
+                    s_name = sh.attrib.get('name', '')
+                    sheet_names.append(s_name)
+                    rid = next((v for k, v in sh.attrib.items() if k.endswith('}id') or k == 'r:id'), None)
+                    if rid in rel_map:
+                        sheet_paths.append(rel_map[rid])
+            for sp in sheet_paths[:2]:
+                if sp not in names:
+                    continue
+                with zf.open(sp) as sh_f:
+                    for _, elem in ET.iterparse(sh_f, events=('end',)):
+                        if elem.tag.endswith('}row') or elem.tag == 'row':
+                            for c in elem:
+                                t_attr = c.attrib.get('t', '')
+                                val = None
+                                if t_attr == 's':
+                                    for ch in c:
+                                        if (ch.tag.endswith('}v') or ch.tag == 'v') and ch.text is not None:
+                                            si = int(ch.text)
+                                            if 0 <= si < len(shared_strings):
+                                                val = shared_strings[si]
+                                            break
+                                elif t_attr == 'inlineStr':
+                                    val = ''.join(t.text or '' for t in c.iter() if t.tag.endswith('}t') or t.tag == 't')
+                                else:
+                                    for ch in c:
+                                        if ch.tag.endswith('}v') or ch.tag == 'v':
+                                            val = ch.text
+                                            break
+                                if val:
+                                    headers_lower.add(str(val).strip().lower())
+                            break
+    except Exception:
+        pass
+    return sheet_names, headers_lower
+
+def detect_raw_file_slot(uploaded_file):
+    """Auto-detect which of the 7 Trackon raw slots an uploaded .xlsx file belongs to."""
+    fname = str(getattr(uploaded_file, 'name', '') or '').lower()
+    raw_bytes = bytes(uploaded_file.getbuffer())
+    sheets, hdrs = _peek_xlsx_structure(raw_bytes)
+    sheets_low = {s.strip().lower() for s in sheets}
+    hdrs_norm = {re.sub(r'[\s_.-]+', '', h) for h in hdrs}
+
+    # 1. Exact content-based detection (highest accuracy)
+    if 'routepathreportmodel' in {re.sub(r'[^a-z0-9]+', '', s) for s in sheets_low} or (
+        {'routecode', 'routebranchcode'}.issubset(hdrs_norm) and ('scheduledeparturetime' in hdrs_norm or 'scheduleddeparturetime' in hdrs_norm)
+    ):
+        return "ROUTE_MASTER"
+    if 'invoiceid' in hdrs_norm and ('roselection' in hdrs_norm or 'pendingwith' in hdrs_norm or 'baseamount' in hdrs_norm or 'report' in sheets_low):
+        return "PAYMENT"
+    if 'rptbranchcode' in hdrs_norm and 'rptro' in hdrs_norm:
+        return "BRANCH_MASTER"
+    if 'contractvehicle_detailreport' in sheets_low or 'vehicleusagetype' in hdrs_norm or (
+        'refnumber' in hdrs_norm and ('totalcost' in hdrs_norm or 'contractcost' in hdrs_norm or 'vehiclecapacity' in hdrs_norm)
+    ):
+        return "CPK_UTIL"
+    if 'mastercdno' in hdrs_norm and ('legwise' in hdrs_norm or 'mincdstartdatetime' in hdrs_norm):
+        return "LEGWISE"
+    if 'mastercdno' in hdrs_norm and ('mcdfrombranch' in hdrs_norm or 'lhtype' in hdrs_norm) and 'legwise' not in hdrs_norm:
+        return "ROUTE_LOOKUP"
+
+    # 2. Filename fallback detection
+    if any(k in fname for k in ['all_data', 'payment', 'invoice', 'bill']):
+        return "PAYMENT"
+    if any(k in fname for k in ['legwise', 'leg_wise', 'leg-wise']):
+        return "LEGWISE"
+    if any(k in fname for k in ['route_master', 'routemaster', 'routepath', 'schedule']):
+        return "ROUTE_MASTER"
+    if any(k in fname for k in ['branch', 'ro_list', 'rolist', 'ro_branch']):
+        return "BRANCH_MASTER"
+    if any(k in fname for k in ['cpk', 'contractvehicle', 'util']):
+        return "CPK_UTIL"
+    if any(k in fname for k in ['lookup', 'route_lookup']):
+        return "ROUTE_LOOKUP"
+    if any(k in fname for k in ['mcd', 'vendor_mon', 'monitoring']):
+        return "MCD_VENDOR"
+    return None
+
+def load_data_meta():
+    path = FILE_MAP.get("DATA_META", "")
+    if path and os.path.exists(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                d = json.load(f)
+            if isinstance(d, dict):
+                return d
+        except Exception:
+            pass
+    return {}
+
+def save_data_meta():
+    now_ist = get_ist_now()
+    valid_until = now_ist + datetime.timedelta(days=DATA_RETENTION_DAYS)
+    meta = {
+        "refreshed_at_ist": now_ist.strftime("%Y-%m-%d %H:%M:%S"),
+        "valid_until_ist": valid_until.strftime("%Y-%m-%d %H:%M:%S"),
+        "retention_days": DATA_RETENTION_DAYS,
+        "files_present": [k for k in SLOT_LABELS if os.path.exists(FILE_MAP[k])],
+    }
+    try:
+        with open(FILE_MAP["DATA_META"], 'w', encoding='utf-8') as f:
+            json.dump(meta, f, indent=2)
+    except Exception:
+        pass
+    return meta
+
+SNAPSHOT_INCLUDE_FILES = [
+    "Auto_Generated_Monitoring_Data.xlsx",
+    ".monitoring_sheets_fast_cache.pkl",
+    ".payment_norm_fast_cache.pkl",
+    "payment_data.xlsx",
+    "route_master.xlsx",
+    "branch_master.xlsx",
+    "data_meta.json",
+    "users_master.json",
+    "vendor_category_mapping.json",
+    "user_vendor_category_mappings.json",
+    "user_tracked_vendors.json",
+    "action_plans.json",
+    "rate_corrections.json",
+    "vendor_master.json",
+]
+
+def build_7day_snapshot_zip_bytes():
+    """Bundle processed outputs, fast-caches, key masters, and JSON configs into 1 compressed .zip."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        for fn in SNAPSHOT_INCLUDE_FILES:
+            fp = os.path.join(DATA_DIR, fn)
+            if os.path.exists(fp):
+                zf.write(fp, arcname=fn)
+    return buf.getvalue()
+
+def restore_7day_snapshot_zip_bytes(zip_bytes):
+    """Extract a 7-day snapshot zip safely into DATA_DIR."""
+    restored = 0
+    allowed = set(SNAPSHOT_INCLUDE_FILES)
+    with zipfile.ZipFile(io.BytesIO(zip_bytes), 'r') as zf:
+        for info in zf.infolist():
+            base = os.path.basename(info.filename)
+            if base in allowed and not info.is_dir():
+                target = os.path.join(DATA_DIR, base)
+                tmp_p = target + ".restore_tmp"
+                with zf.open(info, 'r') as src_f, open(tmp_p, 'wb') as dst_f:
+                    dst_f.write(src_f.read())
+                os.replace(tmp_p, target)
+                restored += 1
+    return restored
+
+def _get_github_sync_config():
+    try:
+        token = st.secrets.get("GITHUB_TOKEN", "")
+        repo = st.secrets.get("GITHUB_DATA_REPO", "ar7630481/trackon-dashboard")
+        if token and repo:
+            return str(token).strip(), str(repo).strip()
+    except Exception:
+        pass
+    return "", ""
+
+def push_snapshot_to_github_release():
+    """Optional free 7-day cloud backup via GitHub Release asset (requires GITHUB_TOKEN in Streamlit Secrets)."""
+    token, repo = _get_github_sync_config()
+    if not token or not repo:
+        return False, "Not configured"
+    try:
+        import requests
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28"
+        }
+        tag = "dashboard-7day-snapshot"
+        asset_name = "trackon_7day_snapshot.zip"
+        rel_url = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
+        r = requests.get(rel_url, headers=headers, timeout=20)
+        if r.status_code == 404:
+            r = requests.post(
+                f"https://api.github.com/repos/{repo}/releases",
+                headers=headers,
+                json={"tag_name": tag, "name": "Trackon 7-Day Data Snapshot", "prerelease": True},
+                timeout=20
+            )
+        if r.status_code not in (200, 201):
+            return False, f"GitHub API {r.status_code}"
+        rel_data = r.json()
+        # Delete old asset with same name if present
+        for asset in rel_data.get("assets", []):
+            if asset.get("name") == asset_name:
+                requests.delete(asset["url"], headers=headers, timeout=20)
+        upload_url = rel_data["upload_url"].split("{")[0] + f"?name={asset_name}"
+        zip_bytes = build_7day_snapshot_zip_bytes()
+        up_headers = dict(headers)
+        up_headers["Content-Type"] = "application/zip"
+        ur = requests.post(upload_url, headers=up_headers, data=zip_bytes, timeout=90)
+        if ur.status_code in (200, 201):
+            return True, f"Synced {len(zip_bytes)/(1024*1024):.1f} MB to GitHub Cloud (Valid {DATA_RETENTION_DAYS} days)"
+        return False, f"Upload HTTP {ur.status_code}"
+    except Exception as exc:
+        return False, str(exc)
+
+def auto_restore_snapshot_from_github_if_needed():
+    """On cold restart, auto-restore last 7-day snapshot from GitHub Cloud if local data was wiped."""
+    if st.session_state.get("_gh_restore_checked"):
+        return
+    st.session_state["_gh_restore_checked"] = True
+    if os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
+        return
+    token, repo = _get_github_sync_config()
+    if not token or not repo:
+        return
+    try:
+        import requests
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28"
+        }
+        r = requests.get(f"https://api.github.com/repos/{repo}/releases/tags/dashboard-7day-snapshot", headers=headers, timeout=20)
+        if r.status_code != 200:
+            return
+        rel_data = r.json()
+        asset = next((a for a in rel_data.get("assets", []) if a.get("name") == "trackon_7day_snapshot.zip"), None)
+        if not asset:
+            return
+        dl_headers = dict(headers)
+        dl_headers["Accept"] = "application/octet-stream"
+        dr = requests.get(asset["url"], headers=dl_headers, timeout=90)
+        if dr.status_code == 200 and dr.content:
+            cnt = restore_7day_snapshot_zip_bytes(dr.content)
+            if cnt > 0:
+                st.session_state["_gh_restored_notice"] = f"♻️ Auto-restored {cnt} files from your 7-Day Cloud Snapshot!"
+    except Exception as exc:
+        logging.warning(f"Cloud snapshot auto-restore skipped: {exc}")
+
+auto_restore_snapshot_from_github_if_needed()
+
 def _fast_excel_engine():
     try:
         import python_calamine  # noqa: F401
@@ -1498,6 +1778,7 @@ NEEDED_PAYMENT_COLS_LOWER = {
     'invoice id', 'invoiceid', 'invoice id no', 'invoice no',
     'bill no.', 'bill no', 'billno', 'bill number', 'billnumber',
     'invoice date', 'invoicedate',
+    'start date', 'startdate', 'end date', 'enddate',
     'submitted at', 'submittedat',
     'ro name', 'ro_selection', 'roselection', 'ro',
     'vendor name', 'vendorname',
@@ -1665,6 +1946,153 @@ def read_payment_sheet_cached(path, signature, sheet_name):
         selected_sheet = sheet_name if sheet_name in workbook.sheet_names else workbook.sheet_names[0]
         return workbook.parse(selected_sheet)
 
+
+def _parse_mixed_date_series(series):
+    """Parse mixed DD-MM-YYYY, ISO YYYY-MM-DD, datetime, and Excel serial dates with zero false NaTs."""
+    if series is None or len(series) == 0:
+        return pd.Series(dtype='datetime64[ns]')
+    s = series.copy()
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return s
+    txt = s.fillna('').astype(str).str.strip()
+    iso_mask = txt.str.match(r'^\d{4}-\d{2}-\d{2}')
+    out = pd.Series(pd.NaT, index=s.index, dtype='datetime64[ns]')
+    if iso_mask.any():
+        try:
+            out.loc[iso_mask] = pd.to_datetime(txt.loc[iso_mask], format='mixed', yearfirst=True, errors='coerce')
+        except TypeError:
+            out.loc[iso_mask] = pd.to_datetime(txt.loc[iso_mask], yearfirst=True, errors='coerce')
+    rem = ~iso_mask & txt.ne('') & ~txt.str.lower().isin(['nan', 'none', 'nat'])
+    if rem.any():
+        try:
+            out.loc[rem] = pd.to_datetime(txt.loc[rem], dayfirst=True, format='mixed', errors='coerce')
+        except TypeError:
+            out.loc[rem] = pd.to_datetime(txt.loc[rem], dayfirst=True, errors='coerce')
+    still_nat = out.isna() & rem
+    if still_nat.any():
+        num = pd.to_numeric(txt.loc[still_nat], errors='coerce')
+        valid_num = num.between(20000, 80000)
+        if valid_num.any():
+            out.loc[num[valid_num].index] = pd.to_datetime(num[valid_num], unit='D', origin='1899-12-30')
+    return out
+
+def resolve_invoice_month_from_period(sd_s, ed_s, inv_s, sub_s):
+    """
+    Derive accurate Invoice Month (e.g. 'Jul-2026') from Start Date & End Date,
+    with smart self-healing when one or both dates are typos, swapped, future-dated, or missing.
+    """
+    sd = _parse_mixed_date_series(sd_s)
+    ed = _parse_mixed_date_series(ed_s)
+    inv = _parse_mixed_date_series(inv_s)
+    sub = _parse_mixed_date_series(sub_s)
+    today_ts = pd.Timestamp(get_ist_now().date())
+
+    months = []
+    flags = []
+    for s_d, e_d, i_d, sb_d in zip(sd, ed, inv, sub):
+        s_ok = pd.notna(s_d) and (2020 <= s_d.year <= 2030)
+        e_ok = pd.notna(e_d) and (2020 <= e_d.year <= 2030)
+        i_ok = pd.notna(i_d) and (2020 <= i_d.year <= 2030)
+        sb_ok = pd.notna(sb_d) and (2020 <= sb_d.year <= 2030)
+        ref = i_d if i_ok else (sb_d if sb_ok else today_ts)
+
+        def fmt(dt):
+            return dt.strftime('%b-%Y') if pd.notna(dt) else 'UNKNOWN'
+
+        # Case 1: Both Start & End are sane
+        if s_ok and e_ok:
+            s_ym = (s_d.year, s_d.month)
+            e_ym = (e_d.year, e_d.month)
+            if s_ym == e_ym:
+                months.append(fmt(s_d))
+                flags.append('OK' if e_d >= s_d else 'Swapped Same-Month')
+                continue
+
+            diff = (e_d - s_d).days
+            s_fut = sb_ok and ((s_d - sb_d).days > 5)
+            e_fut = sb_ok and ((e_d - sb_d).days > 5)
+
+            # Subcase A: End < Start (reversed or 1 corrupt date)
+            if diff < 0:
+                if abs(diff) <= 45:
+                    if abs(diff) <= 3:
+                        months.append(fmt(e_d))
+                        flags.append('Fixed (Reversed Start/End)')
+                    else:
+                        mid = e_d + pd.Timedelta(days=abs(diff) // 2)
+                        months.append(fmt(mid))
+                        flags.append('Fixed (Swapped Cross-Month)')
+                else:
+                    s_dist = abs((s_d - ref).days)
+                    e_dist = abs((e_d - ref).days)
+                    chosen = s_d if s_dist <= e_dist else e_d
+                    months.append(fmt(chosen))
+                    flags.append('Fixed (One Date Corrupt)')
+                continue
+
+            # Subcase B: One date is in the future beyond Submitted At (>5 days)
+            if e_fut and not s_fut:
+                months.append(fmt(s_d))
+                flags.append('Fixed (Future End Date)')
+                continue
+            if s_fut and not e_fut:
+                months.append(fmt(e_d))
+                flags.append('Fixed (Future Start Date)')
+                continue
+
+            # Subcase C: Legitimate cross-month billing cycle (1-45 days) -> Majority days wins
+            if diff <= 45:
+                s_month_end = s_d + pd.offsets.MonthEnd(0)
+                days_in_s = (s_month_end - s_d).days + 1
+                days_in_e = e_d.day
+                chosen = e_d if days_in_e >= days_in_s else s_d
+                months.append(fmt(chosen))
+                flags.append('OK (Cross-Month Majority)')
+                continue
+
+            # Subcase D: Multi-month span (>45 days, both <= Submitted At)
+            if i_ok:
+                i_ym = (i_d.year, i_d.month)
+                if i_ym == s_ym:
+                    months.append(fmt(s_d))
+                    flags.append('Resolved via Start+Inv')
+                elif i_ym == e_ym:
+                    months.append(fmt(e_d))
+                    flags.append('Resolved via End+Inv')
+                else:
+                    chosen = s_d if abs((s_d - i_d).days) <= abs((e_d - i_d).days) else e_d
+                    months.append(fmt(chosen))
+                    flags.append('Resolved via Closest to Inv')
+            else:
+                months.append(fmt(e_d))
+                flags.append('Resolved via End Date')
+
+        # Case 2: Only Start Date sane
+        elif s_ok:
+            months.append(fmt(s_d))
+            flags.append('Fixed (Bad End Date)')
+        # Case 3: Only End Date sane
+        elif e_ok:
+            months.append(fmt(e_d))
+            flags.append('Fixed (Bad Start Date)')
+        # Case 4: Both invalid/missing -> fallback to Invoice Date / Submitted At
+        else:
+            months.append(fmt(ref))
+            flags.append('Fallback (Inv/Sub Date)')
+
+    return pd.Series(months, index=sd_s.index), pd.Series(flags, index=sd_s.index)
+
+def _sort_month_labels_desc(labels):
+    """Sort 'Nov-2026', 'Oct-2026' chronologically newest first."""
+    def _k(lbl):
+        try:
+            dt = pd.to_datetime(f"01-{lbl}", format="%d-%b-%Y", errors='coerce')
+            if pd.notna(dt):
+                return (1, dt.year, dt.month)
+        except Exception:
+            pass
+        return (0, 0, 0)
+    return sorted(labels, key=_k, reverse=True)
 
 def get_col(df, possible_names):
     col_map = {str(c).replace(' ', '').replace('_', '').lower(): c for c in df.columns}
@@ -3105,13 +3533,13 @@ def compact_detail_frame(frame, kind):
     preferred_by_kind = {
         'ven_raw': ['Date', 'Remark with 15 min waiver', 'Origin RO', 'Route Path', 'Legwise', 'VendorName', 'Actual Arrival Time', 'Delay Hours', 'MasterCDNo'],
         'ops_raw': ['MCD_StartDate', 'Remark', 'Operations Outcome', 'Zone', 'Origin RO', 'Route Path', 'Legwise', 'Legs', 'CD_FromBranch', 'CD_ToBranch', 'MasterCDNo'],
-        'pay_raw': ['Invoice Id', 'Bill No.', 'Invoice Date', 'Bill Uploader', 'RO Name', 'Zone', 'Vendor Name', 'Vendor Mapping Category', 'Category', 'Base Amount', 'Amount', 'Status', 'Payment Group', 'Pending With', 'Pending Since', 'Days Pending', 'Hold Key'],
+        'pay_raw': ['Invoice Id', 'Bill No.', 'Invoice Month', 'Start Date', 'End Date', 'Invoice Date', 'Bill Uploader', 'RO Name', 'Zone', 'Vendor Name', 'Vendor Mapping Category', 'Category', 'Base Amount', 'Amount', 'Status', 'Payment Group', 'Pending With', 'Pending Since', 'Days Pending', 'Month Audit', 'Hold Key'],
         'cpk_raw': ['Date', 'RO_Clean', 'Final_Route', 'Final_Type', 'VendorName', 'Vehicle No', 'Cap', 'Wt', 'Trips', 'Cost']
     }
     cols = [col for col in preferred_by_kind.get(kind, list(frame.columns)) if col in frame.columns]
     out = frame.loc[:, cols].copy() if cols else frame.copy()
     for col in out.columns:
-        if pd.api.types.is_datetime64_any_dtype(out[col]) or col in ['Date', 'Invoice Date', 'Base Date', 'Last Approved At', 'MCD_StartDate']:
+        if pd.api.types.is_datetime64_any_dtype(out[col]) or col in ['Date', 'Invoice Date', 'Start Date', 'End Date', 'Base Date', 'Last Approved At', 'MCD_StartDate']:
             parsed = pd.to_datetime(out[col], dayfirst=True, errors='coerce')
             if pd.api.types.is_datetime64_any_dtype(out[col]) or parsed.notna().sum() >= max(1, int(out[col].notna().sum() * 0.7)):
                 out[col] = parsed.dt.strftime('%d-%b-%Y').fillna('')
@@ -3313,6 +3741,9 @@ def get_processed_data_cached(file_timestamps):
             elif 'INVOICEID' in col: rename_dict[col] = 'Invoice Id'
             elif 'BILLNO' in col or 'BILLNUMBER' in col: rename_dict[col] = 'Bill No.'
             elif 'INVOICEDATE' in col: rename_dict[col] = 'Invoice Date'
+            elif 'STARTDATE' in col: rename_dict[col] = 'Start Date'
+            elif 'ENDDATE' in col: rename_dict[col] = 'End Date'
+            elif 'SUBMITTEDAT' in col: rename_dict[col] = 'Submitted At'
             elif 'BASEAMOUNT' in col: rename_dict[col] = 'Base Amount'
             elif 'AMOUNT' == col: rename_dict[col] = 'Amount'
             elif 'STATUS' == col: rename_dict[col] = 'Status'
@@ -3325,7 +3756,7 @@ def get_processed_data_cached(file_timestamps):
 
         df_pay.rename(columns=rename_dict, inplace=True)
         
-        required_cols = ['RO Name', 'Category', 'Vendor Name', 'Invoice Id', 'Bill No.', 'Invoice Date', 'Base Amount', 'Amount', 'Status', 'Pending With', 'Last Approved At', 'Finance Revert Remarks 1', 'Approver Revert Remarks', 'Hold Key', 'Bill Uploader']
+        required_cols = ['RO Name', 'Category', 'Vendor Name', 'Invoice Id', 'Bill No.', 'Invoice Date', 'Start Date', 'End Date', 'Submitted At', 'Base Amount', 'Amount', 'Status', 'Pending With', 'Last Approved At', 'Finance Revert Remarks 1', 'Approver Revert Remarks', 'Hold Key', 'Bill Uploader']
         for req in required_cols:
             if req not in df_pay.columns:
                 df_pay[req] = ""
@@ -3378,9 +3809,11 @@ def get_processed_data_cached(file_timestamps):
         df_pay['Days Pending'] = (today - df_pay['Base Date']).dt.days
         df_pay['Aging Bucket'] = np.where(df_pay['Days Pending'] <= 5, "1. 0-5 Days", "2. >5 Days")
         df_pay['Base Date'] = df_pay['Base Date'].dt.strftime('%d-%b-%Y').fillna("")
-        df_pay['Invoice Month'] = df_pay['Invoice Date'].dt.strftime('%b-%Y').fillna("UNKNOWN")
+        df_pay['Invoice Month'], df_pay['Month Audit'] = resolve_invoice_month_from_period(
+            df_pay['Start Date'], df_pay['End Date'], df_pay['Invoice Date'], df_pay['Submitted At']
+        )
         
-        df_master = df_pay[["Zone", "RO Name", "Category", "Vendor Name", "Bill Uploader", "Invoice Id", "Bill No.", "Hold Key", "Aging Bucket", "Invoice Month", "Days Pending", "Status", "Pending With", "Revert Remarks", "Department Bucket", "Base Amount", "Amount", "Base Date"]]
+        df_master = df_pay[["Zone", "RO Name", "Category", "Vendor Name", "Bill Uploader", "Invoice Id", "Bill No.", "Start Date", "End Date", "Invoice Month", "Month Audit", "Hold Key", "Aging Bucket", "Days Pending", "Status", "Pending With", "Revert Remarks", "Department Bucket", "Base Amount", "Amount", "Base Date"]]
         data_for_export['Master_Database'] = df_master
         del df_pay
         gc.collect()
@@ -3745,7 +4178,7 @@ def process_all_data():
         # Clear stale caches
         st.session_state.pop('_dashboard_cache', None)
         st.session_state.pop('_dashboard_page_cache', None)
-        st.session_state.pop('_pay_prepared_frame_cache_v3', None)
+        st.session_state.pop('_pay_prepared_frame_cache_v4', None)
         st.session_state.pop('_download_version', None)
         st.session_state.pop('_vip_exec_report_ready', None)
         try:
@@ -3757,8 +4190,13 @@ def process_all_data():
         data_for_export = None
         gc.collect()
 
+        save_data_meta()
+        gh_ok, gh_msg = push_snapshot_to_github_release()
         progress.progress(100)
-        status_text.success("✅ All Data Processed Successfully! Loading Dashboard...")
+        if gh_ok:
+            status_text.success(f"✅ All Data Processed & {gh_msg}!")
+        else:
+            status_text.success(f"✅ All Data Processed Successfully! (Valid for {DATA_RETENTION_DAYS} days)")
         return True
     except Exception as e:
         logging.exception("Dashboard processing failed")
@@ -3818,7 +4256,7 @@ if st.session_state['role'] == 'Admin':
             if os.path.exists(_fp):
                 try: os.remove(_fp)
                 except Exception: pass
-        st.session_state.pop('_pay_prepared_frame_cache_v3', None)
+        st.session_state.pop('_pay_prepared_frame_cache_v4', None)
         st.session_state.pop('_dashboard_cache', None)
         st.session_state.pop('_dashboard_page_cache', None)
         try:
@@ -3828,35 +4266,104 @@ if st.session_state['role'] == 'Admin':
         st.sidebar.success("Old Data Removed! You can paste new data now.")
         st.rerun()
         
-    with st.sidebar.expander("📂 Upload Raw Files", expanded=False):
-        f1 = st.file_uploader("1. Payment Data", type=['xlsx'])
-        if save_file(f1, "PAYMENT"): st.success("Saved!")
-        st.caption(f"Last updated: {get_file_time('PAYMENT')}")
-        
-        f2 = st.file_uploader("2. Legwise Report", type=['xlsx'])
-        if save_file(f2, "LEGWISE"): st.success("Saved!")
-        st.caption(f"Last updated: {get_file_time('LEGWISE')}")
-        
-        f3 = st.file_uploader("3. Scheduled Route Master — National and Zonal (single workbook)", type=['xlsx'])
-        if save_file(f3, "ROUTE_MASTER"): st.success("Saved!")
-        st.caption(f"Last updated: {get_file_time('ROUTE_MASTER')}")
-        st.caption("This one workbook feeds Scheduled Route Master, scheduled departure/arrival, TAT, halting, and Vendor Performance. After replacing it, press PROCESS & REFRESH DATA to recalculate the other modules.")
-        
-        f4 = st.file_uploader("4. RO & Branch List", type=['xlsx'])
-        if save_file(f4, "BRANCH_MASTER"): st.success("Saved!")
-        st.caption(f"Last updated: {get_file_time('BRANCH_MASTER')}")
-        
-        f5 = st.file_uploader("5. MCD Vendor Monitoring", type=['xlsx'])
-        if save_file(f5, "MCD_VENDOR"): st.success("Saved!")
-        st.caption(f"Last updated: {get_file_time('MCD_VENDOR')}")
-        
-        f6 = st.file_uploader("6. CPK & Util Raw File", type=['xlsx'])
-        if save_file(f6, "CPK_UTIL"): st.success("Saved!")
-        st.caption(f"Last updated: {get_file_time('CPK_UTIL')}")
-        
-        f7 = st.file_uploader("7. Route Lookup File", type=['xlsx'])
-        if save_file(f7, "ROUTE_LOOKUP"): st.success("Saved!")
-        st.caption(f"Last updated: {get_file_time('ROUTE_LOOKUP')}")
+    with st.sidebar.expander("📂 Upload Raw Files (1-Click Folder Bulk)", expanded=False):
+        st.markdown("**⚡ Bulk Upload from Folder**")
+        st.caption("Apne folder se saari updated .xlsx files ek saath select karo (Ctrl+A / Ctrl+Click) — app har file ko uske sheet & columns se auto-detect karke sahi slot mein save kar dega!")
+        bulk_files = st.file_uploader(
+            "Select All Updated Raw Files Together:",
+            type=['xlsx'],
+            accept_multiple_files=True,
+            key="bulk_folder_uploader"
+        )
+        if bulk_files:
+            matched_msgs = []
+            unmatched_names = []
+            for bf in bulk_files:
+                slot = detect_raw_file_slot(bf)
+                if slot:
+                    saved_now = save_file(bf, slot)
+                    tag = "Saved ✅" if saved_now else "Already Up-to-Date ✓"
+                    matched_msgs.append(f"**{bf.name}** → `{SLOT_LABELS[slot]}` ({tag})")
+                else:
+                    unmatched_names.append(bf.name)
+            if matched_msgs:
+                st.success("\n\n".join(matched_msgs))
+            if unmatched_names:
+                st.warning(f"Auto-detect nahi hua: {', '.join(unmatched_names)} — neeche Manual Upload se daal do.")
+
+        st.markdown("---")
+        st.caption("📋 **Current Files Status:**")
+        for s_k, s_lbl in SLOT_LABELS.items():
+            st.caption(f"• {s_lbl}: `{get_file_time(s_k)}`")
+
+        st.markdown("---")
+        if st.checkbox("🔧 Show Manual Individual File Uploaders", value=False, key="show_manual_uploaders"):
+            f1 = st.file_uploader("1. Payment Data", type=['xlsx'], key="man_f1")
+            if save_file(f1, "PAYMENT"): st.success("Saved!")
+            f2 = st.file_uploader("2. Legwise Report", type=['xlsx'], key="man_f2")
+            if save_file(f2, "LEGWISE"): st.success("Saved!")
+            f3 = st.file_uploader("3. Scheduled Route Master (National & Zonal)", type=['xlsx'], key="man_f3")
+            if save_file(f3, "ROUTE_MASTER"): st.success("Saved!")
+            f4 = st.file_uploader("4. RO & Branch List", type=['xlsx'], key="man_f4")
+            if save_file(f4, "BRANCH_MASTER"): st.success("Saved!")
+            f5 = st.file_uploader("5. MCD Vendor Monitoring", type=['xlsx'], key="man_f5")
+            if save_file(f5, "MCD_VENDOR"): st.success("Saved!")
+            f6 = st.file_uploader("6. CPK & Util Raw File", type=['xlsx'], key="man_f6")
+            if save_file(f6, "CPK_UTIL"): st.success("Saved!")
+            f7 = st.file_uploader("7. Route Lookup File", type=['xlsx'], key="man_f7")
+            if save_file(f7, "ROUTE_LOOKUP"): st.success("Saved!")
+
+    with st.sidebar.expander("🛡️ 7-Day Data Persistence & Backup", expanded=False):
+        meta_now = load_data_meta()
+        gh_tok, gh_rep = _get_github_sync_config()
+        if meta_now.get("valid_until_ist"):
+            try:
+                vu_dt = datetime.datetime.strptime(meta_now["valid_until_ist"], "%Y-%m-%d %H:%M:%S")
+                rem_td = vu_dt - get_ist_now()
+                if rem_td.total_seconds() > 0:
+                    st.success(f"🗓️ Valid for **{rem_td.days}d {rem_td.seconds // 3600}h** (until {vu_dt:%d %b %Y, %I:%M %p} IST)")
+                else:
+                    st.warning("⚠️ Data is older than 7 days — please refresh soon.")
+            except Exception:
+                pass
+        if gh_tok:
+            st.caption(f"☁️ Cloud Auto-Sync: **ACTIVE** (`{gh_rep}`)")
+            if st.button("☁️ Sync 7-Day Snapshot to Cloud Now", key="manual_gh_sync_btn", use_container_width=True):
+                with st.spinner("Uploading snapshot to GitHub Cloud..."):
+                    ok_s, msg_s = push_snapshot_to_github_release()
+                if ok_s:
+                    st.success(msg_s)
+                else:
+                    st.error(f"Sync failed: {msg_s}")
+        else:
+            st.caption("💡 Free Cloud Auto-Restore (reboot ke baad bhi 7 din data safe rakhne ke liye): Streamlit **Manage app → Settings → Secrets** mein `GITHUB_TOKEN` add karo.")
+
+        if os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
+            if st.button("📦 Prepare Local Snapshot (.zip)", key="prep_snap_zip_btn", use_container_width=True):
+                st.session_state["_snap_zip_bytes"] = build_7day_snapshot_zip_bytes()
+            if st.session_state.get("_snap_zip_bytes"):
+                st.download_button(
+                    "⬇️ Download 7-Day Snapshot (.zip)",
+                    data=st.session_state["_snap_zip_bytes"],
+                    file_name=f"Trackon_7Day_Snapshot_{get_ist_now():%d_%b_%Y}.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                    key="dl_snap_zip_btn"
+                )
+        restore_up = st.file_uploader("♻️ 1-Click Restore Snapshot (.zip)", type=['zip'], key="restore_snap_zip_up")
+        if restore_up is not None:
+            r_dig = hashlib.sha256(restore_up.getbuffer()).hexdigest()
+            if st.session_state.get("_last_restored_zip_dig") != r_dig:
+                cnt_r = restore_7day_snapshot_zip_bytes(bytes(restore_up.getbuffer()))
+                st.session_state["_last_restored_zip_dig"] = r_dig
+                st.session_state.pop('_dashboard_page_cache', None)
+                st.session_state.pop('_pay_prepared_frame_cache_v4', None)
+                try:
+                    st.cache_data.clear()
+                except Exception:
+                    pass
+                st.success(f"✅ Restored {cnt_r} files! Reloading dashboard...")
+                st.rerun()
 
     with st.sidebar.expander("💸 Rate Correction Master"):
         st.caption("Fix raw Vendor Rates dynamically before dashboard processes data.")
@@ -3899,7 +4406,7 @@ if st.session_state['role'] == 'Admin':
             if os.path.exists(_fp):
                 try: os.remove(_fp)
                 except Exception: pass
-        st.session_state.pop('_pay_prepared_frame_cache_v3', None)
+        st.session_state.pop('_pay_prepared_frame_cache_v4', None)
         gc.collect()
         if process_all_data():
             try:
@@ -4099,7 +4606,8 @@ def normalize_overall_payment_raw(raw, data=None):
     """Keep all payment source fields needed for accurate buckets, Pending With, and Days Pending."""
     if raw is None or raw.empty:
         return pd.DataFrame(columns=[
-            'Invoice Id', 'Bill No.', 'Invoice Date', 'Base Date', 'RO Name', 'Zone', 'Vendor Name',
+            'Invoice Id', 'Bill No.', 'Invoice Date', 'Start Date', 'End Date', 'Invoice Month', 'Month Audit',
+            'Base Date', 'RO Name', 'Zone', 'Vendor Name',
             'Category', 'Base Amount', 'Amount', 'Status', 'Pending With', 'Bill Uploader', 'Hold Name', 'Hold Time'
         ])
     source = raw.copy()
@@ -4108,6 +4616,8 @@ def normalize_overall_payment_raw(raw, data=None):
         'Invoice Id': ['Invoice Id', 'InvoiceID', 'Invoice Id No', 'Invoice No'],
         'Bill No.': ['Bill No.', 'Bill No', 'BillNo', 'Bill Number', 'BillNumber'],
         'Invoice Date': ['Invoice Date', 'InvoiceDate'],
+        'Start Date': ['start date', 'Start Date', 'StartDate', 'start_date'],
+        'End Date': ['end date', 'End Date', 'EndDate', 'end_date'],
         'Submitted At': ['Submitted At', 'SubmittedAt'],
         'RO Name': ['RO Name', 'ro_selection', 'ROSelection', 'RO'],
         'Vendor Name': ['Vendor Name', 'VendorName'],
@@ -4139,10 +4649,16 @@ def normalize_overall_payment_raw(raw, data=None):
         col = get_col(source, candidates)
         if col:
             normalized[target] = source[col]
-    for col in ['Invoice Date', 'Submitted At', 'Last Approved At', 'Hold Time',
+    for col in ['Invoice Date', 'Start Date', 'End Date', 'Submitted At', 'Last Approved At', 'Hold Time',
                 'Rev Action 1', 'Rev Action 2', 'Rev Action 3', 'Rev Action 4', 'Rev Action 5']:
         if col in normalized.columns:
-            normalized[col] = pd.to_datetime(normalized[col], dayfirst=True, errors='coerce')
+            normalized[col] = _parse_mixed_date_series(normalized[col])
+    normalized['Invoice Month'], normalized['Month Audit'] = resolve_invoice_month_from_period(
+        normalized.get('Start Date', pd.Series(pd.NaT, index=normalized.index)),
+        normalized.get('End Date', pd.Series(pd.NaT, index=normalized.index)),
+        normalized.get('Invoice Date', pd.Series(pd.NaT, index=normalized.index)),
+        normalized.get('Submitted At', pd.Series(pd.NaT, index=normalized.index)),
+    )
     invoice_date = normalized.get('Invoice Date', pd.Series(pd.NaT, index=normalized.index))
     submitted_date = normalized.get('Submitted At', pd.Series(pd.NaT, index=normalized.index))
     approved_date = normalized.get('Last Approved At', pd.Series(pd.NaT, index=normalized.index))
@@ -4276,13 +4792,22 @@ def prepare_payment_dashboard_frame(raw_frame):
         frame['Base Amount'] = 0.0
     else:
         frame['Base Amount'] = pd.to_numeric(frame['Base Amount'], errors='coerce').fillna(0.0)
+    if 'Invoice Month' not in frame.columns or frame['Invoice Month'].fillna('').astype(str).eq('').all():
+        frame['Invoice Month'], frame['Month Audit'] = resolve_invoice_month_from_period(
+            frame.get('Start Date', pd.Series(pd.NaT, index=frame.index)),
+            frame.get('End Date', pd.Series(pd.NaT, index=frame.index)),
+            frame.get('Invoice Date', pd.Series(pd.NaT, index=frame.index)),
+            frame.get('Submitted At', pd.Series(pd.NaT, index=frame.index)),
+        )
+    if 'Month Audit' not in frame.columns:
+        frame['Month Audit'] = 'OK'
     return frame.reset_index(drop=True)
 
-@st.cache_data(show_spinner=False, max_entries=1)
+@st.cache_data(show_spinner=False, max_entries=1, ttl=DATA_RETENTION_TTL_SECS)
 def _get_normalized_payment_cached(path, payment_signature, branch_signature, processed_signature):
     """Ultra-fast payment loader: disk pickle -> streaming XML -> openpyxl fallback."""
     pkl_path = os.path.join(DATA_DIR, ".payment_norm_fast_cache.pkl")
-    sig = ("pay_norm_v4", payment_signature, branch_signature, processed_signature)
+    sig = ("pay_norm_v5", payment_signature, branch_signature, processed_signature)
     hit = _load_disk_pkl_cache(pkl_path, sig)
     if isinstance(hit, pd.DataFrame) and not hit.empty:
         return hit
@@ -4299,7 +4824,7 @@ def get_normalized_overall_payment(path, data=None, processed_signature=None):
     branch_signature = file_version(branch_path) if branch_path and os.path.exists(branch_path) else None
     return _get_normalized_payment_cached(path, payment_signature, branch_signature, processed_signature)
 
-@st.cache_data(show_spinner=False, max_entries=1)
+@st.cache_data(show_spinner=False, max_entries=1, ttl=DATA_RETENTION_TTL_SECS)
 def _read_all_dashboard_sheets_once(path, signature):
     """Read and pre-normalize the master workbook ONCE with disk pickle cache so every switch is <0.1s."""
     pkl_path = os.path.join(DATA_DIR, ".monitoring_sheets_fast_cache.pkl")
@@ -4382,7 +4907,7 @@ def load_dashboard_data(page):
         payment_signature = file_version(payment_path) if payment_path and os.path.exists(payment_path) else None
         branch_path = FILE_MAP.get('BRANCH_MASTER', '')
         branch_signature = file_version(branch_path) if branch_path and os.path.exists(branch_path) else None
-        page_cache_key = ('v4', page, processed_signature, payment_signature, branch_signature)
+        page_cache_key = ('v5', page, processed_signature, payment_signature, branch_signature)
         page_cache = st.session_state.setdefault('_dashboard_page_cache', {})
         if page_cache_key in page_cache:
             # Page frames are kept for this session, so module navigation avoids another
@@ -4409,6 +4934,8 @@ def load_dashboard_data(page):
             st.exception(exc)
         st.stop()
 
+if st.session_state.pop('_gh_restored_notice', None):
+    st.info("♻️ 7-Day Cloud Snapshot auto-restored after server wake-up!")
 if st.session_state.pop('_processing_success', False):
     st.success("Data refreshed successfully. Your Executive Report is ready to download!")
 
@@ -4442,8 +4969,10 @@ if st.session_state.get('all_vendors', True) and os.path.exists(FILE_MAP["FINAL_
 
     ts = os.path.getmtime(FILE_MAP["FINAL_OUTPUT"])
     ist = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
-    dt = datetime.datetime.fromtimestamp(ts, tz=ist).strftime('%d %b %Y, %I:%M %p')
-    st.sidebar.caption(f"📊 Dashboard Refreshed: {dt} (IST)")
+    dt_obj = datetime.datetime.fromtimestamp(ts, tz=ist)
+    dt = dt_obj.strftime('%d %b %Y, %I:%M %p')
+    exp_dt = (dt_obj + datetime.timedelta(days=DATA_RETENTION_DAYS)).strftime('%d %b %Y')
+    st.sidebar.caption(f"📊 Refreshed: {dt} (IST) · Valid till {exp_dt} (7 Days)")
 
 data = load_dashboard_data(choice)
 if not data and choice not in ["🔐 User & Access Control", "🧭 Scheduled Route Master", "⚠️ Overall Issues"]:
@@ -5947,7 +6476,7 @@ def render_centered_html_table(
     }
     bold_set = set(bold_cols or []) | {
         'Origin RO', 'RO', 'RO Name', 'VendorRO', 'RO_Clean', 'Legwise', 'Zone',
-        'Vendor', 'VendorName', 'Vendor Name', 'User ID', 'Route Code', 'Module Name'
+        'Vendor', 'VendorName', 'Vendor Name', 'Invoice Month', 'User ID', 'Route Code', 'Module Name'
     }
     pill_set = set(pill_cols or []) | {
         'Remark', 'Remark % (Count)', 'Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr',
@@ -7663,7 +8192,7 @@ elif choice == "💳 Payment Dashboard":
             bool(st.session_state.get('all_vendors', True)),
             tuple(st.session_state.get('allowed_vendors', []))
         )
-        _pay_prep_cache = st.session_state.get('_pay_prepared_frame_cache_v3')
+        _pay_prep_cache = st.session_state.get('_pay_prepared_frame_cache_v4')
         if _pay_prep_cache and _pay_prep_cache[0] == _pay_prep_sig:
             df_pay = _pay_prep_cache[1]
         else:
@@ -7673,7 +8202,7 @@ elif choice == "💳 Payment Dashboard":
                 df_pay = prepare_payment_dashboard_frame(data['Master_Database'])
             if not st.session_state.get('all_vendors', True):
                 df_pay = filter_df_by_user_vendors(df_pay, 'Vendor Name')
-            st.session_state['_pay_prepared_frame_cache_v3'] = (_pay_prep_sig, df_pay)
+            st.session_state['_pay_prepared_frame_cache_v4'] = (_pay_prep_sig, df_pay)
 
         if df_pay.empty:
             st.warning("No active payment records found for your assigned vendor access.")
@@ -7737,14 +8266,14 @@ elif choice == "💳 Payment Dashboard":
                         else:
                             admin_cat_map[a_grp_name] = a_chosen
                             save_vendor_category_mapping(admin_cat_map)
-                            st.session_state.pop('_pay_prepared_frame_cache_v3', None)
+                            st.session_state.pop('_pay_prepared_frame_cache_v4', None)
                             st.success(f"Saved permanent mapping **{a_grp_name}**.")
                             st.rerun()
                     if sel_a_grp != "+ Create New Group":
                         if ab2.button("🗑️ Delete Global Mapping", key="vcm_admin_del", use_container_width=True):
                             admin_cat_map.pop(sel_a_grp, None)
                             save_vendor_category_mapping(admin_cat_map)
-                            st.session_state.pop('_pay_prepared_frame_cache_v3', None)
+                            st.session_state.pop('_pay_prepared_frame_cache_v4', None)
                             st.success(f"Deleted **{sel_a_grp}**.")
                             st.rerun()
                 else:
@@ -7778,14 +8307,14 @@ elif choice == "💳 Payment Dashboard":
                     else:
                         user_cat_map[u_grp_name] = u_chosen
                         save_user_vendor_category_mapping(curr_u_id, user_cat_map)
-                        st.session_state.pop('_pay_prepared_frame_cache_v3', None)
+                        st.session_state.pop('_pay_prepared_frame_cache_v4', None)
                         st.success(f"Saved personal mapping **{u_grp_name}**.")
                         st.rerun()
                 if sel_u_grp != "+ Create New Group":
                     if ub2.button("🗑️ Delete Personal Mapping", key="vcm_user_del", use_container_width=True):
                         user_cat_map.pop(sel_u_grp, None)
                         save_user_vendor_category_mapping(curr_u_id, user_cat_map)
-                        st.session_state.pop('_pay_prepared_frame_cache_v3', None)
+                        st.session_state.pop('_pay_prepared_frame_cache_v4', None)
                         st.success(f"Deleted **{sel_u_grp}**.")
                         st.rerun()
                 if user_cat_map:
@@ -7859,11 +8388,25 @@ elif choice == "💳 Payment Dashboard":
             ro_col="RO Name" if "RO Name" in df_pay.columns else None,
             vendor_col="Vendor Name" if "Vendor Name" in df_pay.columns else None,
             route_col=None,
-            search_placeholder="Search Invoice Id, Bill No., Vendor, RO, Uploader..."
+            search_placeholder="Search Invoice Id, Bill No., Month, Vendor, RO, Uploader..."
         )
 
-        # Vendor Mapping Category + Invoice Category + My Tracked Vendors/Uploaders Filter Row
-        pf1, pf2, pf3 = st.columns([1.2, 1.3, 1.3])
+        # Invoice Month + Vendor Mapping Category + Invoice Category + My Tracked Vendors/Uploaders Filter Row
+        pf0, pf1, pf2, pf3 = st.columns([1.0, 1.15, 1.25, 1.25])
+
+        month_vals = _sort_month_labels_desc([
+            m for m in df_pay.get('Invoice Month', pd.Series(dtype=str)).dropna().astype(str).str.strip().unique().tolist()
+            if m and m.upper() not in ('NAN', 'NONE', '')
+        ])
+        sel_inv_months = pf0.multiselect(
+            "📅 Invoice Month:",
+            options=month_vals,
+            default=[],
+            placeholder="All Months",
+            key="pay_inv_month_filter"
+        )
+        if sel_inv_months and 'Invoice Month' in df_pay.columns:
+            df_pay = df_pay[df_pay['Invoice Month'].astype(str).isin(sel_inv_months)].copy()
 
         # Build Vendor Mapping Category filter options (Admin Global + User Personal)
         admin_cat_map_f = load_vendor_category_mapping()
@@ -8042,11 +8585,11 @@ elif choice == "💳 Payment Dashboard":
                 st.session_state["pay_gauge_bucket_filter"] = "ALL"
                 st.rerun()
 
-        # Summary Table with Group-By Switcher: RO-wise / Vendor-wise / Uploader-wise
+        # Summary Table with Group-By Switcher: RO-wise / Vendor-wise / Uploader-wise / Month-wise
         st.markdown('### 📋 Payment Performance Summary')
         pay_grp_mode = st.radio(
             "Group Summary By:",
-            ["RO-wise", "Vendor-wise", "Uploader-wise"],
+            ["RO-wise", "Vendor-wise", "Uploader-wise", "Month-wise"],
             horizontal=True,
             key="pay_summary_group_mode"
         )
@@ -8055,6 +8598,8 @@ elif choice == "💳 Payment Dashboard":
             grp_col_name, grp_disp_label = get_col(df_pay, ['RO Name']), 'RO'
         elif pay_grp_mode == "Vendor-wise":
             grp_col_name, grp_disp_label = get_col(df_pay, ['Vendor Name']), 'Vendor'
+        elif pay_grp_mode == "Month-wise":
+            grp_col_name, grp_disp_label = get_col(df_pay, ['Invoice Month']), 'Invoice Month'
         else:
             grp_col_name, grp_disp_label = get_col(df_pay, ['Bill Uploader']), 'Bill Uploader'
 
@@ -8082,7 +8627,12 @@ elif choice == "💳 Payment Dashboard":
         summary_cols_out = [grp_disp_label, 'Total Bills'] + bucket_labels + (['Bill No.'] if (pay_grp_mode == "Uploader-wise" and bill_no_col_pay) else [])
         payment_summary = pd.DataFrame(summary_rows, columns=summary_cols_out)
         if not payment_summary.empty:
-            payment_summary = payment_summary.sort_values(by='Total Bills', ascending=False).reset_index(drop=True)
+            if pay_grp_mode == "Month-wise":
+                _m_order = {m: idx for idx, m in enumerate(_sort_month_labels_desc(payment_summary[grp_disp_label].astype(str).tolist()))}
+                payment_summary['_m_ord'] = payment_summary[grp_disp_label].astype(str).map(_m_order).fillna(9999)
+                payment_summary = payment_summary.sort_values(by='_m_ord', ascending=True).drop(columns=['_m_ord']).reset_index(drop=True)
+            else:
+                payment_summary = payment_summary.sort_values(by='Total Bills', ascending=False).reset_index(drop=True)
 
         if payment_summary.empty:
             st.info('No payment rows match the selected filters.')
