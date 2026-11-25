@@ -1,0 +1,17 @@
+name: Keep Trackon Dashboard Awake (Free)
+
+on:
+  schedule:
+    # Runs every 4 hours so Streamlit Community Cloud does not sleep after 1 day
+    - cron: '0 */4 * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake & Ping Streamlit App
+        run: |
+          curl -fsSL -A "Mozilla/5.0" "https://trackon-dashboard-99mzgmyrmvcghalzkjwxd.streamlit.app/_stcore/health" || true
+          curl -fsSL -A "Mozilla/5.0" "https://trackon-dashboard-99mzgmyrmvcghalzkjwxd.streamlit.app/" > /dev/null || true
+          echo "Ping completed at $(date -u)"
