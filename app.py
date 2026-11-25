@@ -3769,22 +3769,9 @@ def get_processed_data_cached(file_timestamps):
         df_pay['RO Name Clean'] = df_pay['RO Name'].astype(str).str.strip().str.upper()
         df_pay['Zone'] = df_pay['RO Name Clean'].map(ro_zone_map).fillna('UNKNOWN ZONE')
         
-        valid_cats = [
-            "Contract - Feeder Connection vehicle charges",
-            "Market - Feeder Connection vehicle charges", 
-            "Market Vehicle Hired -Linehaul",
-            "Contract Network Vehicle Hired - Regional", 
-            "Contract Network Vehicle Hired - Zonal",
-            "Contract Network Vehicle Hired - National"
-        ]
-        df_pay = df_pay[df_pay['Category'].isin(valid_cats)]
-        
-        vip_vends = [
-            "SHRI GANPATI", "MOHD ASLAM", "MEHTAROAD", "E WHEELS", "TEJAS", "T T TRANSPORT", 
-            "APL EXPRESS", "GOTRUCKS", "RADHA RANI", "FASTLANE", "MMM LOGISTICS", "ATA ROADWAYS", "ZAST", "FLEETX"
-        ]
-        df_pay = df_pay[~df_pay['Vendor Name'].str.contains('|'.join(vip_vends), na=False, regex=True)].copy()
-        df_pay = df_pay[~df_pay['Status'].str.contains('PAID|PROCESSED|CANCELLED|DECLINED', na=False)]
+        # Keep ALL categories, ALL vendors, and PAID/PAYMENT_PENDING bills.
+        # Only exclude CANCELLED / DECLINED / FAILED so total bill count matches the uploaded file!
+        df_pay = df_pay[~df_pay['Status'].str.contains('CANCEL|DECLIN|FAIL', na=False, regex=True)].copy()
         
         df_pay['Finance Revert Remarks 1'] = df_pay.get('Finance Revert Remarks 1', pd.Series(['']*len(df_pay))).fillna('')
         df_pay['Approver Revert Remarks'] = df_pay.get('Approver Revert Remarks', pd.Series(['']*len(df_pay))).fillna('')
@@ -4172,13 +4159,13 @@ def process_all_data():
 
         # Save instant binary pickle cache so switching modules is <0.1s with zero Excel re-read!
         status_text.text("⚙️ Saving Instant Fast-Cache...")
-        mon_sig = ("mon_sheets_v2", file_version(FILE_MAP["FINAL_OUTPUT"]))
+        mon_sig = ("mon_sheets_v3", file_version(FILE_MAP["FINAL_OUTPUT"]))
         _save_disk_pkl_cache(os.path.join(DATA_DIR, ".monitoring_sheets_fast_cache.pkl"), mon_sig, data_for_export)
 
         # Clear stale caches
         st.session_state.pop('_dashboard_cache', None)
         st.session_state.pop('_dashboard_page_cache', None)
-        st.session_state.pop('_pay_prepared_frame_cache_v4', None)
+        st.session_state.pop('_pay_prepared_frame_cache_v5', None)
         st.session_state.pop('_download_version', None)
         st.session_state.pop('_vip_exec_report_ready', None)
         try:
@@ -4256,7 +4243,7 @@ if st.session_state['role'] == 'Admin':
             if os.path.exists(_fp):
                 try: os.remove(_fp)
                 except Exception: pass
-        st.session_state.pop('_pay_prepared_frame_cache_v4', None)
+        st.session_state.pop('_pay_prepared_frame_cache_v5', None)
         st.session_state.pop('_dashboard_cache', None)
         st.session_state.pop('_dashboard_page_cache', None)
         try:
@@ -4357,7 +4344,7 @@ if st.session_state['role'] == 'Admin':
                 cnt_r = restore_7day_snapshot_zip_bytes(bytes(restore_up.getbuffer()))
                 st.session_state["_last_restored_zip_dig"] = r_dig
                 st.session_state.pop('_dashboard_page_cache', None)
-                st.session_state.pop('_pay_prepared_frame_cache_v4', None)
+                st.session_state.pop('_pay_prepared_frame_cache_v5', None)
                 try:
                     st.cache_data.clear()
                 except Exception:
@@ -4406,7 +4393,7 @@ if st.session_state['role'] == 'Admin':
             if os.path.exists(_fp):
                 try: os.remove(_fp)
                 except Exception: pass
-        st.session_state.pop('_pay_prepared_frame_cache_v4', None)
+        st.session_state.pop('_pay_prepared_frame_cache_v5', None)
         gc.collect()
         if process_all_data():
             try:
@@ -4807,7 +4794,7 @@ def prepare_payment_dashboard_frame(raw_frame):
 def _get_normalized_payment_cached(path, payment_signature, branch_signature, processed_signature):
     """Ultra-fast payment loader: disk pickle -> streaming XML -> openpyxl fallback."""
     pkl_path = os.path.join(DATA_DIR, ".payment_norm_fast_cache.pkl")
-    sig = ("pay_norm_v5", payment_signature, branch_signature, processed_signature)
+    sig = ("pay_norm_v6", payment_signature, branch_signature, processed_signature)
     hit = _load_disk_pkl_cache(pkl_path, sig)
     if isinstance(hit, pd.DataFrame) and not hit.empty:
         return hit
@@ -4828,7 +4815,7 @@ def get_normalized_overall_payment(path, data=None, processed_signature=None):
 def _read_all_dashboard_sheets_once(path, signature):
     """Read and pre-normalize the master workbook ONCE with disk pickle cache so every switch is <0.1s."""
     pkl_path = os.path.join(DATA_DIR, ".monitoring_sheets_fast_cache.pkl")
-    sig = ("mon_sheets_v2", signature)
+    sig = ("mon_sheets_v3", signature)
     hit = _load_disk_pkl_cache(pkl_path, sig)
     if isinstance(hit, dict) and hit:
         return hit
@@ -4907,7 +4894,7 @@ def load_dashboard_data(page):
         payment_signature = file_version(payment_path) if payment_path and os.path.exists(payment_path) else None
         branch_path = FILE_MAP.get('BRANCH_MASTER', '')
         branch_signature = file_version(branch_path) if branch_path and os.path.exists(branch_path) else None
-        page_cache_key = ('v5', page, processed_signature, payment_signature, branch_signature)
+        page_cache_key = ('v6', page, processed_signature, payment_signature, branch_signature)
         page_cache = st.session_state.setdefault('_dashboard_page_cache', {})
         if page_cache_key in page_cache:
             # Page frames are kept for this session, so module navigation avoids another
@@ -6455,24 +6442,112 @@ def render_ops_remark_gauges(ops_outcome_counts, ops_total_trips, ops_outcome_la
     </script></body></html>'''
     st.components.v1.html(markup, height=frame_height, scrolling=False)
 
+def _compute_grand_total_row(df_in):
+    """Compute a smart GRAND TOTAL dict for any summary or detail DataFrame."""
+    if df_in is None or df_in.empty or len(df_in) < 2:
+        return None
+    cols = list(df_in.columns)
+    first_col = cols[0]
+    # Skip if table already has a TOTAL / GRAND TOTAL row
+    try:
+        tail_vals = df_in.iloc[-1].astype(str).str.strip().str.upper().tolist()
+        if any(v in ('TOTAL', 'GRAND TOTAL') for v in tail_vals):
+            return None
+    except Exception:
+        pass
+    # Skip non-summable config/reference tables
+    non_summable_first = {'Route Code', 'User ID', 'Global Mapping', 'My Mapping', 'Tracker Name', 'S.No.'}
+    if first_col in non_summable_first:
+        return None
+
+    # Identify denominator column for weighted % (count) columns
+    denom_col = next((c for c in ['Total Trips', 'Total_Trips', 'Total Bills', 'Trips', 'Overall Trips'] if c in cols), None)
+    denom_total = 0.0
+    if denom_col:
+        denom_total = float(pd.to_numeric(df_in[denom_col], errors='coerce').fillna(0).sum())
+
+    total_row = {c: '' for c in cols}
+    total_row[first_col] = f"GRAND TOTAL ({len(df_in):,})"
+    has_any_metric = False
+
+    skip_sum_cols = {
+        'Invoice Id', 'Bill No.', 'MasterCDNo', 'RouteCode', 'VehicleNo', 'Vehicle No',
+        'Days Pending', 'Hold Key', 'ROs', 'Routes', 'Vendors', 'Unique Vendors', 'VehCap (Base)'
+    }
+
+    for col in cols[1:]:
+        if col in skip_sum_cols:
+            total_row[col] = '—'
+            continue
+        ser = df_in[col]
+        # 1. Pure numeric column
+        if pd.api.types.is_numeric_dtype(ser):
+            val_sum = float(pd.to_numeric(ser, errors='coerce').fillna(0).sum())
+            if col in ('Amount', 'Base Amount', 'Total Trip Cost', 'Cost', 'Partial Payment', 'Balance Payable Amount'):
+                total_row[col] = f"₹{val_sum:,.2f}"
+            elif val_sum.is_integer():
+                total_row[col] = f"{int(val_sum):,}"
+            else:
+                total_row[col] = f"{val_sum:,.2f}"
+            has_any_metric = True
+            continue
+
+        # 2. String-formatted columns: check for 'pct% (count)' or '₹amount'
+        sample_strs = ser.dropna().astype(str).str.strip()
+        sample_nonempty = sample_strs[sample_strs.ne('') & ~sample_strs.isin(['-', '—', 'nan', 'None'])]
+        if sample_nonempty.empty:
+            continue
+
+        # Pattern A: "82.5% (120)"
+        pct_cnt_matches = sample_nonempty.str.extract(r'^\s*-?\d+(?:\.\d+)?%\s*\((\d[\d,]*)\)\s*$')[0]
+        if pct_cnt_matches.notna().sum() >= max(1, int(len(sample_nonempty) * 0.6)):
+            cnt_sum = int(pct_cnt_matches.dropna().str.replace(',', '', regex=False).astype(int).sum())
+            # Use matching period denominator if column is Prev 7D / Curr 7D
+            c_low = col.lower()
+            use_denom = denom_total
+            if 'prev 7d' in c_low and 'Prev 7D Trips' in cols:
+                use_denom = float(pd.to_numeric(df_in['Prev 7D Trips'], errors='coerce').fillna(0).sum())
+            elif 'curr 7d' in c_low and 'Curr 7D Trips' in cols:
+                use_denom = float(pd.to_numeric(df_in['Curr 7D Trips'], errors='coerce').fillna(0).sum())
+            if use_denom > 0:
+                total_row[col] = f"{(cnt_sum / use_denom * 100.0):.1f}% ({cnt_sum:,})"
+            else:
+                total_row[col] = f"({cnt_sum:,})"
+            has_any_metric = True
+            continue
+
+        # Pattern B: "₹1,234.50"
+        if sample_nonempty.str.startswith('₹').mean() >= 0.7 and 'cpk' not in col.lower() and 'per trip' not in col.lower():
+            nums = pd.to_numeric(sample_nonempty.str.replace('₹', '', regex=False).str.replace(',', '', regex=False), errors='coerce')
+            if nums.notna().any():
+                total_row[col] = f"₹{nums.sum():,.2f}"
+                has_any_metric = True
+                continue
+
+    return total_row if has_any_metric else None
+
+
 def render_centered_html_table(
     df_in,
     height=500,
     num_cols=None,
     bold_cols=None,
     pill_cols=None,
-    max_rows=500
+    max_rows=500,
+    show_grand_total=True
 ):
-    """Render a crisp Excel-style table with guaranteed 100% Center + Middle alignment on every cell & header."""
+    """Render a dynamic, Excel-style interactive table with 100% Center+Middle alignment, Click-to-Sort, Live Search, Copy, and Sticky GRAND TOTAL."""
     if df_in is None or df_in.empty:
         st.info("No records match the selected filters.")
         return
 
+    grand_total_dict = _compute_grand_total_row(df_in) if show_grand_total else None
     df_view = df_in.head(max_rows).reset_index(drop=True)
     num_set = set(num_cols or []) | {
         'Total Trips', 'Total_Trips', 'Trips', 'Count', 'Total Bills', 'Days Pending',
         'Prev 7D Trips', 'Curr 7D Trips', 'Overall Trips', 'ROs', 'Routes', 'Vendors',
-        'Overall CPK', 'Total Capacity', 'Total Carried Wt', 'Total Trip Cost', 'Unique Vendors'
+        'Overall CPK', 'Total Capacity', 'Total Carried Wt', 'Total Trip Cost', 'Unique Vendors',
+        'Amount', 'Base Amount', 'Cost'
     }
     bold_set = set(bold_cols or []) | {
         'Origin RO', 'RO', 'RO Name', 'VendorRO', 'RO_Clean', 'Legwise', 'Zone',
@@ -6578,9 +6653,12 @@ def render_centered_html_table(
             return 'bad' if (pct is not None and pct > 0) else 'neutral'
         return None
 
-    headers = ''.join(f'<th>{html_module.escape(str(c))}</th>' for c in df_view.columns)
-    rows_html = []
     cols_list = list(df_view.columns)
+    headers = ''.join(
+        f'<th data-col="{i}" title="Click to sort">{html_module.escape(str(c))} <span class="sort-ico">⇅</span></th>'
+        for i, c in enumerate(cols_list)
+    )
+    rows_html = []
 
     for row_dict in df_view.to_dict(orient='records'):
         tds = []
@@ -6590,8 +6668,13 @@ def render_centered_html_table(
                 txt = ''
             elif isinstance(raw_v, (int, np.integer)):
                 txt = f"{int(raw_v):,}"
-            elif isinstance(raw_v, (float, np.floating)) and float(raw_v).is_integer():
-                txt = f"{int(raw_v):,}"
+            elif isinstance(raw_v, (float, np.floating)):
+                if col in ('Amount', 'Base Amount', 'Cost', 'Total Trip Cost'):
+                    txt = f"₹{float(raw_v):,.2f}"
+                elif float(raw_v).is_integer():
+                    txt = f"{int(raw_v):,}"
+                else:
+                    txt = f"{float(raw_v):,.2f}"
             else:
                 txt = str(raw_v).strip()
 
@@ -6610,31 +6693,125 @@ def render_centered_html_table(
             tds.append(f'<td{cls} style="{style}">{safe_txt}</td>' if style else f'<td{cls}>{safe_txt}</td>')
         rows_html.append('<tr>' + ''.join(tds) + '</tr>')
 
+    tfoot_html = ''
+    if grand_total_dict:
+        ft_cells = ''.join(
+            f'<td>{html_module.escape(str(grand_total_dict.get(col, "")))}</td>'
+            for col in cols_list
+        )
+        tfoot_html = f'<tfoot><tr class="gt-row">{ft_cells}</tr></tfoot>'
+
     scroll_thumb = '#94a3b8' if THEME_IS_LIGHT else '#475569'
     scroll_track = '#f1f5f9' if THEME_IS_LIGHT else selected_theme['navy900']
-    actual_h = min(int(height), max(130, len(df_view) * 38 + 52))
+    gt_bg = '#dbeafe' if THEME_IS_LIGHT else '#1e3a5f'
+    gt_fg = '#0f172a' if THEME_IS_LIGHT else '#f8fafc'
+    bar_bg = '#f8fafc' if THEME_IS_LIGHT else selected_theme['card2']
+    inp_bg = '#ffffff' if THEME_IS_LIGHT else selected_theme['navy900']
+
+    extra_rows_h = 44 if grand_total_dict else 0
+    actual_h = min(int(height), max(160, len(df_view) * 38 + 60 + extra_rows_h))
+    total_all_rows = len(df_in)
+    shown_cnt = len(df_view)
 
     doc = (
         f'<!doctype html><html><head><meta charset="utf-8"><style>'
         f'* {{ box-sizing:border-box; }}'
         f'html, body {{ margin:0; padding:0; background:transparent; font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif; }}'
-        f'.tbl-wrap {{ width:100%; height:{actual_h}px; overflow:auto; border:1px solid {pal["border"]}; border-radius:12px; background:{pal["row_even"]}; scrollbar-color:{scroll_thumb} {scroll_track}; scrollbar-width:thin; }}'
+        f'.tbl-shell {{ border:1px solid {pal["border"]}; border-radius:12px; overflow:hidden; background:{pal["row_even"]}; }}'
+        f'.tbl-bar {{ display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 10px; background:{bar_bg}; border-bottom:1px solid {pal["border"]}; }}'
+        f'.tbl-search {{ flex:1; max-width:300px; padding:5px 10px; border:1px solid {pal["border"]}; border-radius:8px; font-size:12px; background:{inp_bg}; color:{pal["text"]}; outline:none; }}'
+        f'.tbl-search:focus {{ border-color:{selected_theme["blue"]}; }}'
+        f'.tbl-meta {{ display:flex; align-items:center; gap:8px; font-size:11.5px; font-weight:650; color:{selected_theme["muted"]}; }}'
+        f'.tbl-btn {{ padding:4px 10px; border:1px solid {pal["border"]}; border-radius:7px; background:{inp_bg}; color:{pal["text"]}; font-size:11.5px; font-weight:700; cursor:pointer; }}'
+        f'.tbl-btn:hover {{ border-color:{selected_theme["blue"]}; color:{selected_theme["blue"]}; }}'
+        f'.tbl-wrap {{ width:100%; height:{actual_h}px; overflow:auto; background:{pal["row_even"]}; scrollbar-color:{scroll_thumb} {scroll_track}; scrollbar-width:thin; }}'
         f'.tbl-wrap::-webkit-scrollbar {{ width:10px; height:10px; }}'
         f'.tbl-wrap::-webkit-scrollbar-track {{ background:{scroll_track}; border-radius:8px; }}'
         f'.tbl-wrap::-webkit-scrollbar-thumb {{ background:{scroll_thumb}; border-radius:8px; border:2px solid {scroll_track}; }}'
         f'table {{ width:100%; min-width:max-content; border-collapse:separate; border-spacing:0; font-size:12.8px; color:{pal["text"]}; }}'
-        f'thead th {{ position:sticky; top:0; z-index:4; background:{pal["header_bg"]}; color:{pal["header_text"]}; font-weight:800; text-align:center !important; vertical-align:middle !important; padding:10px 12px; border-bottom:2px solid {pal["border"]}; border-right:1px solid {pal["border"]}; white-space:nowrap; }}'
+        f'thead th {{ position:sticky; top:0; z-index:4; background:{pal["header_bg"]}; color:{pal["header_text"]}; font-weight:800; text-align:center !important; vertical-align:middle !important; padding:10px 12px; border-bottom:2px solid {pal["border"]}; border-right:1px solid {pal["border"]}; white-space:nowrap; cursor:pointer; user-select:none; }}'
+        f'thead th:hover {{ filter:brightness(0.95); }}'
+        f'.sort-ico {{ opacity:.45; font-size:10px; margin-left:3px; }}'
+        f'thead th.sorted-asc .sort-ico, thead th.sorted-desc .sort-ico {{ opacity:1; color:{selected_theme["blue"]}; }}'
         f'tbody td {{ text-align:center !important; vertical-align:middle !important; padding:8px 12px; border-bottom:1px solid {pal["border"]}; border-right:1px solid {pal["border"]}; white-space:nowrap; }}'
-        f'thead th:last-child, tbody td:last-child {{ border-right:none; }}'
+        f'thead th:last-child, tbody td:last-child, tfoot td:last-child {{ border-right:none; }}'
         f'tbody tr:nth-child(odd) {{ background:{pal["row_even"]}; }}'
         f'tbody tr:nth-child(even) {{ background:{pal["row_odd"]}; }}'
-        f'tbody tr:hover td {{ filter:brightness(0.97); }}'
+        f'tbody tr:hover td {{ filter:brightness(0.96); }}'
         f'td.c-bold {{ font-weight:750; }}'
+        f'tfoot tr.gt-row td {{ position:sticky; bottom:0; z-index:4; background:{gt_bg} !important; color:{gt_fg} !important; font-weight:900 !important; text-align:center !important; vertical-align:middle !important; padding:10px 12px; border-top:2px solid {selected_theme["blue"]}; border-right:1px solid {pal["border"]}; white-space:nowrap; }}'
         f'</style></head><body>'
-        f'<div class="tbl-wrap"><table><thead><tr>{headers}</tr></thead><tbody>{"".join(rows_html)}</tbody></table></div>'
+        f'<div class="tbl-shell">'
+        f'<div class="tbl-bar">'
+        f'<input type="text" class="tbl-search" id="tblSearch" placeholder="🔍 Live filter this table..." />'
+        f'<div class="tbl-meta"><span id="tblCount">Showing {shown_cnt:,} of {total_all_rows:,}</span>'
+        f'<button class="tbl-btn" id="tblCopyBtn" title="Copy visible rows for Excel">📋 Copy</button></div>'
+        f'</div>'
+        f'<div class="tbl-wrap"><table id="dynTable"><thead><tr>{headers}</tr></thead><tbody>{"".join(rows_html)}</tbody>{tfoot_html}</table></div>'
+        f'</div>'
+        f'<script>'
+        f'(function(){{'
+        f'  const tbl = document.getElementById("dynTable");'
+        f'  const tbody = tbl.querySelector("tbody");'
+        f'  const searchInp = document.getElementById("tblSearch");'
+        f'  const cntSpan = document.getElementById("tblCount");'
+        f'  const copyBtn = document.getElementById("tblCopyBtn");'
+        f'  const totalAll = {total_all_rows};'
+        f'  function parseVal(txt){{'
+        f'    const s = (txt || "").trim();'
+        f'    const pctM = s.match(/^(-?\d+(?:\.\d+)?)%/);'
+        f'    if(pctM) return parseFloat(pctM[1]);'
+        f'    const numS = s.replace(/[₹,]/g, "");'
+        f'    if(numS !== "" && !isNaN(numS)) return parseFloat(numS);'
+        f'    return s.toLowerCase();'
+        f'  }}'
+        f'  let sortCol = -1, sortAsc = true;'
+        f'  tbl.querySelectorAll("thead th").forEach((th, idx) => {{'
+        f'    th.addEventListener("click", () => {{'
+        f'      if(sortCol === idx) sortAsc = !sortAsc; else {{ sortCol = idx; sortAsc = true; }}'
+        f'      tbl.querySelectorAll("thead th").forEach(h => {{ h.classList.remove("sorted-asc","sorted-desc"); h.querySelector(".sort-ico").textContent = "⇅"; }});'
+        f'      th.classList.add(sortAsc ? "sorted-asc" : "sorted-desc");'
+        f'      th.querySelector(".sort-ico").textContent = sortAsc ? "▲" : "▼";'
+        f'      const rows = Array.from(tbody.querySelectorAll("tr"));'
+        f'      rows.sort((a, b) => {{'
+        f'        const va = parseVal(a.children[idx].textContent);'
+        f'        const vb = parseVal(b.children[idx].textContent);'
+        f'        if(typeof va === "number" && typeof vb === "number") return sortAsc ? va - vb : vb - va;'
+        f'        return sortAsc ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));'
+        f'      }});'
+        f'      rows.forEach(r => tbody.appendChild(r));'
+        f'    }});'
+        f'  }});'
+        f'  searchInp.addEventListener("input", () => {{'
+        f'    const q = searchInp.value.trim().toLowerCase();'
+        f'    let vis = 0;'
+        f'    tbody.querySelectorAll("tr").forEach(tr => {{'
+        f'      const ok = !q || tr.textContent.toLowerCase().includes(q);'
+        f'      tr.style.display = ok ? "" : "none";'
+        f'      if(ok) vis++;'
+        f'    }});'
+        f'    cntSpan.textContent = "Showing " + vis.toLocaleString() + " of " + totalAll.toLocaleString();'
+        f'  }});'
+        f'  copyBtn.addEventListener("click", () => {{'
+        f'    const lines = [];'
+        f'    const hCells = Array.from(tbl.querySelectorAll("thead th")).map(h => h.textContent.replace(/[⇅▲▼]/g,"").trim());'
+        f'    lines.push(hCells.join("\t"));'
+        f'    tbody.querySelectorAll("tr").forEach(tr => {{'
+        f'      if(tr.style.display === "none") return;'
+        f'      lines.push(Array.from(tr.children).map(td => td.textContent.trim()).join("\t"));'
+        f'    }});'
+        f'    const gt = tbl.querySelector("tfoot tr");'
+        f'    if(gt) lines.push(Array.from(gt.children).map(td => td.textContent.trim()).join("\t"));'
+        f'    navigator.clipboard.writeText(lines.join("\n")).then(() => {{'
+        f'      copyBtn.textContent = "✅ Copied!";'
+        f'      setTimeout(() => copyBtn.textContent = "📋 Copy", 1500);'
+        f'    }}).catch(() => {{}});'
+        f'  }});'
+        f'}})();'
+        f'</script>'
         f'</body></html>'
     )
-    st.components.v1.html(doc, height=actual_h + 6, scrolling=False)
+    st.components.v1.html(doc, height=actual_h + 48, scrolling=False)
     if len(df_in) > max_rows:
         st.caption(f"Showing first {max_rows:,} of {len(df_in):,} rows for smooth performance. Download Excel for all rows.")
 
@@ -8192,7 +8369,7 @@ elif choice == "💳 Payment Dashboard":
             bool(st.session_state.get('all_vendors', True)),
             tuple(st.session_state.get('allowed_vendors', []))
         )
-        _pay_prep_cache = st.session_state.get('_pay_prepared_frame_cache_v4')
+        _pay_prep_cache = st.session_state.get('_pay_prepared_frame_cache_v5')
         if _pay_prep_cache and _pay_prep_cache[0] == _pay_prep_sig:
             df_pay = _pay_prep_cache[1]
         else:
@@ -8202,11 +8379,16 @@ elif choice == "💳 Payment Dashboard":
                 df_pay = prepare_payment_dashboard_frame(data['Master_Database'])
             if not st.session_state.get('all_vendors', True):
                 df_pay = filter_df_by_user_vendors(df_pay, 'Vendor Name')
-            st.session_state['_pay_prepared_frame_cache_v4'] = (_pay_prep_sig, df_pay)
+            st.session_state['_pay_prepared_frame_cache_v5'] = (_pay_prep_sig, df_pay)
 
         if df_pay.empty:
             st.warning("No active payment records found for your assigned vendor access.")
             st.stop()
+        _raw_pay_src = data.get('Payment_Raw', pd.DataFrame())
+        if isinstance(_raw_pay_src, pd.DataFrame) and not _raw_pay_src.empty:
+            _raw_tot_cnt = len(_raw_pay_src)
+            _excl_cnt = max(0, _raw_tot_cnt - len(df_pay))
+            st.caption(f"📊 **File Reconciliation:** Total Rows in File: **{_raw_tot_cnt:,}** · Excluded (Cancelled/Declined/Failed): **{_excl_cnt:,}** · Active Bills Loaded: **{len(df_pay):,}**")
         is_admin_user = st.session_state.get('role') == 'Admin'
         all_raw_cats = sorted(
             c for c in df_pay.get('Category', pd.Series(dtype=str)).dropna().astype(str).str.strip().unique().tolist()
@@ -8266,14 +8448,14 @@ elif choice == "💳 Payment Dashboard":
                         else:
                             admin_cat_map[a_grp_name] = a_chosen
                             save_vendor_category_mapping(admin_cat_map)
-                            st.session_state.pop('_pay_prepared_frame_cache_v4', None)
+                            st.session_state.pop('_pay_prepared_frame_cache_v5', None)
                             st.success(f"Saved permanent mapping **{a_grp_name}**.")
                             st.rerun()
                     if sel_a_grp != "+ Create New Group":
                         if ab2.button("🗑️ Delete Global Mapping", key="vcm_admin_del", use_container_width=True):
                             admin_cat_map.pop(sel_a_grp, None)
                             save_vendor_category_mapping(admin_cat_map)
-                            st.session_state.pop('_pay_prepared_frame_cache_v4', None)
+                            st.session_state.pop('_pay_prepared_frame_cache_v5', None)
                             st.success(f"Deleted **{sel_a_grp}**.")
                             st.rerun()
                 else:
@@ -8307,14 +8489,14 @@ elif choice == "💳 Payment Dashboard":
                     else:
                         user_cat_map[u_grp_name] = u_chosen
                         save_user_vendor_category_mapping(curr_u_id, user_cat_map)
-                        st.session_state.pop('_pay_prepared_frame_cache_v4', None)
+                        st.session_state.pop('_pay_prepared_frame_cache_v5', None)
                         st.success(f"Saved personal mapping **{u_grp_name}**.")
                         st.rerun()
                 if sel_u_grp != "+ Create New Group":
                     if ub2.button("🗑️ Delete Personal Mapping", key="vcm_user_del", use_container_width=True):
                         user_cat_map.pop(sel_u_grp, None)
                         save_user_vendor_category_mapping(curr_u_id, user_cat_map)
-                        st.session_state.pop('_pay_prepared_frame_cache_v4', None)
+                        st.session_state.pop('_pay_prepared_frame_cache_v5', None)
                         st.success(f"Deleted **{sel_u_grp}**.")
                         st.rerun()
                 if user_cat_map:
