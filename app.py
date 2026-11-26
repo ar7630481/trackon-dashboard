@@ -3446,6 +3446,7 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic",
         worksheet.write(0, 0, "No Data Available", header_fmt)
         return
 
+    _num_fmt_cache = {}
     worksheet.set_row(0, 26)
     for col_idx, col_name in enumerate(df.columns):
         worksheet.write(0, col_idx, str(col_name), header_fmt)
@@ -3587,7 +3588,38 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic",
                 elif c_lower in ['total_trips', 'total trips', 'legwise', 'date', 'mcd_startdate']:
                     chosen_fmt = center_fmt
 
-            worksheet.write(row_idx, col_idx, val_str, chosen_fmt)
+            # Excel 2013 Friendly: store pure ₹ / % / numeric strings as real Excel numbers so SUM/Sort/Filter work natively
+            _written_num = False
+            if not is_total_row and isinstance(val_str, str) and s_val:
+                _s_clean = s_val.replace(',', '').strip()
+                if _s_clean.startswith('₹') and re.match(r'^₹-?\d+(?:\.\d+)?$', _s_clean):
+                    try:
+                        _num_v = float(_s_clean[1:])
+                        _nf = '₹#,##0.00' if '.' in _s_clean else '₹#,##0'
+                        _fk = (id(chosen_fmt), _nf)
+                        if _fk not in _num_fmt_cache:
+                            _props = {k: getattr(chosen_fmt, k) for k in ('bold', 'bg_color', 'font_color', 'border', 'align', 'valign') if hasattr(chosen_fmt, k)}
+                            _props['num_format'] = _nf
+                            _num_fmt_cache[_fk] = workbook.add_format(_props)
+                        worksheet.write_number(row_idx, col_idx, _num_v, _num_fmt_cache[_fk])
+                        _written_num = True
+                    except Exception:
+                        pass
+                elif _s_clean.endswith('%') and re.match(r'^-?\d+(?:\.\d+)?%$', _s_clean):
+                    try:
+                        _num_v = float(_s_clean[:-1]) / 100.0
+                        _nf = '0.0%'
+                        _fk = (id(chosen_fmt), _nf)
+                        if _fk not in _num_fmt_cache:
+                            _props = {k: getattr(chosen_fmt, k) for k in ('bold', 'bg_color', 'font_color', 'border', 'align', 'valign') if hasattr(chosen_fmt, k)}
+                            _props['num_format'] = _nf
+                            _num_fmt_cache[_fk] = workbook.add_format(_props)
+                        worksheet.write_number(row_idx, col_idx, _num_v, _num_fmt_cache[_fk])
+                        _written_num = True
+                    except Exception:
+                        pass
+            if not _written_num:
+                worksheet.write(row_idx, col_idx, val_str, chosen_fmt)
 
     for i, col in enumerate(df.columns):
         if not df.empty:
@@ -7837,7 +7869,7 @@ def render_admin_task_hub(data):
 
 
 # ==========================================
-# 7D. NETWORK UTILIZATION v2 — DYNAMIC ENGINE, AI FLEET OPTIMIZER, LIVE OVERRIDES & AVP EXCEL
+# 7D. NETWORK UTILIZATION v3 — DYNAMIC ENGINE, INSTANT CALL-ANSWER, FAILURES/ACHIEVEMENTS & EXCEL 2013 LIVE WORKBOOK
 # ==========================================
 DEFAULT_DIVISOR_30_VEHICLES = ["KL07CW8170", "KL63K6145"]
 
@@ -7864,7 +7896,7 @@ def _fleet_size_label(cap_kg):
     return f"{int(round(c)):,} kg"
 
 def _recommend_smaller_truck(curr_cap, req_wt_kg):
-    """Pick the smallest standard truck that safely carries req_wt_kg (targeting ~80-95% util) and is smaller than curr_cap."""
+    """Pick the smallest standard truck that safely carries req_wt_kg (~80-95% util) and is smaller than curr_cap."""
     c = float(curr_cap or 0)
     target_cap = max(700.0, float(req_wt_kg or 0) / 0.90)
     candidates = [item for item in TRACKON_FLEET_LADDER if item[0] < c - 300 and item[0] >= target_cap]
@@ -7901,15 +7933,11 @@ def save_cpk_overrides(obj):
     _write_json_fast(path, clean)
 
 def apply_live_cpk_overrides(df_raw_in, df_daily_in=None, overrides=None):
-    """
-    Apply live 30-day divisor vehicles AND live Cost/Capacity corrections dynamically
-    to BOTH CPK_Raw_Data and CPK_Daily_Data (instant recalculation without re-upload).
-    """
+    """Apply live 30-day divisor vehicles AND live Cost/Capacity corrections dynamically to BOTH Raw & Daily tables."""
     ovr = overrides or load_cpk_overrides()
     d30_set = set(ovr.get("divisor_30_vehicles", DEFAULT_DIVISOR_30_VEHICLES))
     corrs = ovr.get("corrections", [])
 
-    # 1. Raw Trip Data
     df_r = df_raw_in.copy() if isinstance(df_raw_in, pd.DataFrame) else pd.DataFrame()
     if not df_r.empty:
         df_r['Vehicle No'] = df_r.get('Vehicle No', pd.Series('', index=df_r.index)).fillna('').astype(str).str.strip().str.upper()
@@ -7941,14 +7969,12 @@ def apply_live_cpk_overrides(df_raw_in, df_daily_in=None, overrides=None):
             m = _r_dt.ge(eff_d) if pd.notna(eff_d) else pd.Series(True, index=df_r.index)
             if scope == 'Vehicle':
                 v_t = str(c_item.get('vehicle_no', '')).strip().upper()
-                if not v_t:
-                    continue
+                if not v_t: continue
                 m = m & df_r['Vehicle No'].eq(v_t)
             else:
                 rt_t = str(c_item.get('route', '')).strip().upper()
                 oc_t = float(c_item.get('old_cap', 0) or 0)
-                if not rt_t:
-                    continue
+                if not rt_t: continue
                 m = m & (df_r['Final_Route'].astype(str).str.upper().eq(rt_t) | df_r['Route_Pair'].astype(str).str.upper().eq(rt_t))
                 if oc_t > 0:
                     m = m & df_r['Cap'].eq(oc_t)
@@ -7960,7 +7986,6 @@ def apply_live_cpk_overrides(df_raw_in, df_daily_in=None, overrides=None):
                     if not df_r.loc[m, 'ContractType'].str.upper().isin(['FIXED PER MONTH', 'FIXED PER DAY']).any():
                         df_r.loc[m, 'ContractType'] = df_r.loc[m, 'ContractType'].replace({'': 'Fixed Per Trip'})
 
-        # Recompute effective Cost dynamically using current 26/30d divisors & corrected ContractCost_Raw
         _ct_up = df_r['ContractType'].str.upper()
         _div_r = np.where(df_r['Vehicle No'].isin(d30_set), 30.0, 26.0)
         _day_t = df_r.groupby(['Vehicle No', 'Date'])['Trips'].transform('sum').clip(lower=1)
@@ -7975,7 +8000,6 @@ def apply_live_cpk_overrides(df_raw_in, df_daily_in=None, overrides=None):
             )
         ).round(2)
 
-    # 2. Daily Vehicle Data
     df_d = df_daily_in.copy() if isinstance(df_daily_in, pd.DataFrame) else pd.DataFrame()
     if not df_d.empty:
         df_d['Vehicle No'] = df_d.get('Vehicle No', pd.Series('', index=df_d.index)).fillna('').astype(str).str.strip().str.upper()
@@ -7987,8 +8011,7 @@ def apply_live_cpk_overrides(df_raw_in, df_daily_in=None, overrides=None):
             if str(c_item.get('scope_type', 'Vehicle')) != 'Vehicle':
                 continue
             v_t = str(c_item.get('vehicle_no', '')).strip().upper()
-            if not v_t:
-                continue
+            if not v_t: continue
             eff_d = pd.to_datetime(c_item.get('eff_date', '2000-01-01'), errors='coerce')
             m = df_d['Vehicle No'].eq(v_t) & (_d_dt.ge(eff_d) if pd.notna(eff_d) else True)
             if m.any():
@@ -8000,7 +8023,6 @@ def apply_live_cpk_overrides(df_raw_in, df_daily_in=None, overrides=None):
         _dct = df_d.get('ContractType', pd.Series('', index=df_d.index)).fillna('').astype(str).str.strip().str.upper()
         _d_div = np.where(df_d['Vehicle No'].isin(d30_set), 30.0, 26.0)
         df_d['Divisor_Days'] = np.where(_dct.eq('FIXED PER MONTH'), _d_div.astype(int), np.where(_dct.eq('FIXED PER DAY'), 1, 0))
-        # Recalculate Daily TotalCost for Fixed Per Month / Fixed Per Day cleanly
         df_d['TotalCost'] = np.where(
             _dct.eq('FIXED PER MONTH'),
             (df_d['ContractCost'] / _d_div).round(2),
@@ -8013,30 +8035,23 @@ def apply_live_cpk_overrides(df_raw_in, df_daily_in=None, overrides=None):
 def build_pair_updown_display_table(df_seg, util_cutoff_pct=60.0):
     """
     Build clean, strictly sorted Pair -> Capacity -> UP/DOWN Route table with Pair Subtotal rows.
-    Zero junk columns. Also returns pair classification counts (Both <60%, One-Side Utilized, Both Healthy).
+    Highlights Failures (<60%) and Achievements (>=80%) clearly.
     """
     stats = {
-        "total_pair_caps": 0,
-        "both_under": 0,
-        "one_side_util": 0,
-        "both_healthy": 0,
-        "single_dir_under": 0,
-        "single_dir_ok": 0,
-        "backhaul_alerts": []
+        "total_pair_caps": 0, "both_under": 0, "one_side_util": 0,
+        "both_healthy": 0, "star_achievements": 0,
+        "single_dir_under": 0, "single_dir_ok": 0,
+        "backhaul_alerts": [], "failure_cards": [], "achievement_cards": []
     }
     if df_seg is None or df_seg.empty:
         return pd.DataFrame(), pd.DataFrame(), stats
 
     d = df_seg.copy()
     d['_cap_int'] = pd.to_numeric(d['Cap'], errors='coerce').fillna(0).round(0).astype(int)
-
-    # 1. Pair+Cap summary + classification
-    pair_rows = []
-    updown_rows = []
+    pair_rows, updown_rows = [], []
 
     for (pair, cap_val), p_grp in d.groupby(['Route_Pair', '_cap_int'], sort=True):
         stats["total_pair_caps"] += 1
-        # Group by Direction + Actual Route so UP route (e.g. BKLH-JPRH-DELAP) & DOWN route (DELAP-JPRH-BKLH) stay clearly separate
         dir_agg = p_grp.groupby(['Direction', 'Final_Route', 'Origin', 'Dest', 'Origin_RO', 'Dest_RO'], dropna=False).agg(
             Trips=('Trips', 'sum'),
             Total_Wt=('Wt', 'sum'),
@@ -8049,13 +8064,19 @@ def build_pair_updown_display_table(df_seg, util_cutoff_pct=60.0):
         dir_agg['Avg_Wt'] = np.where(dir_agg['Trips'] > 0, dir_agg['Total_Wt'] / dir_agg['Trips'], 0.0)
         dir_agg['Per_Trip_Cost'] = np.where(dir_agg['Trips'] > 0, dir_agg['Total_Cost'] / dir_agg['Trips'], 0.0)
 
-        # Direction-level rollup (merges sub-variants going in same direction e.g. DELAP-BKLH & DELAP-JPRH-BKLH for UP vs DOWN check)
-        side_agg = p_grp.groupby('Direction').agg(
-            Trips=('Trips', 'sum'), Wt=('Wt', 'sum'), Cost=('Cost', 'sum')
-        ).reset_index()
+        side_agg = p_grp.groupby('Direction').agg(Trips=('Trips', 'sum'), Wt=('Wt', 'sum'), Cost=('Cost', 'sum')).reset_index()
         side_agg['Cap'] = side_agg['Trips'] * cap_val
         side_agg['Util'] = np.where(side_agg['Cap'] > 0, side_agg['Wt'] / side_agg['Cap'] * 100.0, 0.0)
         side_agg = side_agg.sort_values('Direction')
+
+        p_trips = int(p_grp['Trips'].sum())
+        p_wt = float(p_grp['Wt'].sum())
+        p_cap = float(p_trips * cap_val)
+        p_cost = float(p_grp['Cost'].sum())
+        p_util = (p_wt / p_cap * 100.0) if p_cap > 0 else 0.0
+        p_cpk = (p_cost / p_wt) if p_wt > 0 else 0.0
+        p_ros = ", ".join(sorted(set(p_grp['Origin_RO'].dropna().astype(str))))
+        p_vens = ", ".join(sorted(set(x for x in p_grp['VendorName'].dropna().astype(str) if x))[:3])
 
         if len(side_agg) >= 2:
             u1, u2 = float(side_agg['Util'].iloc[0]), float(side_agg['Util'].iloc[1])
@@ -8063,124 +8084,106 @@ def build_pair_updown_display_table(df_seg, util_cutoff_pct=60.0):
             gap_pct = abs(u1 - u2)
             if u1 < util_cutoff_pct and u2 < util_cutoff_pct:
                 stats["both_under"] += 1
-                pair_class = "🔴 Round-Trip Underutilized"
+                pair_class = "🔴 FAIL: Round-Trip <60%"
+                stats["failure_cards"].append({
+                    "Route Pair": pair, "Cap": cap_val, "Origin RO": p_ros, "Trips": p_trips,
+                    "Util %": round(p_util, 1), "CPK": round(p_cpk, 2), "Total Cost": round(p_cost, 0),
+                    "Reason": f"Both legs <{int(util_cutoff_pct)}% ({d1} {u1:.1f}% · {d2} {u2:.1f}%)"
+                })
             elif (u1 >= util_cutoff_pct and u2 < util_cutoff_pct) or (u2 >= util_cutoff_pct and u1 < util_cutoff_pct):
                 stats["one_side_util"] += 1
-                pair_class = "🟠 One-Side Utilized"
+                pair_class = "🟠 WATCH: One-Side Utilized"
                 hi_d, hi_u = (d1, u1) if u1 >= u2 else (d2, u2)
                 lo_d, lo_u = (d2, u2) if u1 >= u2 else (d1, u1)
                 lo_grp = p_grp[p_grp['Direction'].eq(lo_d)]
                 empty_tonnes = max(0.0, (len(lo_grp) * cap_val - lo_grp['Wt'].sum()) / 1000.0)
                 stats["backhaul_alerts"].append({
-                    "Route Pair": pair,
-                    "Capacity (kg)": cap_val,
-                    "Strong Leg": f"{hi_d} ({hi_u:.1f}%)",
-                    "Weak Backhaul": f"{lo_d} ({lo_u:.1f}%)",
-                    "Util Gap %": f"{gap_pct:.1f}%",
-                    "Empty Capacity (MT)": round(empty_tonnes, 1),
-                    "Action Idea": f"Consolidate return load / co-loader on {lo_d} ({empty_tonnes:.1f} MT wasted)"
+                    "Route Pair": pair, "Capacity (kg)": cap_val, "Origin RO": p_ros,
+                    "Strong Leg": f"{hi_d} ({hi_u:.1f}%)", "Weak Backhaul": f"{lo_d} ({lo_u:.1f}%)",
+                    "Util Gap %": f"{gap_pct:.1f}%", "Empty Capacity (MT)": round(empty_tonnes, 1),
+                    "Action Idea": f"Club return/co-loader load on {lo_d} ({empty_tonnes:.1f} MT wasted)"
                 })
+                if p_util < util_cutoff_pct:
+                    stats["failure_cards"].append({
+                        "Route Pair": pair, "Cap": cap_val, "Origin RO": p_ros, "Trips": p_trips,
+                        "Util %": round(p_util, 1), "CPK": round(p_cpk, 2), "Total Cost": round(p_cost, 0),
+                        "Reason": f"Weak return {lo_d} ({lo_u:.1f}%) pulling overall below {int(util_cutoff_pct)}%"
+                    })
             else:
                 stats["both_healthy"] += 1
-                pair_class = "🟢 Both Sides Healthy"
+                if p_util >= 80.0:
+                    stats["star_achievements"] += 1
+                    pair_class = "🏆 STAR: Both ≥80%"
+                    stats["achievement_cards"].append({
+                        "Route Pair": pair, "Cap": cap_val, "Origin RO": p_ros, "Trips": p_trips,
+                        "Util %": round(p_util, 1), "CPK": round(p_cpk, 2), "Total Cost": round(p_cost, 0),
+                        "Highlight": f"Strong 2-way load ({d1} {u1:.1f}% · {d2} {u2:.1f}%)"
+                    })
+                else:
+                    pair_class = "🟢 Healthy (Both ≥60%)"
         else:
             u1 = float(side_agg['Util'].iloc[0])
-            gap_pct = 0.0
             if u1 < util_cutoff_pct:
                 stats["single_dir_under"] += 1
-                pair_class = "🔴 Single-Side Underutilized"
+                pair_class = "🔴 FAIL: Single-Side <60%"
+            elif u1 >= 80.0:
+                stats["single_dir_ok"] += 1
+                stats["star_achievements"] += 1
+                pair_class = "🏆 STAR: Single-Side ≥80%"
             else:
                 stats["single_dir_ok"] += 1
                 pair_class = "🟢 Single-Side Healthy"
 
-        # Sort UP then DOWN strictly by Direction (A->Z) then Route (A->Z)
         dir_agg = dir_agg.sort_values(by=['Direction', 'Final_Route'], ascending=[True, True])
         first_dir = dir_agg['Direction'].iloc[0]
 
         for _, r in dir_agg.iterrows():
             leg_tag = "UP" if r['Direction'] == first_dir else "DOWN"
             u_v = float(r['Util_Pct'])
-            st_lbl = "🔴 Underutilized" if u_v < util_cutoff_pct else ("🟡 Watch" if u_v < 80.0 else "🟢 Healthy")
+            st_lbl = "🔴 FAIL (<60%)" if u_v < util_cutoff_pct else ("🏆 STAR (≥80%)" if u_v >= 80.0 else "🟡 WATCH (60-80%)")
             updown_rows.append({
-                "Route Pair": pair,
-                "Capacity": cap_val,
-                "Side": leg_tag,
-                "Origin RO": r['Origin_RO'],
-                "Dest RO": r['Dest_RO'],
-                "Route": r['Final_Route'],
-                "Trips": int(r['Trips']),
-                "Avg Wt/Trip": int(round(r['Avg_Wt'])),
-                "Carried Wt": int(round(r['Total_Wt'])),
-                "Total Cap": int(round(r['Total_Cap'])),
-                "Util %": f"{u_v:.1f}%",
-                "Per Trip Cost": f"₹{r['Per_Trip_Cost']:,.0f}",
-                "Total Cost": f"₹{r['Total_Cost']:,.0f}",
-                "CPK": f"₹{r['CPK']:.2f}",
-                "Vendor(s)": r['Vendors'],
-                "Status": st_lbl
+                "Route Pair": pair, "Capacity": cap_val, "Side": leg_tag,
+                "Origin RO": r['Origin_RO'], "Dest RO": r['Dest_RO'], "Route": r['Final_Route'],
+                "Trips": int(r['Trips']), "Avg Wt/Trip": int(round(r['Avg_Wt'])),
+                "Carried Wt": int(round(r['Total_Wt'])), "Total Cap": int(round(r['Total_Cap'])),
+                "Util %": f"{u_v:.1f}%", "Per Trip Cost": f"₹{r['Per_Trip_Cost']:,.0f}",
+                "Total Cost": f"₹{r['Total_Cost']:,.0f}", "CPK": f"₹{r['CPK']:.2f}",
+                "Vendor(s)": r['Vendors'], "Status": st_lbl,
+                "_is_sub": False, "_num_util": u_v, "_num_cpk": float(r['CPK']), "_num_cost": float(r['Total_Cost']), "_num_wt": float(r['Total_Wt'])
             })
 
-        # Pair + Capacity Subtotal row
-        p_trips = int(p_grp['Trips'].sum())
-        p_wt = float(p_grp['Wt'].sum())
-        p_cap = float(p_trips * cap_val)
-        p_cost = float(p_grp['Cost'].sum())
-        p_util = (p_wt / p_cap * 100.0) if p_cap > 0 else 0.0
-        p_cpk = (p_cost / p_wt) if p_wt > 0 else 0.0
         p_avg_wt = (p_wt / p_trips) if p_trips > 0 else 0.0
         p_ptc = (p_cost / p_trips) if p_trips > 0 else 0.0
-        p_ros = ", ".join(sorted(set(p_grp['Origin_RO'].dropna().astype(str))))
-        p_vens = ", ".join(sorted(set(x for x in p_grp['VendorName'].dropna().astype(str) if x))[:3])
-
         updown_rows.append({
-            "Route Pair": f"↳ {pair} TOTAL",
-            "Capacity": cap_val,
-            "Side": "UP+DOWN",
-            "Origin RO": p_ros,
-            "Dest RO": "-",
-            "Route": f"{len(dir_agg)} Route(s) Combined",
-            "Trips": p_trips,
-            "Avg Wt/Trip": int(round(p_avg_wt)),
-            "Carried Wt": int(round(p_wt)),
-            "Total Cap": int(round(p_cap)),
-            "Util %": f"{p_util:.1f}%",
-            "Per Trip Cost": f"₹{p_ptc:,.0f}",
-            "Total Cost": f"₹{p_cost:,.0f}",
-            "CPK": f"₹{p_cpk:.2f}",
-            "Vendor(s)": p_vens,
-            "Status": pair_class
+            "Route Pair": f"↳ {pair} TOTAL", "Capacity": cap_val, "Side": "UP+DOWN",
+            "Origin RO": p_ros, "Dest RO": "-", "Route": f"{len(dir_agg)} Route(s) Combined",
+            "Trips": p_trips, "Avg Wt/Trip": int(round(p_avg_wt)),
+            "Carried Wt": int(round(p_wt)), "Total Cap": int(round(p_cap)),
+            "Util %": f"{p_util:.1f}%", "Per Trip Cost": f"₹{p_ptc:,.0f}",
+            "Total Cost": f"₹{p_cost:,.0f}", "CPK": f"₹{p_cpk:.2f}",
+            "Vendor(s)": p_vens, "Status": pair_class,
+            "_is_sub": True, "_num_util": p_util, "_num_cpk": p_cpk, "_num_cost": p_cost, "_num_wt": p_wt
         })
 
         pair_rows.append({
-            "Route Pair": pair,
-            "Capacity": cap_val,
-            "Origin RO(s)": p_ros,
-            "Routes": len(dir_agg),
-            "Trips": p_trips,
-            "Carried Wt": int(round(p_wt)),
-            "Total Cap": int(round(p_cap)),
-            "Overall Util %": f"{p_util:.1f}%",
-            "Total Cost": f"₹{p_cost:,.0f}",
-            "Overall CPK": f"₹{p_cpk:.2f}",
-            "Classification": pair_class,
-            "Vendor(s)": p_vens,
-            "_sort_u": p_util
+            "Route Pair": pair, "Capacity": cap_val, "Origin RO(s)": p_ros,
+            "Routes": len(dir_agg), "Trips": p_trips, "Carried Wt": int(round(p_wt)),
+            "Total Cap": int(round(p_cap)), "Overall Util %": f"{p_util:.1f}%",
+            "Total Cost": f"₹{p_cost:,.0f}", "Overall CPK": f"₹{p_cpk:.2f}",
+            "Classification": pair_class, "Vendor(s)": p_vens,
+            "_sort_u": p_util, "_num_cpk": p_cpk, "_num_cost": p_cost
         })
 
-    df_pair_sum = pd.DataFrame(pair_rows).sort_values(by=['_sort_u', 'Route Pair', 'Capacity'], ascending=[True, True, True]).drop(columns=['_sort_u']).reset_index(drop=True) if pair_rows else pd.DataFrame()
+    df_pair_sum = pd.DataFrame(pair_rows).sort_values(by=['_sort_u', 'Route Pair', 'Capacity'], ascending=[True, True, True]).reset_index(drop=True) if pair_rows else pd.DataFrame()
     df_updown = pd.DataFrame(updown_rows)
     return df_pair_sum, df_updown, stats
 
 
 def build_regional_feeder_daywise_table(df_daily_sub, df_raw_sub, util_cutoff_pct=60.0):
-    """
-    Build accurate Day-wise vehicle table for Fixed Per Month & Fixed Per Day Regional/Feeder vehicles.
-    Shows MCD Wt, OFD Wt, PickUp Wt, Co-Loader Wt, Total Wt, MCD Util %, Overall All-Work Util %, Cost & CPK.
-    """
+    """Build accurate Day-wise vehicle table for Fixed Per Month & Fixed Per Day Regional/Feeder vehicles."""
     if df_daily_sub is None or df_daily_sub.empty:
         return pd.DataFrame()
 
-    # Identify vehicles that ran Regional LH or Feeder on Fixed Per Month / Fixed Per Day
     rf_vehs = set()
     if isinstance(df_raw_sub, pd.DataFrame) and not df_raw_sub.empty:
         rf_m = df_raw_sub['Final_Type'].isin(['Regional LH', 'Feeder']) & df_raw_sub['ContractType'].str.upper().isin(['FIXED PER MONTH', 'FIXED PER DAY'])
@@ -8191,7 +8194,6 @@ def build_regional_feeder_daywise_table(df_daily_sub, df_raw_sub, util_cutoff_pc
         sub = sub[sub['Vehicle No'].isin(rf_vehs)].copy()
     else:
         sub = sub[sub['Primary_Type'].isin(['Regional LH', 'Feeder']) & sub['ContractType'].str.upper().isin(['FIXED PER MONTH', 'FIXED PER DAY'])].copy()
-
     if sub.empty:
         return pd.DataFrame()
 
@@ -8215,118 +8217,78 @@ def build_regional_feeder_daywise_table(df_daily_sub, df_raw_sub, util_cutoff_pc
     g['All_Util_Num'] = np.where(g['Day_Cap'] > 0, g['Total_Wt'] / g['Day_Cap'] * 100.0, 0.0)
     g['CPK_Num'] = np.where(g['Total_Wt'] > 0, g['Total_Cost'] / g['Total_Wt'], 0.0)
     g['Status'] = np.where(
-        g['All_Util_Num'] < util_cutoff_pct, '🔴 Underutilized',
-        np.where(g['All_Util_Num'] < 80.0, '🟡 Watch', '🟢 Healthy')
+        g['All_Util_Num'] < util_cutoff_pct, '🔴 FAIL (<60%)',
+        np.where(g['All_Util_Num'] >= 80.0, '🏆 STAR (≥80%)', '🟡 WATCH (60-80%)')
     )
     g = g.sort_values(by=['All_Util_Num', 'RO_Clean', 'VendorBranch', 'Vehicle No'], ascending=[True, True, True, True]).reset_index(drop=True)
 
-    out = pd.DataFrame({
-        'RO': g['RO_Clean'],
-        'Branch': g['VendorBranch'],
-        'Vehicle No': g['Vehicle No'],
-        'Type': g['Primary_Type'],
-        'Vendor': g['Vendor'],
-        'Contract': g['ContractType'],
+    return pd.DataFrame({
+        'RO': g['RO_Clean'], 'Branch': g['VendorBranch'], 'Vehicle No': g['Vehicle No'],
+        'Type': g['Primary_Type'], 'Vendor': g['Vendor'], 'Contract': g['ContractType'],
         'Divisor': np.where(g['Divisor'] > 1, g['Divisor'].astype(int).astype(str) + 'd', 'Per Day'),
         'Rate': g['Contract_Rate'].apply(lambda x: f"₹{x:,.0f}"),
-        'Cap': g['Cap'].round(0).astype(int),
-        'Days': g['Active_Days'].astype(int),
-        'MCD Wt': g['MCD_Wt'].round(0).astype(int),
-        'OFD Wt': g['OFD_Wt'].round(0).astype(int),
-        'PickUp Wt': g['Pickup_Wt'].round(0).astype(int),
-        'Co-Load Wt': g['Coloader_Wt'].round(0).astype(int),
-        'Total Wt': g['Total_Wt'].round(0).astype(int),
-        'Day Cap': g['Day_Cap'].round(0).astype(int),
+        'Cap': g['Cap'].round(0).astype(int), 'Days': g['Active_Days'].astype(int),
+        'MCD Wt': g['MCD_Wt'].round(0).astype(int), 'OFD Wt': g['OFD_Wt'].round(0).astype(int),
+        'PickUp Wt': g['Pickup_Wt'].round(0).astype(int), 'Co-Load Wt': g['Coloader_Wt'].round(0).astype(int),
+        'Total Wt': g['Total_Wt'].round(0).astype(int), 'Day Cap': g['Day_Cap'].round(0).astype(int),
         'MCD Util %': g['MCD_Util_Num'].apply(lambda x: f"{x:.1f}%"),
         'Overall Util %': g['All_Util_Num'].apply(lambda x: f"{x:.1f}%"),
         'Total Cost': g['Total_Cost'].apply(lambda x: f"₹{x:,.0f}"),
         'Overall CPK': g['CPK_Num'].apply(lambda x: f"₹{x:.2f}"),
         'Status': g['Status'],
         'Routes': g['Routes'].fillna('').astype(str).str.slice(0, 55),
-        '_num_util': g['All_Util_Num'],
-        '_num_cost': g['Total_Cost'],
-        '_num_rate': g['Contract_Rate'],
-        '_num_wt': g['Total_Wt'],
+        '_num_util': g['All_Util_Num'], '_num_mcd_util': g['MCD_Util_Num'],
+        '_num_cost': g['Total_Cost'], '_num_rate': g['Contract_Rate'], '_num_wt': g['Total_Wt'], '_num_cpk': g['CPK_Num']
     })
-    return out
 
 
 def build_dynamic_ai_fleet_optimizer(df_raw_f, df_daily_f, util_cutoff_pct=60.0, high_cpk_cutoff=5.0):
-    """
-    Dynamic AI Fleet Optimization & Savings Advisor (100% Data-Driven):
-      1. Downsize oversized trucks on Both-Side Underutilized OR Near-Underutilized (<65%) pairs (e.g. DELAP-INDH 6,000kg -> 17ft 3,500kg)
-      2. Remove / Consolidate chronically underutilized Regional/Feeder vehicles (<50% overall util)
-      3. Backhaul Imbalance fixes (One-Side Utilized routes with >30% gap)
-      4. Same-Branch Rate Disparity flags (e.g. 4 Feeder vehicles @ Rs 40k vs 1 @ Rs 45k)
-      5. Same-Route + Capacity Trip Rate Variance flags (National & Zonal)
-      6. Data Quality / Rate / Capacity Correction flags (Rs 0 cost, weird capacity like 5919kg, >140% overload)
-    """
-    ideas = []
-    rate_disp_branch = []
-    rate_disp_route = []
-    audit_flags = []
-
+    """Dynamic AI Fleet Optimization & Savings Advisor (Downsize, Remove, Backhaul, Rate Parity, Audit)."""
+    ideas, rate_disp_branch, rate_disp_route, audit_flags = [], [], [], []
     if df_raw_f is None or df_raw_f.empty:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-    # Estimate scale factor to normalize observed date window to 26 working days/month
     _dates = pd.to_datetime(df_raw_f['Date'], dayfirst=True, errors='coerce').dropna()
     obs_days = max(1, int((_dates.max() - _dates.min()).days + 1)) if not _dates.empty else 26
     month_scale = 26.0 / min(26.0, max(1.0, obs_days * 0.85)) if obs_days < 24 else 1.0
 
-    # --- A. NATIONAL & ZONAL: DOWNSIZING, REMOVAL & BACKHAUL OPTIMIZATION ---
     nz = df_raw_f[df_raw_f['Final_Type'].isin(['National LH', 'Zonal LH'])].copy()
     if not nz.empty:
         nz['_cap_int'] = nz['Cap'].round(0).astype(int)
-        # Pre-compute actual observed avg trip cost per (Route_Pair, Cap) for real rate benchmarking
         pair_cap_cost = nz[nz['Cost'] > 0].groupby(['Route_Pair', '_cap_int'])['Cost'].mean().to_dict()
 
         for (seg, pair, cap_v), grp in nz.groupby(['Final_Type', 'Route_Pair', '_cap_int']):
-            if cap_v <= 0 or len(grp) < 4:
-                continue
-            sides = grp.groupby('Direction').agg(
-                trips=('Trips', 'sum'), wt=('Wt', 'sum'), avg_wt=('Wt', 'mean'),
-                p90_wt=('Wt', lambda s: float(np.percentile(s, 85))),
-                cost=('Cost', 'sum')
-            ).reset_index()
+            if cap_v <= 0 or len(grp) < 4: continue
+            sides = grp.groupby('Direction').agg(trips=('Trips', 'sum'), wt=('Wt', 'sum'), avg_wt=('Wt', 'mean'), cost=('Cost', 'sum')).reset_index()
             sides['util'] = sides['wt'] / (sides['trips'] * cap_v) * 100.0
-            tot_trips = int(grp['Trips'].sum())
-            tot_wt = float(grp['Wt'].sum())
-            tot_cost = float(grp['Cost'].sum())
+            tot_trips, tot_wt, tot_cost = int(grp['Trips'].sum()), float(grp['Wt'].sum()), float(grp['Cost'].sum())
             comb_util = (tot_wt / (tot_trips * cap_v) * 100.0) if (tot_trips * cap_v) > 0 else 0.0
             comb_cpk = (tot_cost / tot_wt) if tot_wt > 0 else 0.0
             avg_trip_cost = (tot_cost / tot_trips) if tot_trips > 0 else 0.0
             max_side_avg_wt = float(sides['avg_wt'].max())
-            p85_wt = float(sides['p90_wt'].max())
             ros_lbl = ", ".join(sorted(set(grp['Origin_RO'].dropna().astype(str))))
 
             both_under = (len(sides) >= 2) and bool((sides['util'] < util_cutoff_pct).all())
             near_under_oversized = (comb_util < (util_cutoff_pct + 5.0)) and (max_side_avg_wt <= cap_v * 0.68)
 
-            # 1) Downsize or Remove Vehicle recommendation
             if both_under or near_under_oversized:
                 smaller = _recommend_smaller_truck(cap_v, max_side_avg_wt)
                 if both_under and comb_util < 35.0:
                     est_sav = tot_cost * 0.45 * month_scale
                     ideas.append({
-                        "Priority": "🔴 P1 - Critical",
-                        "Category": f"{seg} · Remove / Merge",
-                        "RO / Branch": ros_lbl,
-                        "Entity / Route": f"{pair} ({cap_v:,} kg)",
-                        "Current Metric": f"Util {comb_util:.1f}% (Both sides <{int(util_cutoff_pct)}%) · CPK ₹{comb_cpk:.2f}",
+                        "Priority": "🔴 P1 - Critical", "Category": f"{seg} · Remove / Merge",
+                        "RO / Branch": ros_lbl, "Entity / Route": f"{pair} ({cap_v:,} kg)",
+                        "Current Metric": f"Util {comb_util:.1f}% (Both <{int(util_cutoff_pct)}%) · CPK ₹{comb_cpk:.2f}",
                         "AI Recommendation": f"Remove dedicated {_fleet_size_label(cap_v)} & shift {max_side_avg_wt:,.0f} kg/trip load to alternate day / co-loader",
-                        "Est. Monthly Saving": f"₹{est_sav:,.0f}",
-                        "_sav": est_sav
+                        "Est. Monthly Saving": round(est_sav, 0), "_sav": est_sav
                     })
                 elif smaller is not None:
                     new_cap, new_lbl = smaller
-                    # Use real smaller-truck rate on same pair if Trackon already runs it (like DELAP-INDH 3500kg!)
                     bench_rate = pair_cap_cost.get((pair, new_cap))
                     if bench_rate and bench_rate < avg_trip_cost:
                         trip_sav = avg_trip_cost - bench_rate
-                        rate_basis = f"actual same-pair rate ₹{bench_rate:,.0f} vs ₹{avg_trip_cost:,.0f}"
+                        rate_basis = f"same-pair rate ₹{bench_rate:,.0f} vs ₹{avg_trip_cost:,.0f}"
                     else:
-                        # Conservative 15-25% rate reduction when stepping down 1-2 truck sizes
                         cap_drop_frac = min(0.30, max(0.12, (cap_v - new_cap) / cap_v * 0.55))
                         trip_sav = avg_trip_cost * cap_drop_frac
                         rate_basis = f"est. {cap_drop_frac*100:.0f}% lower trip rate"
@@ -8335,35 +8297,26 @@ def build_dynamic_ai_fleet_optimizer(df_raw_f, df_daily_f, util_cutoff_pct=60.0,
                     tag_why = f"Both sides <{int(util_cutoff_pct)}%" if both_under else f"Combined {comb_util:.1f}% (Avg {max_side_avg_wt:,.0f} kg fits smaller truck)"
                     ideas.append({
                         "Priority": "🔴 P1 - Downsize" if both_under else "🟠 P2 - Downsize",
-                        "Category": f"{seg} · Downsize Truck",
-                        "RO / Branch": ros_lbl,
+                        "Category": f"{seg} · Downsize Truck", "RO / Branch": ros_lbl,
                         "Entity / Route": f"{pair} ({cap_v:,} kg)",
                         "Current Metric": f"Util {comb_util:.1f}% · Avg {max_side_avg_wt:,.0f} kg/trip · CPK ₹{comb_cpk:.2f}",
                         "AI Recommendation": f"Replace {_fleet_size_label(cap_v)} with {new_lbl} → Util jumps to {new_util:.1f}% ({tag_why}; {rate_basis})",
-                        "Est. Monthly Saving": f"₹{est_sav:,.0f}",
-                        "_sav": est_sav
+                        "Est. Monthly Saving": round(est_sav, 0), "_sav": est_sav
                     })
-
-            # 2) One-side Backhaul Imbalance
             elif len(sides) >= 2:
                 u_hi, u_lo = float(sides['util'].max()), float(sides['util'].min())
                 if u_hi >= util_cutoff_pct and u_lo < util_cutoff_pct and (u_hi - u_lo) >= 25.0:
-                    lo_row = sides.loc[sides['util'].idxmin()]
-                    hi_row = sides.loc[sides['util'].idxmax()]
+                    lo_row, hi_row = sides.loc[sides['util'].idxmin()], sides.loc[sides['util'].idxmax()]
                     empty_mt = max(0.0, (lo_row['trips'] * cap_v - lo_row['wt']) / 1000.0)
                     est_val = lo_row['cost'] * max(0.10, (util_cutoff_pct - u_lo) / 100.0) * 0.5 * month_scale
                     ideas.append({
-                        "Priority": "🟠 P2 - Backhaul",
-                        "Category": f"{seg} · One-Side Empty",
-                        "RO / Branch": ros_lbl,
-                        "Entity / Route": f"{pair} ({cap_v:,} kg)",
+                        "Priority": "🟠 P2 - Backhaul", "Category": f"{seg} · One-Side Empty",
+                        "RO / Branch": ros_lbl, "Entity / Route": f"{pair} ({cap_v:,} kg)",
                         "Current Metric": f"{hi_row['Direction']} {u_hi:.1f}% vs {lo_row['Direction']} {u_lo:.1f}% (Gap {u_hi-u_lo:.1f}%)",
                         "AI Recommendation": f"Backhaul leakage of {empty_mt:.1f} MT on {lo_row['Direction']} — club regional/co-loader load or renegotiate 1-way rate",
-                        "Est. Monthly Saving": f"₹{est_val:,.0f}",
-                        "_sav": est_val
+                        "Est. Monthly Saving": round(est_val, 0), "_sav": est_val
                     })
 
-        # 3) Same-Route + Capacity Trip Rate Variance (National & Zonal)
         fpt = nz[(nz['ContractType'].str.upper().eq('FIXED PER TRIP')) & (nz['ContractCost_Raw'] > 0)]
         for (seg, rt, cap_v), grp in fpt.groupby(['Final_Type', 'Final_Route', '_cap_int']):
             mn, mx = float(grp['ContractCost_Raw'].min()), float(grp['ContractCost_Raw'].max())
@@ -8372,39 +8325,25 @@ def build_dynamic_ai_fleet_optimizer(df_raw_f, df_daily_f, util_cutoff_pct=60.0,
                 est_sav = float((above['ContractCost_Raw'] - mn).sum()) * month_scale
                 v_list = ", ".join(sorted(set(grp['VendorName'].dropna().astype(str)))[:3])
                 rate_disp_route.append({
-                    "Segment": seg,
-                    "Origin RO": grp['Origin_RO'].iloc[0],
-                    "Route": rt,
-                    "Capacity": cap_v,
-                    "Trips": len(grp),
-                    "Min Rate": f"₹{mn:,.0f}",
-                    "Max Rate": f"₹{mx:,.0f}",
-                    "Diff / Trip": f"₹{mx - mn:,.0f}",
-                    "Est. Monthly Saving": f"₹{est_sav:,.0f}",
-                    "Vendor(s)": v_list,
-                    "_sav": est_sav
+                    "Segment": seg, "Origin RO": grp['Origin_RO'].iloc[0], "Route": rt,
+                    "Capacity": cap_v, "Trips": len(grp),
+                    "Min Rate": round(mn, 0), "Max Rate": round(mx, 0), "Diff / Trip": round(mx - mn, 0),
+                    "Est. Monthly Saving": round(est_sav, 0), "Vendor(s)": v_list, "_sav": est_sav
                 })
                 ideas.append({
-                    "Priority": "🟠 P2 - Rate Parity",
-                    "Category": f"{seg} · Rate Variance",
-                    "RO / Branch": str(grp['Origin_RO'].iloc[0]),
-                    "Entity / Route": f"{rt} ({cap_v:,} kg)",
+                    "Priority": "🟠 P2 - Rate Parity", "Category": f"{seg} · Rate Variance",
+                    "RO / Branch": str(grp['Origin_RO'].iloc[0]), "Entity / Route": f"{rt} ({cap_v:,} kg)",
                     "Current Metric": f"Min ₹{mn:,.0f} vs Max ₹{mx:,.0f} (₹{mx-mn:,.0f}/trip gap)",
                     "AI Recommendation": f"Align all {len(above)} higher-rate trips on {rt} to benchmark ₹{mn:,.0f}/trip",
-                    "Est. Monthly Saving": f"₹{est_sav:,.0f}",
-                    "_sav": est_sav
+                    "Est. Monthly Saving": round(est_sav, 0), "_sav": est_sav
                 })
 
-    # --- B. REGIONAL & FEEDER: SAME-BRANCH RATE DISPARITY & UNDERUTILIZED VEHICLE REMOVAL/DOWNSIZE ---
     rf_day = build_regional_feeder_daywise_table(df_daily_f, df_raw_f, util_cutoff_pct)
     if not rf_day.empty:
-        # 1) Same-Branch + Same-Cap + Same-Contract Rate Disparity (User's exact Rs 40k vs Rs 45k Feeder idea!)
         for (ro, brn, seg, cap_v, ct), grp in rf_day.groupby(['RO', 'Branch', 'Type', 'Cap', 'Contract']):
-            if len(grp) < 2:
-                continue
+            if len(grp) < 2: continue
             valid_g = grp[grp['_num_rate'] > 0]
-            if len(valid_g) < 2:
-                continue
+            if len(valid_g) < 2: continue
             mn_r, mx_r = float(valid_g['_num_rate'].min()), float(valid_g['_num_rate'].max())
             if (mx_r - mn_r) >= (1000 if 'Month' in ct else 100):
                 above = valid_g[valid_g['_num_rate'] > mn_r]
@@ -8412,105 +8351,69 @@ def build_dynamic_ai_fleet_optimizer(df_raw_f, df_daily_f, util_cutoff_pct=60.0,
                 est_sav = float((above['_num_rate'] - mn_r).sum()) * mult
                 high_vehs = ", ".join(above.sort_values('_num_rate', ascending=False)['Vehicle No'].head(3).tolist())
                 rate_disp_branch.append({
-                    "RO": ro,
-                    "Origin Branch": brn,
-                    "Type": seg,
-                    "Capacity": int(cap_v),
-                    "Contract": ct,
-                    "Total Vehs": len(valid_g),
-                    "Min Rate": f"₹{mn_r:,.0f}",
-                    "Max Rate": f"₹{mx_r:,.0f}",
-                    "Costly Vehs": f"{len(above)} ({high_vehs})",
-                    "Est. Monthly Saving": f"₹{est_sav:,.0f}",
-                    "Action Idea": f"Renegotiate {len(above)} vehicle(s) to branch benchmark ₹{mn_r:,.0f}",
-                    "_sav": est_sav
+                    "RO": ro, "Origin Branch": brn, "Type": seg, "Capacity": int(cap_v), "Contract": ct,
+                    "Total Vehs": len(valid_g), "Min Rate": round(mn_r, 0), "Max Rate": round(mx_r, 0),
+                    "Costly Vehs": f"{len(above)} ({high_vehs})", "Est. Monthly Saving": round(est_sav, 0),
+                    "Action Idea": f"Renegotiate {len(above)} vehicle(s) to branch benchmark ₹{mn_r:,.0f}", "_sav": est_sav
                 })
                 if est_sav >= 10000:
                     ideas.append({
                         "Priority": "🔴 P1 - Rate Parity" if est_sav >= 50000 else "🟠 P2 - Rate Parity",
-                        "Category": f"{seg} · Branch Rate Gap",
-                        "RO / Branch": f"{ro} · {brn[:28]}",
+                        "Category": f"{seg} · Branch Rate Gap", "RO / Branch": f"{ro} · {brn[:28]}",
                         "Entity / Route": f"{len(valid_g)} Vehs ({int(cap_v):,} kg · {ct})",
                         "Current Metric": f"Min ₹{mn_r:,.0f} vs Max ₹{mx_r:,.0f} ({len(above)} costly)",
                         "AI Recommendation": f"Shift/renegotiate {high_vehs} to ₹{mn_r:,.0f} (branch benchmark)",
-                        "Est. Monthly Saving": f"₹{est_sav:,.0f}",
-                        "_sav": est_sav
+                        "Est. Monthly Saving": round(est_sav, 0), "_sav": est_sav
                     })
 
-        # 2) Underutilized Regional/Feeder Vehicles (<60% Overall All-Work Util) -> Downsize or Remove
         under_rf = rf_day[rf_day['_num_util'] < util_cutoff_pct].copy()
         for _, r in under_rf.head(25).iterrows():
-            u_v = float(r['_num_util'])
-            cap_v = int(r['Cap'])
+            u_v, cap_v = float(r['_num_util']), int(r['Cap'])
             avg_day_wt = float(r['_num_wt']) / max(1, int(r['Days']))
             smaller = _recommend_smaller_truck(cap_v, avg_day_wt)
             m_rate = float(r['_num_rate']) * (1.0 if 'Month' in str(r['Contract']) else 26.0)
             if u_v < 35.0:
-                est_sav = m_rate * 0.70
-                rec_txt = f"Remove/merge vehicle {r['Vehicle No']} ({u_v:.1f}% all-work util, avg {avg_day_wt:,.0f} kg/day) with co-branch fleet"
-                pri_lbl = "🔴 P1 - Remove"
+                est_sav, pri_lbl = m_rate * 0.70, "🔴 P1 - Remove"
+                rec_txt = f"Remove/merge {r['Vehicle No']} ({u_v:.1f}% all-work util, avg {avg_day_wt:,.0f} kg/day) with co-branch fleet"
             elif smaller is not None:
-                est_sav = m_rate * 0.22
+                est_sav, pri_lbl = m_rate * 0.22, "🟠 P2 - Downsize"
                 rec_txt = f"Downsize {r['Vehicle No']} from {_fleet_size_label(cap_v)} → {smaller[1]} (avg {avg_day_wt:,.0f} kg/day)"
-                pri_lbl = "🟠 P2 - Downsize"
             else:
-                est_sav = m_rate * 0.25
+                est_sav, pri_lbl = m_rate * 0.25, "🟡 P3 - Consolidate"
                 rec_txt = f"Club additional OFD/PickUp/Feeder load onto {r['Vehicle No']} ({u_v:.1f}% util, ₹{m_rate:,.0f}/mo)"
-                pri_lbl = "🟡 P3 - Consolidate"
             ideas.append({
-                "Priority": pri_lbl,
-                "Category": f"{r['Type']} · Underutilized",
+                "Priority": pri_lbl, "Category": f"{r['Type']} · Underutilized",
                 "RO / Branch": f"{r['RO']} · {str(r['Branch'])[:25]}",
                 "Entity / Route": f"{r['Vehicle No']} ({cap_v:,} kg)",
                 "Current Metric": f"Overall Util {u_v:.1f}% · MCD {r['MCD Util %']} · CPK {r['Overall CPK']}",
-                "AI Recommendation": rec_txt,
-                "Est. Monthly Saving": f"₹{est_sav:,.0f}",
-                "_sav": est_sav
+                "AI Recommendation": rec_txt, "Est. Monthly Saving": round(est_sav, 0), "_sav": est_sav
             })
 
-    # --- C. DATA QUALITY / CORRECTION CANDIDATES ---
-    # 1) Zero Cost rows
     zc = df_raw_f[df_raw_f['ContractCost_Raw'] <= 0]
     if not zc.empty:
         for (seg, vno), grp in zc.groupby(['Final_Type', 'Vehicle No']):
             audit_flags.append({
-                "Issue Type": "🔴 ₹0 Contract Cost",
-                "RO": grp['Origin_RO'].iloc[0],
-                "Segment": seg,
-                "Vehicle No": vno,
-                "Route / Branch": grp['Final_Route'].iloc[0],
-                "Rows Affected": len(grp),
-                "Current Value": "₹0",
-                "Fix Action": f"Add Cost Correction for {vno} in Tab 6 (Live Corrections)"
+                "Issue Type": "🔴 ₹0 Contract Cost", "RO": grp['Origin_RO'].iloc[0], "Segment": seg,
+                "Vehicle No": vno, "Route / Branch": grp['Final_Route'].iloc[0], "Rows Affected": len(grp),
+                "Current Value": "₹0", "Fix Action": f"Add Cost Correction for {vno} in Tab 6 (Live Corrections)"
             })
-    # 2) Non-standard Capacities (not divisible by 100)
     wc = df_raw_f[(df_raw_f['Cap'] > 0) & ((df_raw_f['Cap'].round(0) % 100) != 0)]
     if not wc.empty:
         for (seg, vno, cap_v), grp in wc.groupby(['Final_Type', 'Vehicle No', 'Cap']):
             nearest = min(TRACKON_FLEET_LADDER, key=lambda x: abs(x[0] - cap_v))[0]
             audit_flags.append({
-                "Issue Type": "🟡 Non-Standard Capacity",
-                "RO": grp['Origin_RO'].iloc[0],
-                "Segment": seg,
-                "Vehicle No": vno,
-                "Route / Branch": grp['Final_Route'].iloc[0],
-                "Rows Affected": len(grp),
-                "Current Value": f"{int(cap_v)} kg",
-                "Fix Action": f"Override Capacity {int(cap_v)} → {nearest} kg in Tab 6"
+                "Issue Type": "🟡 Non-Standard Capacity", "RO": grp['Origin_RO'].iloc[0], "Segment": seg,
+                "Vehicle No": vno, "Route / Branch": grp['Final_Route'].iloc[0], "Rows Affected": len(grp),
+                "Current Value": f"{int(cap_v)} kg", "Fix Action": f"Override Capacity {int(cap_v)} → {nearest} kg in Tab 6"
             })
-    # 3) Extreme >150% overload rows (likely wrong capacity in ERP)
     ov = df_raw_f[(df_raw_f['Cap'] > 0) & ((df_raw_f['Wt'] / df_raw_f['Cap']) > 1.50)]
     if not ov.empty:
         for (seg, vno, cap_v), grp in ov.groupby(['Final_Type', 'Vehicle No', 'Cap']):
             if len(grp) >= 3:
                 avg_u = (grp['Wt'].sum() / (len(grp) * cap_v) * 100.0)
                 audit_flags.append({
-                    "Issue Type": "🟠 Repeated >150% Overload",
-                    "RO": grp['Origin_RO'].iloc[0],
-                    "Segment": seg,
-                    "Vehicle No": vno,
-                    "Route / Branch": grp['Final_Route'].iloc[0],
-                    "Rows Affected": len(grp),
+                    "Issue Type": "🟠 Repeated >150% Overload", "RO": grp['Origin_RO'].iloc[0], "Segment": seg,
+                    "Vehicle No": vno, "Route / Branch": grp['Final_Route'].iloc[0], "Rows Affected": len(grp),
                     "Current Value": f"{int(cap_v)} kg ({avg_u:.0f}% util)",
                     "Fix Action": "Verify actual truck capacity in ERP or apply Capacity Correction in Tab 6"
                 })
@@ -8526,144 +8429,467 @@ def build_avp_utilization_excel_bytes(
     scope_title, dur_label, df_raw_scope, df_daily_scope,
     nat_updown, zon_updown, rf_daywise, rf_trip_updown,
     df_ideas, df_rdb, df_rdr, df_aud,
-    nat_stats, zon_stats, util_cutoff_pct=60.0
+    nat_stats, zon_stats, util_cutoff_pct=60.0, high_cpk_cutoff=5.0
 ):
     """
-    Build AVP / Leadership-Ready Multi-Sheet Styled Excel Pack with:
-      0_Executive_Notes_Summary (KPIs + Round-Trip/One-Side Scorecard + Auto-Written Management Notes)
-      1_AI_Optimization_Ideas
-      2_National_Pair_UP_DOWN
-      3_Zonal_Pair_UP_DOWN
-      4_Regional_Feeder_Daywise
-      5_Rate_Disparity_Savings
-      6_All_Vehicles_Master
-      7_Matched_Raw_Data
+    100% EXCEL 2013 COMPATIBLE DYNAMIC LIVE-FORMULA WORKBOOK:
+      - Zero text-formatted numbers! Every Cost, Weight, Capacity, Rate, Util %, CPK is a real number or live formula.
+      - Only Excel 2013-safe formulas: SUM, SUMIF, COUNTIF, IFERROR, IF (NO XLOOKUP/LET/LAMBDA/dynamic arrays).
+      - Live Pair Subtotals + Grand Totals + Executive Dashboard KPIs linked across sheets.
+      - Native Excel 2013 Conditional Formatting (Red = Failures <60% / >₹5 CPK, Amber = Watch, Green = Achievements >=80%).
+      - Embedded Native Excel 2013 Column Chart on 0_Executive_Dashboard.
     """
     buf = io.BytesIO()
-    tot_wt_r = float(df_raw_scope['Wt'].sum()) if not df_raw_scope.empty else 0.0
-    tot_cost_r = float(df_raw_scope['Cost'].sum()) if not df_raw_scope.empty else 0.0
-    tot_trips_r = int(df_raw_scope['Trips'].sum()) if not df_raw_scope.empty else 0
-
-    tot_wt_d = float(df_daily_scope['TotalWt'].sum()) if (isinstance(df_daily_scope, pd.DataFrame) and not df_daily_scope.empty) else tot_wt_r
-    tot_cost_d = float(df_daily_scope['TotalCost'].sum()) if (isinstance(df_daily_scope, pd.DataFrame) and not df_daily_scope.empty) else tot_cost_r
-    tot_cap_d = float(df_daily_scope['Cap'].sum()) if (isinstance(df_daily_scope, pd.DataFrame) and not df_daily_scope.empty) else 0.0
-
-    # Parse total estimated monthly savings from AI ideas
-    tot_sav = 0.0
-    if isinstance(df_ideas, pd.DataFrame) and not df_ideas.empty and 'Est. Monthly Saving' in df_ideas.columns:
-        tot_sav = float(df_ideas['Est. Monthly Saving'].astype(str).str.replace(r'[^0-9.]', '', regex=True).replace('', '0').astype(float).sum())
-
-    # Executive Summary + Management Notes sheet
-    exec_rows = [
-        {"Section": "REPORT SCOPE", "Metric / Note": "Scope & Duration", "Value / Detail": f"{scope_title}  |  {dur_label}"},
-        {"Section": "REPORT SCOPE", "Metric / Note": "Standard Utilization Cutoff", "Value / Detail": f"{int(util_cutoff_pct)}% (Red Flag below {int(util_cutoff_pct)}%)"},
-        {"Section": "OVERALL FLEET KPIs", "Metric / Note": "All-Vehicles Total Cost (DailyReport Basis)", "Value / Detail": f"₹{tot_cost_d:,.0f} (₹{tot_cost_d/1e7:.2f} Cr)"},
-        {"Section": "OVERALL FLEET KPIs", "Metric / Note": "All-Vehicles Total Weight (MCD+OFD+PickUp+Col)", "Value / Detail": f"{tot_wt_d:,.0f} kg ({tot_wt_d/1000:,.1f} MT)"},
-        {"Section": "OVERALL FLEET KPIs", "Metric / Note": "Overall Weighted CPK (All Work)", "Value / Detail": f"₹{(tot_cost_d/tot_wt_d):.2f}/kg" if tot_wt_d > 0 else "₹0.00"},
-        {"Section": "OVERALL FLEET KPIs", "Metric / Note": "MCD + Co-Loader Trips in Scope", "Value / Detail": f"{tot_trips_r:,} trips · {tot_wt_r/1000:,.1f} MT · ₹{tot_cost_r/1e7:.2f} Cr"},
-        {"Section": "NATIONAL LH HEALTH", "Metric / Note": "Round-Trip Underutilized (Both <60%)", "Value / Detail": f"{nat_stats.get('both_under', 0)} Pair+Cap combo(s)"},
-        {"Section": "NATIONAL LH HEALTH", "Metric / Note": "One-Side Utilized (Backhaul Imbalance)", "Value / Detail": f"{nat_stats.get('one_side_util', 0)} Pair+Cap combo(s)"},
-        {"Section": "NATIONAL LH HEALTH", "Metric / Note": "Both Sides Healthy (>=60%)", "Value / Detail": f"{nat_stats.get('both_healthy', 0)} Pair+Cap combo(s)"},
-        {"Section": "ZONAL LH HEALTH", "Metric / Note": "Round-Trip Underutilized (Both <60%)", "Value / Detail": f"{zon_stats.get('both_under', 0)} Pair+Cap combo(s)"},
-        {"Section": "ZONAL LH HEALTH", "Metric / Note": "One-Side Utilized (Backhaul Imbalance)", "Value / Detail": f"{zon_stats.get('one_side_util', 0)} Pair+Cap combo(s)"},
-        {"Section": "ZONAL LH HEALTH", "Metric / Note": "Both Sides Healthy (>=60%)", "Value / Detail": f"{zon_stats.get('both_healthy', 0)} Pair+Cap combo(s)"},
-        {"Section": "AI COST SAVINGS", "Metric / Note": "Total Actionable Ideas Identified", "Value / Detail": f"{len(df_ideas) if isinstance(df_ideas, pd.DataFrame) else 0} recommendations (Est. Saving: ₹{tot_sav:,.0f}/month)"},
-        {"Section": "METHODOLOGY NOTES", "Metric / Note": "1. National & Zonal LH Logic", "Value / Detail": "Trip-wise utilization grouped by canonical Route Pair -> Capacity -> UP Route & DOWN Route -> Pair Total. Origin & Dest RO derived from Route start/end branch."},
-        {"Section": "METHODOLOGY NOTES", "Metric / Note": "2. Regional & Feeder Logic", "Value / Detail": "Hybrid: Fixed Per Trip = Trip-wise; Fixed Per Month / Fixed Per Day = Day-wise (Active Days x Capacity, All-Work Wt = MCD+OFD+PickUp+Coloader, Cost prorated /26d default or /30d for override vehicles)."},
-        {"Section": "METHODOLOGY NOTES", "Metric / Note": "3. Data Integrity & Overrides", "Value / Detail": f"30-day override vehicles: {', '.join(load_cpk_overrides().get('divisor_30_vehicles', [])) or 'None'}. Live Cost/Capacity overrides applied across all tabs."},
-    ]
-    if isinstance(df_ideas, pd.DataFrame) and not df_ideas.empty:
-        for idx_i, (_, ir) in enumerate(df_ideas.head(8).iterrows(), 1):
-            exec_rows.append({
-                "Section": "TOP AI ACTION NOTES",
-                "Metric / Note": f"Action #{idx_i} ({ir.get('Priority', '')})",
-                "Value / Detail": f"[{ir.get('RO / Branch', '')}] {ir.get('Entity / Route', '')}: {ir.get('AI Recommendation', '')} (Est. Saving: {ir.get('Est. Monthly Saving', '')})"
-            })
-    df_exec = pd.DataFrame(exec_rows)
-
-    # All-Vehicles Master for the selected RO/Scope (from DailyReport — covers National, Zonal, Regional, Feeder, Co-Loader, OFD, PickUp!)
-    veh_master = pd.DataFrame()
-    if isinstance(df_daily_scope, pd.DataFrame) and not df_daily_scope.empty:
-        vm = df_daily_scope.groupby(['Zone', 'RO_Clean', 'VendorBranch', 'Vehicle No', 'Primary_Type', 'ContractType'], dropna=False).agg(
-            Vendor=('VendorName', 'first'),
-            Cap=('Cap', 'median'),
-            Contract_Rate=('ContractCost', 'median'),
-            Active_Days=('Date', 'nunique'),
-            Trips=('NoOftrips', 'sum'),
-            MCD_Wt=('MCDWt', 'sum'),
-            OFD_Wt=('OFDWt', 'sum'),
-            PickUp_Wt=('PickupWt', 'sum'),
-            Coloader_Wt=('ColoaderWt', 'sum'),
-            Total_Wt=('TotalWt', 'sum'),
-            Total_Cost=('TotalCost', 'sum'),
-            All_Types=('All_Types', 'first'),
-            Routes=('Routes_Covered', 'first')
-        ).reset_index()
-        vm['Day_Cap'] = vm['Cap'] * vm['Active_Days']
-        vm['Util_Num'] = np.where(vm['Day_Cap'] > 0, vm['Total_Wt'] / vm['Day_Cap'] * 100.0, 0.0)
-        vm['CPK_Num'] = np.where(vm['Total_Wt'] > 0, vm['Total_Cost'] / vm['Total_Wt'], 0.0)
-        vm = vm.sort_values(by=['RO_Clean', 'Primary_Type', 'Util_Num'], ascending=[True, True, True])
-        veh_master = pd.DataFrame({
-            'RO': vm['RO_Clean'],
-            'Branch': vm['VendorBranch'],
-            'Vehicle No': vm['Vehicle No'],
-            'Category': vm['Primary_Type'],
-            'All Duties': vm['All_Types'],
-            'Vendor': vm['Vendor'],
-            'Contract': vm['ContractType'],
-            'Rate': vm['Contract_Rate'].apply(lambda x: f"₹{x:,.0f}"),
-            'Cap': vm['Cap'].round(0).astype(int),
-            'Active Days': vm['Active_Days'].astype(int),
-            'MCD Wt': vm['MCD_Wt'].round(0).astype(int),
-            'OFD Wt': vm['OFD_Wt'].round(0).astype(int),
-            'PickUp Wt': vm['PickUp_Wt'].round(0).astype(int),
-            'Co-Load Wt': vm['Coloader_Wt'].round(0).astype(int),
-            'Total Wt': vm['Total_Wt'].round(0).astype(int),
-            'Overall Util %': vm['Util_Num'].apply(lambda x: f"{x:.1f}%"),
-            'Total Cost': vm['Total_Cost'].apply(lambda x: f"₹{x:,.0f}"),
-            'Overall CPK': vm['CPK_Num'].apply(lambda x: f"₹{x:.2f}"),
-            'Routes': vm['Routes']
-        })
-
-    # Clean Raw Data (zero junk columns!)
-    raw_clean_cols = [
-        'Date', 'RefNumber', 'Final_Type', 'Origin_RO', 'Dest_RO', 'Origin', 'Dest',
-        'Route_Pair', 'Direction', 'Final_Route', 'VendorName', 'Vehicle No',
-        'ContractType', 'VehicleUsageType', 'Cap', 'Wt', 'Cost'
-    ]
-    df_raw_clean = df_raw_scope[[c for c in raw_clean_cols if c in df_raw_scope.columns]].rename(columns={
-        'Final_Type': 'Category', 'Origin_RO': 'Origin RO', 'Dest_RO': 'Dest RO',
-        'Route_Pair': 'Route Pair', 'Final_Route': 'Route', 'Cap': 'Capacity', 'Wt': 'Weight', 'Cost': 'Trip Cost'
-    }).reset_index(drop=True) if not df_raw_scope.empty else pd.DataFrame()
+    u_dec = round(float(util_cutoff_pct) / 100.0, 4)
+    c_lim = round(float(high_cpk_cutoff), 2)
 
     with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-        write_styled_sheet_to_excel(writer, df_exec, '0_Executive_Notes_Summary', sheet_type="generic", preserve_order=True)
+        wb = writer.book
+
+        # Muted Executive Palette (Excel 2013 safe, <25 styles total)
+        f_title = wb.add_format({'bold': True, 'font_size': 15, 'font_color': '#FFFFFF', 'bg_color': '#1B365D', 'valign': 'vcenter', 'indent': 1})
+        f_sub = wb.add_format({'italic': True, 'font_size': 10, 'font_color': '#334155', 'bg_color': '#E8EEF5', 'valign': 'vcenter', 'indent': 1})
+        f_sec = wb.add_format({'bold': True, 'font_size': 11, 'font_color': '#1B365D', 'bg_color': '#DCE6F1', 'border': 1, 'valign': 'vcenter'})
+        f_hdr = wb.add_format({'bold': True, 'font_size': 10, 'font_color': '#FFFFFF', 'bg_color': '#1B365D', 'border': 1, 'border_color': '#CBD5E1', 'align': 'center', 'valign': 'vcenter', 'text_wrap': True})
+
+        f_txt = wb.add_format({'border': 1, 'border_color': '#E2E8F0', 'align': 'center', 'valign': 'vcenter'})
+        f_txt_l = wb.add_format({'border': 1, 'border_color': '#E2E8F0', 'align': 'left', 'valign': 'vcenter', 'text_wrap': True})
+        f_int = wb.add_format({'border': 1, 'border_color': '#E2E8F0', 'align': 'center', 'valign': 'vcenter', 'num_format': '#,##0'})
+        f_inr = wb.add_format({'border': 1, 'border_color': '#E2E8F0', 'align': 'center', 'valign': 'vcenter', 'num_format': '₹#,##0'})
+        f_cpk = wb.add_format({'border': 1, 'border_color': '#E2E8F0', 'align': 'center', 'valign': 'vcenter', 'num_format': '₹#,##0.00', 'bold': True})
+        f_pct = wb.add_format({'border': 1, 'border_color': '#E2E8F0', 'align': 'center', 'valign': 'vcenter', 'num_format': '0.0%', 'bold': True})
+
+        # Subtotal Row Formats
+        f_st_txt = wb.add_format({'bold': True, 'bg_color': '#E2E8F0', 'font_color': '#0F172A', 'border': 1, 'border_color': '#94A3B8', 'align': 'center', 'valign': 'vcenter'})
+        f_st_int = wb.add_format({'bold': True, 'bg_color': '#E2E8F0', 'font_color': '#0F172A', 'border': 1, 'border_color': '#94A3B8', 'align': 'center', 'valign': 'vcenter', 'num_format': '#,##0'})
+        f_st_inr = wb.add_format({'bold': True, 'bg_color': '#E2E8F0', 'font_color': '#0F172A', 'border': 1, 'border_color': '#94A3B8', 'align': 'center', 'valign': 'vcenter', 'num_format': '₹#,##0'})
+        f_st_cpk = wb.add_format({'bold': True, 'bg_color': '#E2E8F0', 'font_color': '#0F172A', 'border': 1, 'border_color': '#94A3B8', 'align': 'center', 'valign': 'vcenter', 'num_format': '₹#,##0.00'})
+        f_st_pct = wb.add_format({'bold': True, 'bg_color': '#E2E8F0', 'font_color': '#0F172A', 'border': 1, 'border_color': '#94A3B8', 'align': 'center', 'valign': 'vcenter', 'num_format': '0.0%'})
+
+        # Grand Total Formats
+        f_gt_txt = wb.add_format({'bold': True, 'bg_color': '#1B365D', 'font_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+        f_gt_int = wb.add_format({'bold': True, 'bg_color': '#1B365D', 'font_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '#,##0'})
+        f_gt_inr = wb.add_format({'bold': True, 'bg_color': '#1B365D', 'font_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '₹#,##0'})
+        f_gt_cpk = wb.add_format({'bold': True, 'bg_color': '#1B365D', 'font_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '₹#,##0.00'})
+        f_gt_pct = wb.add_format({'bold': True, 'bg_color': '#1B365D', 'font_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.0%'})
+
+        # Conditional Formatting Highlight Formats (Failures vs Watch vs Achievements)
+        cf_fail = wb.add_format({'bg_color': '#FDE8E8', 'font_color': '#9B1C1C', 'bold': True})
+        cf_watch = wb.add_format({'bg_color': '#FEF3C7', 'font_color': '#92400E', 'bold': True})
+        cf_star = wb.add_format({'bg_color': '#DEF7EC', 'font_color': '#03543F', 'bold': True})
+
+        def _finish_ws(ws, last_row, last_col, freeze_r=3, widths=None):
+            ws.autofilter(2, 0, max(2, last_row), last_col)
+            ws.freeze_panes(freeze_r, 0)
+            ws.set_landscape()
+            ws.fit_to_pages(1, 0)
+            ws.repeat_rows(2)
+            ws.set_margins(0.25, 0.25, 0.4, 0.4)
+            if widths:
+                for ci, w in enumerate(widths):
+                    ws.set_column(ci, ci, w)
+
+        # Helper: Write Live-Formula Pair UP/DOWN Sheet (Excel 2013 100% Native Formulas)
+        def _write_pair_updown_live_sheet(sh_name, title_txt, df_ud):
+            ws = wb.add_worksheet(sh_name)
+            writer.sheets[sh_name] = ws
+            cols = [
+                'Route Pair', 'Capacity (kg)', 'Side', 'Origin RO', 'Dest RO', 'Route',
+                'Trips', 'Avg Wt/Trip', 'Carried Wt (kg)', 'Total Cap (kg)',
+                'Util %', 'Per Trip Cost', 'Total Cost (₹)', 'CPK (₹/kg)', 'Vendor(s)', 'Status'
+            ]
+            ws.merge_range(0, 0, 0, len(cols) - 1, title_txt, f_title)
+            ws.merge_range(1, 0, 1, len(cols) - 1, f"{dur_label}  |  LIVE Excel 2013 Formulas: Edit Capacity/Trips/Cost -> Util%, CPK, Pair Totals & Status auto-update!", f_sub)
+            ws.set_row(0, 28)
+            ws.set_row(1, 20)
+            ws.set_row(2, 28)
+            for ci, cname in enumerate(cols):
+                ws.write(2, ci, cname, f_hdr)
+
+            if df_ud is None or df_ud.empty:
+                ws.write(3, 0, "No records in active filter scope.", f_txt_l)
+                _finish_ws(ws, 3, len(cols) - 1, widths=[18, 12, 10, 11, 11, 26, 9, 12, 14, 14, 10, 13, 14, 11, 24, 18])
+                return None
+
+            block_start_excel_row = 4  # 1-based Excel row
+            r_idx = 3  # 0-based xlsxwriter row
+            for _, row in df_ud.iterrows():
+                er = r_idx + 1
+                is_sub = bool(row.get('_is_sub', str(row.get('Side', '')) == 'UP+DOWN'))
+                ws.set_row(r_idx, 21)
+                if not is_sub:
+                    cap_v = float(row.get('Capacity', 0) or 0)
+                    trp_v = float(row.get('Trips', 0) or 0)
+                    wt_v = float(row.get('_num_wt', row.get('Carried Wt', 0)) or 0)
+                    cost_v = float(row.get('_num_cost', 0) or 0)
+                    ws.write(r_idx, 0, str(row.get('Route Pair', '')), f_txt)
+                    ws.write_number(r_idx, 1, cap_v, f_int)
+                    ws.write(r_idx, 2, str(row.get('Side', '')), f_txt)
+                    ws.write(r_idx, 3, str(row.get('Origin RO', '')), f_txt)
+                    ws.write(r_idx, 4, str(row.get('Dest RO', '')), f_txt)
+                    ws.write(r_idx, 5, str(row.get('Route', '')), f_txt_l)
+                    ws.write_number(r_idx, 6, trp_v, f_int)
+                    ws.write_formula(r_idx, 7, f"=IFERROR(I{er}/G{er},0)", f_int)
+                    ws.write_number(r_idx, 8, wt_v, f_int)
+                    ws.write_formula(r_idx, 9, f"=B{er}*G{er}", f_int)
+                    ws.write_formula(r_idx, 10, f"=IFERROR(I{er}/J{er},0)", f_pct)
+                    ws.write_formula(r_idx, 11, f"=IFERROR(M{er}/G{er},0)", f_inr)
+                    ws.write_number(r_idx, 12, cost_v, f_inr)
+                    ws.write_formula(r_idx, 13, f"=IFERROR(M{er}/I{er},0)", f_cpk)
+                    ws.write(r_idx, 14, str(row.get('Vendor(s)', '')), f_txt_l)
+                    ws.write_formula(r_idx, 15, f'=IF(K{er}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(K{er}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_txt)
+                else:
+                    bs, be = block_start_excel_row, er - 1
+                    ws.write(r_idx, 0, str(row.get('Route Pair', '')), f_st_txt)
+                    ws.write_number(r_idx, 1, float(row.get('Capacity', 0) or 0), f_st_int)
+                    ws.write(r_idx, 2, "UP+DOWN", f_st_txt)
+                    ws.write(r_idx, 3, str(row.get('Origin RO', '')), f_st_txt)
+                    ws.write(r_idx, 4, "-", f_st_txt)
+                    ws.write(r_idx, 5, str(row.get('Route', '')), f_st_txt)
+                    ws.write_formula(r_idx, 6, f"=SUM(G{bs}:G{be})", f_st_int)
+                    ws.write_formula(r_idx, 7, f"=IFERROR(I{er}/G{er},0)", f_st_int)
+                    ws.write_formula(r_idx, 8, f"=SUM(I{bs}:I{be})", f_st_int)
+                    ws.write_formula(r_idx, 9, f"=SUM(J{bs}:J{be})", f_st_int)
+                    ws.write_formula(r_idx, 10, f"=IFERROR(I{er}/J{er},0)", f_st_pct)
+                    ws.write_formula(r_idx, 11, f"=IFERROR(M{er}/G{er},0)", f_st_inr)
+                    ws.write_formula(r_idx, 12, f"=SUM(M{bs}:M{be})", f_st_inr)
+                    ws.write_formula(r_idx, 13, f"=IFERROR(M{er}/I{er},0)", f_st_cpk)
+                    ws.write(r_idx, 14, str(row.get('Vendor(s)', '')), f_st_txt)
+                    ws.write_formula(r_idx, 15, f'=IF(K{er}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(K{er}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_st_txt)
+                    block_start_excel_row = er + 1
+                r_idx += 1
+
+            # Grand Total Row using SUMIF(Side <> "UP+DOWN") -> 100% Excel 2013 safe, never double-counts subtotals!
+            gt_r = r_idx
+            gt_er = gt_r + 1
+            last_data_er = gt_r
+            ws.set_row(gt_r, 24)
+            ws.write(gt_r, 0, "GRAND TOTAL", f_gt_txt)
+            ws.write(gt_r, 1, "-", f_gt_txt)
+            ws.write(gt_r, 2, "ALL", f_gt_txt)
+            ws.write(gt_r, 3, "-", f_gt_txt)
+            ws.write(gt_r, 4, "-", f_gt_txt)
+            ws.write(gt_r, 5, "All Active Routes", f_gt_txt)
+            ws.write_formula(gt_r, 6, f'=SUMIF(C4:C{last_data_er},"<>UP+DOWN",G4:G{last_data_er})', f_gt_int)
+            ws.write_formula(gt_r, 7, f"=IFERROR(I{gt_er}/G{gt_er},0)", f_gt_int)
+            ws.write_formula(gt_r, 8, f'=SUMIF(C4:C{last_data_er},"<>UP+DOWN",I4:I{last_data_er})', f_gt_int)
+            ws.write_formula(gt_r, 9, f'=SUMIF(C4:C{last_data_er},"<>UP+DOWN",J4:J{last_data_er})', f_gt_int)
+            ws.write_formula(gt_r, 10, f"=IFERROR(I{gt_er}/J{gt_er},0)", f_gt_pct)
+            ws.write_formula(gt_r, 11, f"=IFERROR(M{gt_er}/G{gt_er},0)", f_gt_inr)
+            ws.write_formula(gt_r, 12, f'=SUMIF(C4:C{last_data_er},"<>UP+DOWN",M4:M{last_data_er})', f_gt_inr)
+            ws.write_formula(gt_r, 13, f"=IFERROR(M{gt_er}/I{gt_er},0)", f_gt_cpk)
+            ws.write(gt_r, 14, "-", f_gt_txt)
+            ws.write_formula(gt_r, 15, f'=IF(K{gt_er}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(K{gt_er}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_gt_txt)
+
+            # Native Excel 2013 Conditional Formatting (Failures = Red, Watch = Amber, Achievements = Green)
+            ws.conditional_format(3, 10, last_data_er - 1, 10, {'type': 'cell', 'criteria': '<', 'value': u_dec, 'format': cf_fail})
+            ws.conditional_format(3, 10, last_data_er - 1, 10, {'type': 'cell', 'criteria': 'between', 'minimum': u_dec, 'maximum': 0.7999, 'format': cf_watch})
+            ws.conditional_format(3, 10, last_data_er - 1, 10, {'type': 'cell', 'criteria': '>=', 'value': 0.8, 'format': cf_star})
+            ws.conditional_format(3, 13, last_data_er - 1, 13, {'type': 'cell', 'criteria': '>', 'value': c_lim, 'format': cf_fail})
+            ws.conditional_format(3, 15, last_data_er - 1, 15, {'type': 'text', 'criteria': 'containing', 'value': 'FAIL', 'format': cf_fail})
+            ws.conditional_format(3, 15, last_data_er - 1, 15, {'type': 'text', 'criteria': 'containing', 'value': 'WATCH', 'format': cf_watch})
+            ws.conditional_format(3, 15, last_data_er - 1, 15, {'type': 'text', 'criteria': 'containing', 'value': 'STAR', 'format': cf_star})
+
+            _finish_ws(ws, gt_r - 1, len(cols) - 1, widths=[20, 12, 10, 11, 11, 28, 9, 12, 14, 14, 10, 13, 15, 11, 24, 17])
+            return gt_er  # return Grand Total 1-based Excel row for Dashboard cross-sheet formulas!
+
+        # Reserve 0_Executive_Dashboard as FIRST tab
+        ws_dash = wb.add_worksheet('0_Executive_Dashboard')
+        writer.sheets['0_Executive_Dashboard'] = ws_dash
+
+        # Write Detail/Segment Sheets FIRST so we know exact Grand Total row numbers for live cross-sheet Dashboard formulas!
+        # 1. AI Optimization Ideas (with live SUM of Est. Monthly Saving)
+        ws_ai = wb.add_worksheet('1_AI_Optimization_Ideas')
+        writer.sheets['1_AI_Optimization_Ideas'] = ws_ai
+        ai_cols = ['Priority', 'Category', 'RO / Branch', 'Entity / Route', 'Current Metric', 'AI Recommendation', 'Est. Monthly Saving (₹)']
+        ws_ai.merge_range(0, 0, 0, len(ai_cols) - 1, "AI Fleet Optimization, Downsizing & Savings Recommendations", f_title)
+        ws_ai.merge_range(1, 0, 1, len(ai_cols) - 1, f"{scope_title}  |  {dur_label}  |  Sorted by highest monthly ₹ saving", f_sub)
+        ws_ai.set_row(0, 28); ws_ai.set_row(1, 20); ws_ai.set_row(2, 26)
+        for ci, cn in enumerate(ai_cols): ws_ai.write(2, ci, cn, f_hdr)
+        ai_gt_er = None
         if isinstance(df_ideas, pd.DataFrame) and not df_ideas.empty:
-            write_styled_sheet_to_excel(writer, df_ideas, '1_AI_Optimization_Ideas', sheet_type="generic", preserve_order=True)
-        if isinstance(nat_updown, pd.DataFrame) and not nat_updown.empty:
-            write_styled_sheet_to_excel(writer, nat_updown, '2_National_Pair_UP_DOWN', sheet_type="generic", preserve_order=True)
-        if isinstance(zon_updown, pd.DataFrame) and not zon_updown.empty:
-            write_styled_sheet_to_excel(writer, zon_updown, '3_Zonal_Pair_UP_DOWN', sheet_type="generic", preserve_order=True)
+            for ri, (_, r) in enumerate(df_ideas.iterrows(), start=3):
+                ws_ai.set_row(ri, 24)
+                ws_ai.write(ri, 0, str(r.get('Priority', '')), f_txt)
+                ws_ai.write(ri, 1, str(r.get('Category', '')), f_txt)
+                ws_ai.write(ri, 2, str(r.get('RO / Branch', '')), f_txt)
+                ws_ai.write(ri, 3, str(r.get('Entity / Route', '')), f_txt_l)
+                ws_ai.write(ri, 4, str(r.get('Current Metric', '')), f_txt_l)
+                ws_ai.write(ri, 5, str(r.get('AI Recommendation', '')), f_txt_l)
+                sv = r.get('Est. Monthly Saving', 0)
+                sv_num = float(re.sub(r'[^0-9.]', '', str(sv)) or 0) if isinstance(sv, str) else float(sv or 0)
+                ws_ai.write_number(ri, 6, sv_num, f_inr)
+            gt_i = 3 + len(df_ideas)
+            ai_gt_er = gt_i + 1
+            ws_ai.set_row(gt_i, 24)
+            ws_ai.write(gt_i, 0, "TOTAL SAVINGS", f_gt_txt)
+            for ci in range(1, 6): ws_ai.write(gt_i, ci, f"{len(df_ideas)} Ideas" if ci == 1 else "-", f_gt_txt)
+            ws_ai.write_formula(gt_i, 6, f"=SUM(G4:G{gt_i})", f_gt_inr)
+            ws_ai.conditional_format(3, 0, gt_i - 1, 0, {'type': 'text', 'criteria': 'containing', 'value': 'P1', 'format': cf_fail})
+            ws_ai.conditional_format(3, 0, gt_i - 1, 0, {'type': 'text', 'criteria': 'containing', 'value': 'P2', 'format': cf_watch})
+            _finish_ws(ws_ai, gt_i - 1, 6, widths=[18, 24, 24, 26, 36, 52, 20])
+        else:
+            ws_ai.write(3, 0, "No optimization alerts for this scope.", f_txt_l)
+            _finish_ws(ws_ai, 3, 6, widths=[18, 24, 24, 26, 36, 52, 20])
+
+        # 2 & 3. National & Zonal Live-Formula Pair UP/DOWN Sheets
+        nat_gt_er = _write_pair_updown_live_sheet('2_National_UP_DOWN', 'National LH — Capacity-wise UP / DOWN Utilization & CPK (Live Formulas)', nat_updown)
+        zon_gt_er = _write_pair_updown_live_sheet('3_Zonal_UP_DOWN', 'Zonal LH — Capacity-wise UP / DOWN Utilization & CPK (Live Formulas)', zon_updown)
+
+        # 4. Regional & Feeder Day-wise Live-Formula Sheet
+        ws_rf = wb.add_worksheet('4_Reg_Feeder_Daywise')
+        writer.sheets['4_Reg_Feeder_Daywise'] = ws_rf
+        rf_cols = [
+            'RO', 'Branch', 'Vehicle No', 'Type', 'Vendor', 'Contract', 'Divisor',
+            'Rate (₹)', 'Cap (kg)', 'Days', 'MCD Wt', 'OFD Wt', 'PickUp Wt', 'Co-Load Wt',
+            'Total Wt', 'Day Cap', 'MCD Util %', 'Overall Util %', 'Total Cost (₹)', 'CPK (₹/kg)', 'Status', 'Routes'
+        ]
+        ws_rf.merge_range(0, 0, 0, len(rf_cols) - 1, "Regional LH & Feeder — Day-wise Vehicle Utilization & CPK (Live Excel 2013 Formulas)", f_title)
+        ws_rf.merge_range(1, 0, 1, len(rf_cols) - 1, f"{dur_label}  |  Day Cap = Cap*Days · Total Wt = SUM(MCD:Co-Load) · Util% & CPK live", f_sub)
+        ws_rf.set_row(0, 28); ws_rf.set_row(1, 20); ws_rf.set_row(2, 28)
+        for ci, cn in enumerate(rf_cols): ws_rf.write(2, ci, cn, f_hdr)
+        rf_gt_er = None
         if isinstance(rf_daywise, pd.DataFrame) and not rf_daywise.empty:
-            rf_disp = rf_daywise.drop(columns=['_num_util', '_num_cost', '_num_rate', '_num_wt'], errors='ignore')
-            write_styled_sheet_to_excel(writer, rf_disp, '4_Reg_Feeder_Daywise', sheet_type="generic", preserve_order=True)
-        if isinstance(rf_trip_updown, pd.DataFrame) and not rf_trip_updown.empty:
-            write_styled_sheet_to_excel(writer, rf_trip_updown, '4B_Reg_Feeder_Tripwise', sheet_type="generic", preserve_order=True)
+            for ri, (_, r) in enumerate(rf_daywise.iterrows(), start=3):
+                er = ri + 1
+                ws_rf.set_row(ri, 20)
+                ws_rf.write(ri, 0, str(r.get('RO', '')), f_txt)
+                ws_rf.write(ri, 1, str(r.get('Branch', '')), f_txt_l)
+                ws_rf.write(ri, 2, str(r.get('Vehicle No', '')), f_txt)
+                ws_rf.write(ri, 3, str(r.get('Type', '')), f_txt)
+                ws_rf.write(ri, 4, str(r.get('Vendor', '')), f_txt_l)
+                ws_rf.write(ri, 5, str(r.get('Contract', '')), f_txt)
+                ws_rf.write(ri, 6, str(r.get('Divisor', '')), f_txt)
+                ws_rf.write_number(ri, 7, float(r.get('_num_rate', 0) or 0), f_inr)
+                ws_rf.write_number(ri, 8, float(r.get('Cap', 0) or 0), f_int)
+                ws_rf.write_number(ri, 9, float(r.get('Days', 0) or 0), f_int)
+                ws_rf.write_number(ri, 10, float(r.get('MCD Wt', 0) or 0), f_int)
+                ws_rf.write_number(ri, 11, float(r.get('OFD Wt', 0) or 0), f_int)
+                ws_rf.write_number(ri, 12, float(r.get('PickUp Wt', 0) or 0), f_int)
+                ws_rf.write_number(ri, 13, float(r.get('Co-Load Wt', 0) or 0), f_int)
+                ws_rf.write_formula(ri, 14, f"=SUM(K{er}:N{er})", f_int)
+                ws_rf.write_formula(ri, 15, f"=I{er}*J{er}", f_int)
+                ws_rf.write_formula(ri, 16, f"=IFERROR(K{er}/P{er},0)", f_pct)
+                ws_rf.write_formula(ri, 17, f"=IFERROR(O{er}/P{er},0)", f_pct)
+                ws_rf.write_number(ri, 18, float(r.get('_num_cost', 0) or 0), f_inr)
+                ws_rf.write_formula(ri, 19, f"=IFERROR(S{er}/O{er},0)", f_cpk)
+                ws_rf.write_formula(ri, 20, f'=IF(R{er}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(R{er}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_txt)
+                ws_rf.write(ri, 21, str(r.get('Routes', '')), f_txt_l)
+            gt_rf = 3 + len(rf_daywise)
+            rf_gt_er = gt_rf + 1
+            ws_rf.set_row(gt_rf, 24)
+            ws_rf.write(gt_rf, 0, "GRAND TOTAL", f_gt_txt)
+            for ci in range(1, 9): ws_rf.write(gt_rf, ci, f"{len(rf_daywise)} Vehs" if ci == 2 else "-", f_gt_txt)
+            for ci, col_l in [(9,'J'), (10,'K'), (11,'L'), (12,'M'), (13,'N'), (14,'O'), (15,'P')]:
+                ws_rf.write_formula(gt_rf, ci, f"=SUM({col_l}4:{col_l}{gt_rf})", f_gt_int)
+            ws_rf.write_formula(gt_rf, 16, f"=IFERROR(K{rf_gt_er}/P{rf_gt_er},0)", f_gt_pct)
+            ws_rf.write_formula(gt_rf, 17, f"=IFERROR(O{rf_gt_er}/P{rf_gt_er},0)", f_gt_pct)
+            ws_rf.write_formula(gt_rf, 18, f"=SUM(S4:S{gt_rf})", f_gt_inr)
+            ws_rf.write_formula(gt_rf, 19, f"=IFERROR(S{rf_gt_er}/O{rf_gt_er},0)", f_gt_cpk)
+            ws_rf.write_formula(gt_rf, 20, f'=IF(R{rf_gt_er}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(R{rf_gt_er}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_gt_txt)
+            ws_rf.write(gt_rf, 21, "-", f_gt_txt)
+
+            ws_rf.conditional_format(3, 17, gt_rf - 1, 17, {'type': 'cell', 'criteria': '<', 'value': u_dec, 'format': cf_fail})
+            ws_rf.conditional_format(3, 17, gt_rf - 1, 17, {'type': 'cell', 'criteria': 'between', 'minimum': u_dec, 'maximum': 0.7999, 'format': cf_watch})
+            ws_rf.conditional_format(3, 17, gt_rf - 1, 17, {'type': 'cell', 'criteria': '>=', 'value': 0.8, 'format': cf_star})
+            ws_rf.conditional_format(3, 19, gt_rf - 1, 19, {'type': 'cell', 'criteria': '>', 'value': c_lim, 'format': cf_fail})
+            ws_rf.conditional_format(3, 20, gt_rf - 1, 20, {'type': 'text', 'criteria': 'containing', 'value': 'FAIL', 'format': cf_fail})
+            ws_rf.conditional_format(3, 20, gt_rf - 1, 20, {'type': 'text', 'criteria': 'containing', 'value': 'WATCH', 'format': cf_watch})
+            ws_rf.conditional_format(3, 20, gt_rf - 1, 20, {'type': 'text', 'criteria': 'containing', 'value': 'STAR', 'format': cf_star})
+            _finish_ws(ws_rf, gt_rf - 1, len(rf_cols) - 1, widths=[10, 24, 15, 13, 22, 16, 9, 12, 10, 8, 11, 11, 11, 11, 12, 12, 11, 12, 14, 11, 16, 30])
+        else:
+            ws_rf.write(3, 0, "No Day-wise Regional/Feeder records in scope.", f_txt_l)
+            _finish_ws(ws_rf, 3, len(rf_cols) - 1, widths=[12]*len(rf_cols))
+
+        # 4B. Regional & Feeder Fixed Per Trip (Live-Formula Pair UP/DOWN)
+        rft_gt_er = _write_pair_updown_live_sheet('4B_RegFeed_Tripwise', 'Regional & Feeder (Fixed Per Trip) — Pair UP / DOWN (Live Formulas)', rf_trip_updown)
+
+        # 5. Rate Disparity & Audit Sheets (Real Numeric Values)
         if isinstance(df_rdb, pd.DataFrame) and not df_rdb.empty:
             write_styled_sheet_to_excel(writer, df_rdb, '5_Branch_Rate_Disparity', sheet_type="generic", preserve_order=True)
         if isinstance(df_rdr, pd.DataFrame) and not df_rdr.empty:
             write_styled_sheet_to_excel(writer, df_rdr, '5B_Route_Rate_Disparity', sheet_type="generic", preserve_order=True)
-        if not veh_master.empty:
+        if isinstance(df_aud, pd.DataFrame) and not df_aud.empty:
+            write_styled_sheet_to_excel(writer, df_aud, '5C_Data_Quality_Audit', sheet_type="generic", preserve_order=True)
+
+        # 6. RO All-Vehicles Master (Covers ALL categories for AVP RO inquiries!)
+        if isinstance(df_daily_scope, pd.DataFrame) and not df_daily_scope.empty:
+            vm = df_daily_scope.groupby(['Zone', 'RO_Clean', 'VendorBranch', 'Vehicle No', 'Primary_Type', 'ContractType'], dropna=False).agg(
+                Vendor=('VendorName', 'first'), Cap=('Cap', 'median'), Contract_Rate=('ContractCost', 'median'),
+                Active_Days=('Date', 'nunique'), MCD_Wt=('MCDWt', 'sum'), OFD_Wt=('OFDWt', 'sum'),
+                PickUp_Wt=('PickupWt', 'sum'), Coloader_Wt=('ColoaderWt', 'sum'),
+                Total_Wt=('TotalWt', 'sum'), Total_Cost=('TotalCost', 'sum'),
+                All_Types=('All_Types', 'first'), Routes=('Routes_Covered', 'first')
+            ).reset_index()
+            vm['Day_Cap'] = vm['Cap'] * vm['Active_Days']
+            vm['Util_Num'] = np.where(vm['Day_Cap'] > 0, vm['Total_Wt'] / vm['Day_Cap'], 0.0)
+            vm['CPK_Num'] = np.where(vm['Total_Wt'] > 0, vm['Total_Cost'] / vm['Total_Wt'], 0.0)
+            vm = vm.sort_values(by=['RO_Clean', 'Primary_Type', 'Util_Num'], ascending=[True, True, True])
+            veh_master = pd.DataFrame({
+                'RO': vm['RO_Clean'], 'Branch': vm['VendorBranch'], 'Vehicle No': vm['Vehicle No'],
+                'Category': vm['Primary_Type'], 'All Duties': vm['All_Types'], 'Vendor': vm['Vendor'],
+                'Contract': vm['ContractType'], 'Rate': vm['Contract_Rate'].round(0),
+                'Cap': vm['Cap'].round(0).astype(int), 'Active Days': vm['Active_Days'].astype(int),
+                'MCD Wt': vm['MCD_Wt'].round(0).astype(int), 'OFD Wt': vm['OFD_Wt'].round(0).astype(int),
+                'PickUp Wt': vm['PickUp_Wt'].round(0).astype(int), 'Co-Load Wt': vm['Coloader_Wt'].round(0).astype(int),
+                'Total Wt': vm['Total_Wt'].round(0).astype(int),
+                'Overall Util %': vm['Util_Num'].apply(lambda x: f"{x*100:.1f}%"),
+                'Total Cost': vm['Total_Cost'].apply(lambda x: f"₹{x:,.0f}"),
+                'Overall CPK': vm['CPK_Num'].apply(lambda x: f"₹{x:.2f}"),
+                'Routes': vm['Routes']
+            })
             write_styled_sheet_to_excel(writer, veh_master, '6_RO_All_Vehicles_Master', sheet_type="generic", preserve_order=True)
-        if not df_raw_clean.empty:
+
+        # 7. Matched Raw Data (Clean, Zero Junk Columns)
+        raw_clean_cols = [
+            'Date', 'RefNumber', 'Final_Type', 'Origin_RO', 'Dest_RO', 'Origin', 'Dest',
+            'Route_Pair', 'Direction', 'Final_Route', 'VendorName', 'Vehicle No',
+            'ContractType', 'VehicleUsageType', 'Cap', 'Wt', 'Cost'
+        ]
+        if isinstance(df_raw_scope, pd.DataFrame) and not df_raw_scope.empty:
+            df_raw_clean = df_raw_scope[[c for c in raw_clean_cols if c in df_raw_scope.columns]].rename(columns={
+                'Final_Type': 'Category', 'Origin_RO': 'Origin RO', 'Dest_RO': 'Dest RO',
+                'Route_Pair': 'Route Pair', 'Final_Route': 'Route', 'Cap': 'Capacity', 'Wt': 'Weight', 'Cost': 'Trip Cost'
+            }).reset_index(drop=True)
             write_styled_sheet_to_excel(writer, df_raw_clean, '7_Matched_Raw_Data', sheet_type="generic", preserve_order=True)
+
+        # ---------------------------------------------------------
+        # POPULATE 0_Executive_Dashboard WITH LIVE CROSS-SHEET FORMULAS + NATIVE EXCEL 2013 CHART
+        # ---------------------------------------------------------
+        ws_dash.merge_range(0, 0, 0, 7, f"TRACKON NETWORK UTILIZATION & COST OPTIMIZATION — EXECUTIVE DASHBOARD", f_title)
+        ws_dash.merge_range(1, 0, 1, 7, f"{scope_title}  |  Period: {dur_label}  |  Excel 2013 Live-Formula Workbook (Cutoff: {int(util_cutoff_pct)}%)", f_sub)
+        ws_dash.set_row(0, 30); ws_dash.set_row(1, 20)
+
+        # Section 1: Segment-wise LIVE Formula Rollup Table (Rows 3-8)
+        ws_dash.merge_range(3, 0, 3, 7, "1. LIVE SEGMENT-WISE PERFORMANCE SCORECARD (Auto-Linked to Detail Tabs)", f_sec)
+        ws_dash.set_row(3, 22)
+        d_hdrs = ['Segment', 'Trips / Days', 'Carried Wt (kg)', 'Total Cap (kg)', 'Weighted Util %', 'Total Cost (₹)', 'Weighted CPK', 'Status']
+        ws_dash.set_row(4, 26)
+        for ci, h in enumerate(d_hdrs): ws_dash.write(4, ci, h, f_hdr)
+
+        seg_links = [
+            ('National LH (Trip-wise)', '2_National_UP_DOWN', nat_gt_er, 'G', 'I', 'J', 'M'),
+            ('Zonal LH (Trip-wise)', '3_Zonal_UP_DOWN', zon_gt_er, 'G', 'I', 'J', 'M'),
+            ('Regional & Feeder (Day-wise)', '4_Reg_Feeder_Daywise', rf_gt_er, 'J', 'O', 'P', 'S'),
+            ('Regional & Feeder (Trip-wise)', '4B_RegFeed_Tripwise', rft_gt_er, 'G', 'I', 'J', 'M'),
+        ]
+        r_d = 5
+        for s_lbl, sh_n, gt_r_num, c_trp, c_wt, c_cap, c_cost in seg_links:
+            er = r_d + 1
+            ws_dash.set_row(r_d, 22)
+            ws_dash.write(r_d, 0, s_lbl, f_txt_l)
+            if gt_r_num:
+                ws_dash.write_formula(r_d, 1, f"='{sh_n}'!{c_trp}{gt_r_num}", f_int)
+                ws_dash.write_formula(r_d, 2, f"='{sh_n}'!{c_wt}{gt_r_num}", f_int)
+                ws_dash.write_formula(r_d, 3, f"='{sh_n}'!{c_cap}{gt_r_num}", f_int)
+                ws_dash.write_formula(r_d, 4, f"=IFERROR(C{er}/D{er},0)", f_pct)
+                ws_dash.write_formula(r_d, 5, f"='{sh_n}'!{c_cost}{gt_r_num}", f_inr)
+                ws_dash.write_formula(r_d, 6, f"=IFERROR(F{er}/C{er},0)", f_cpk)
+                ws_dash.write_formula(r_d, 7, f'=IF(E{er}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(E{er}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_txt)
+            else:
+                for ci, fm in [(1, f_int), (2, f_int), (3, f_int), (4, f_pct), (5, f_inr), (6, f_cpk)]:
+                    ws_dash.write_number(r_d, ci, 0, fm)
+                ws_dash.write(r_d, 7, "-", f_txt)
+            r_d += 1
+
+        # Grand Total of all 4 segments
+        ws_dash.set_row(r_d, 24)
+        er_gt = r_d + 1
+        ws_dash.write(r_d, 0, "NETWORK TOTAL (ALL SEGMENTS)", f_gt_txt)
+        ws_dash.write_formula(r_d, 1, "=SUM(B6:B9)", f_gt_int)
+        ws_dash.write_formula(r_d, 2, "=SUM(C6:C9)", f_gt_int)
+        ws_dash.write_formula(r_d, 3, "=SUM(D6:D9)", f_gt_int)
+        ws_dash.write_formula(r_d, 4, f"=IFERROR(C{er_gt}/D{er_gt},0)", f_gt_pct)
+        ws_dash.write_formula(r_d, 5, "=SUM(F6:F9)", f_gt_inr)
+        ws_dash.write_formula(r_d, 6, f"=IFERROR(F{er_gt}/C{er_gt},0)", f_gt_cpk)
+        ws_dash.write_formula(r_d, 7, f'=IF(E{er_gt}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(E{er_gt}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_gt_txt)
+
+        ws_dash.conditional_format(5, 4, 8, 4, {'type': 'cell', 'criteria': '<', 'value': u_dec, 'format': cf_fail})
+        ws_dash.conditional_format(5, 4, 8, 4, {'type': 'cell', 'criteria': 'between', 'minimum': u_dec, 'maximum': 0.7999, 'format': cf_watch})
+        ws_dash.conditional_format(5, 4, 8, 4, {'type': 'cell', 'criteria': '>=', 'value': 0.8, 'format': cf_star})
+        ws_dash.conditional_format(5, 7, 8, 7, {'type': 'text', 'criteria': 'containing', 'value': 'FAIL', 'format': cf_fail})
+        ws_dash.conditional_format(5, 7, 8, 7, {'type': 'text', 'criteria': 'containing', 'value': 'STAR', 'format': cf_star})
+
+        # Section 2: Route Health Classification + AI Saving Potential (Rows 11-18)
+        ws_dash.merge_range(11, 0, 11, 3, "2. ROUTE HEALTH SCORECARD (Standard Cutoff: 60%)", f_sec)
+        ws_dash.merge_range(11, 4, 11, 7, "3. EXECUTIVE MANAGEMENT NOTES & METHODOLOGY", f_sec)
+        ws_dash.set_row(11, 22)
+
+        health_rows = [
+            ("National LH — Round-Trip Underutilized (Both <60%)", nat_stats.get('both_under', 0), cf_fail),
+            ("National LH — One-Side Utilized (Backhaul Gap)", nat_stats.get('one_side_util', 0), cf_watch),
+            ("National LH — Star Achievements (≥80% Both Sides)", nat_stats.get('star_achievements', 0), cf_star),
+            ("Zonal LH — Round-Trip Underutilized (Both <60%)", zon_stats.get('both_under', 0), cf_fail),
+            ("Zonal LH — One-Side Utilized (Backhaul Gap)", zon_stats.get('one_side_util', 0), cf_watch),
+            ("Zonal LH — Star Achievements (≥80% Both Sides)", zon_stats.get('star_achievements', 0), cf_star),
+        ]
+        for idx_h, (hlbl, hval, hfmt) in enumerate(health_rows, start=12):
+            ws_dash.set_row(idx_h, 21)
+            ws_dash.merge_range(idx_h, 0, idx_h, 2, hlbl, f_txt_l)
+            ws_dash.write_number(idx_h, 3, int(hval), hfmt)
+
+        # Live AI Savings Link on Row 18
+        ws_dash.set_row(18, 24)
+        ws_dash.merge_range(18, 0, 18, 2, "Total AI Identified Monthly Saving Potential (₹)", f_gt_txt)
+        if ai_gt_er:
+            ws_dash.write_formula(18, 3, f"='1_AI_Optimization_Ideas'!G{ai_gt_er}", f_gt_inr)
+        else:
+            ws_dash.write_number(18, 3, 0, f_gt_inr)
+
+        notes_mgmt = [
+            "1. National & Zonal LH: Trip-wise Util% grouped by Route Pair -> Capacity -> UP/DOWN -> Pair Total.",
+            "2. Regional & Feeder: Hybrid — Fixed/Trip is trip-wise; Fixed/Month & Day is Day-wise (MCD+OFD+PickUp+Col).",
+            f"3. Monthly Cost Proration: /26 working days default; /30 days for {', '.join(load_cpk_overrides().get('divisor_30_vehicles', [])) or 'None'}.",
+            "4. Red Cells = Failures (<60% Util or >₹5 CPK); Amber = Watch (60-80%); Green = Star Achievements (>=80%).",
+            "5. Fully Dynamic Excel 2013: Edit any Capacity/Trips/Cost cell on detail sheets — all KPIs recalculate live!",
+            "6. See '1_AI_Optimization_Ideas' for truck downsizing (e.g. 22ft->17ft/19ft), removals & branch rate parity.",
+            f"7. Generated IST: {get_ist_now():%d-%b-%Y %I:%M %p} · Trackon Command Center"
+        ]
+        for idx_n, ntxt in enumerate(notes_mgmt, start=12):
+            ws_dash.merge_range(idx_n, 4, idx_n, 7, ntxt, f_txt_l)
+
+        # Native Excel 2013 Column Chart (Segment Utilization %) placed cleanly at Row 20
+        chart = wb.add_chart({'type': 'column'})
+        chart.add_series({
+            'name': 'Weighted Utilization %',
+            'categories': ['0_Executive_Dashboard', 5, 0, 8, 0],
+            'values': ['0_Executive_Dashboard', 5, 4, 8, 4],
+            'fill': {'color': '#1B365D'},
+            'data_labels': {'value': True, 'num_format': '0.0%'}
+        })
+        chart.set_title({'name': 'Segment-wise Weighted Utilization %'})
+        chart.set_y_axis({'min': 0, 'num_format': '0%'})
+        chart.set_legend({'none': True})
+        chart.set_size({'width': 560, 'height': 270})
+        ws_dash.insert_chart('A21', chart)
+
+        # Second Native Excel 2013 Bar Chart (Segment Total Cost ₹) placed at E21
+        chart2 = wb.add_chart({'type': 'bar'})
+        chart2.add_series({
+            'name': 'Total Cost (₹)',
+            'categories': ['0_Executive_Dashboard', 5, 0, 8, 0],
+            'values': ['0_Executive_Dashboard', 5, 5, 8, 5],
+            'fill': {'color': '#0F766E'},
+            'data_labels': {'value': True, 'num_format': '₹#,##0'}
+        })
+        chart2.set_title({'name': 'Segment-wise Total Cost (₹)'})
+        chart2.set_legend({'none': True})
+        chart2.set_size({'width': 560, 'height': 270})
+        ws_dash.insert_chart('E21', chart2)
+
+        ws_dash.freeze_panes(5, 0)
+        ws_dash.set_landscape()
+        ws_dash.fit_to_pages(1, 1)
+        for ci, w in enumerate([30, 14, 16, 16, 15, 16, 14, 18]):
+            ws_dash.set_column(ci, ci, w)
+
     return buf.getvalue()
 
 
 def render_network_utilization_v2(data):
-    """Dynamic 6-Tab Network Utilization, AI Fleet Optimization Advisor & AVP Report Hub."""
+    """Dynamic 6-Tab Network Utilization, Instant Call-Answer Engine, Failures/Achievements Spotlight & Excel 2013 Hub."""
     st.markdown("## 💰 Network Utilization, CPK & AI Fleet Optimization Hub")
-    st.caption("Route-only lookup (`RefNumber` ↔ `MasterCDNo`) · National & Zonal Pair→Capacity→UP/DOWN · Regional & Feeder Day-wise Hybrid · Live Overrides & AVP Excel Pack")
+    st.caption("⚡ Instant Call-Answer Engine · 🔴 Failures vs 🏆 Achievements Spotlight · National & Zonal Pair→Cap→UP/DOWN · Regional/Feeder Day-wise Hybrid · Excel 2013 Live-Formula Export")
 
     df_raw_orig = data.get('CPK_Raw_Data', pd.DataFrame()).copy()
     df_daily_orig = data.get('CPK_Daily_Data', pd.DataFrame()).copy()
@@ -8677,7 +8903,6 @@ def render_network_utilization_v2(data):
         if not df_daily_orig.empty:
             df_daily_orig = filter_df_by_user_vendors(df_daily_orig, 'VendorName')
 
-    # Apply Live 30-day Divisors & Live Cost/Capacity Corrections immediately!
     cpk_ovr = load_cpk_overrides()
     df_raw_all, df_daily_all = apply_live_cpk_overrides(df_raw_orig, df_daily_orig, cpk_ovr)
 
@@ -8685,7 +8910,7 @@ def render_network_utilization_v2(data):
     util_cut = float(sla.get("util_red_pct", 60.0))
     cpk_cut = float(sla.get("high_cpk", 5.0))
 
-    # --- GLOBAL STICKY CASCADING FILTER STRIP (Origin, Dest, Origin RO, Dest RO, Zone, Pair, Cap, Vendor, Usage) ---
+    # --- GLOBAL STICKY CASCADING FILTER STRIP ---
     parsed_r_dates = pd.to_datetime(df_raw_all['Date'], dayfirst=True, errors='coerce')
     valid_r_dates = parsed_r_dates.dropna()
     min_d = valid_r_dates.min().date() if not valid_r_dates.empty else get_ist_now().date()
@@ -8696,12 +8921,10 @@ def render_network_utilization_v2(data):
     st.session_state[ed_k] = _clamp_date(st.session_state.get(ed_k, max_d), min_d, max_d)
 
     def _set_nu2_dt(s_v, e_v):
-        st.session_state[sd_k] = s_v
-        st.session_state[ed_k] = e_v
+        st.session_state[sd_k] = s_v; st.session_state[ed_k] = e_v
 
     def _reset_nu2():
-        st.session_state[sd_k] = min_d
-        st.session_state[ed_k] = max_d
+        st.session_state[sd_k] = min_d; st.session_state[ed_k] = max_d
         for fk in ("nu2_zone", "nu2_oro", "nu2_dro", "nu2_orig", "nu2_dest", "nu2_pair", "nu2_cap", "nu2_ven", "nu2_use"):
             st.session_state[fk] = "ALL"
         st.session_state["nu2_search"] = ""
@@ -8720,8 +8943,7 @@ def render_network_utilization_v2(data):
         start_d = d5.date_input("Start", min_value=min_d, max_value=max_d, key=sd_k, label_visibility="collapsed")
         end_d = d6.date_input("End", min_value=min_d, max_value=max_d, key=ed_k, label_visibility="collapsed")
         d7.button("↺ Reset", key="nu2_brst", use_container_width=True, on_click=_reset_nu2)
-        if start_d > end_d:
-            start_d, end_d = end_d, start_d
+        if start_d > end_d: start_d, end_d = end_d, start_d
 
         dur_lbl = f"{start_d:%d %b %Y} to {end_d:%d %b %Y} ({(end_d - start_d).days + 1}d)"
         df_rf = df_raw_all[parsed_r_dates.dt.date.between(start_d, end_d)].copy()
@@ -8730,13 +8952,11 @@ def render_network_utilization_v2(data):
             _pd_d = pd.to_datetime(df_df['Date'], dayfirst=True, errors='coerce')
             df_df = df_df[_pd_d.dt.date.between(start_d, end_d)].copy()
 
-        # Row 2: Zone | Origin RO | Dest RO | Origin | Destination
         r2_1, r2_2, r2_3, r2_4, r2_5 = st.columns(5)
         def _sel(col_w, label, series, skey):
             vals = sorted({str(x).strip() for x in series.dropna().tolist() if str(x).strip() and str(x).strip().upper() not in ('NAN', 'NONE')})
             opts = ["ALL"] + vals
-            if st.session_state.get(skey) not in opts:
-                st.session_state[skey] = "ALL"
+            if st.session_state.get(skey) not in opts: st.session_state[skey] = "ALL"
             return col_w.selectbox(label, opts, key=skey)
 
         sel_zone = _sel(r2_1, "Zone:", df_rf['Zone'], "nu2_zone")
@@ -8750,26 +8970,20 @@ def render_network_utilization_v2(data):
             if not df_df.empty: df_df = df_df[df_df['RO_Clean'].eq(sel_oro)]
 
         sel_dro = _sel(r2_3, "Dest RO:", df_rf['Dest_RO'], "nu2_dro")
-        if sel_dro != "ALL":
-            df_rf = df_rf[df_rf['Dest_RO'].eq(sel_dro)]
+        if sel_dro != "ALL": df_rf = df_rf[df_rf['Dest_RO'].eq(sel_dro)]
 
         sel_orig = _sel(r2_4, "Origin Branch:", df_rf['Origin'], "nu2_orig")
-        if sel_orig != "ALL":
-            df_rf = df_rf[df_rf['Origin'].eq(sel_orig)]
+        if sel_orig != "ALL": df_rf = df_rf[df_rf['Origin'].eq(sel_orig)]
 
         sel_dest = _sel(r2_5, "Dest Branch:", df_rf['Dest'], "nu2_dest")
-        if sel_dest != "ALL":
-            df_rf = df_rf[df_rf['Dest'].eq(sel_dest)]
+        if sel_dest != "ALL": df_rf = df_rf[df_rf['Dest'].eq(sel_dest)]
 
-        # Row 3: Route Pair | Capacity | Vendor | Usage Type | Quick Search
         r3_1, r3_2, r3_3, r3_4, r3_5 = st.columns([1.15, 0.85, 1.25, 0.85, 1.25])
         sel_pair = _sel(r3_1, "Route Pair:", df_rf['Route_Pair'], "nu2_pair")
-        if sel_pair != "ALL":
-            df_rf = df_rf[df_rf['Route_Pair'].eq(sel_pair)]
+        if sel_pair != "ALL": df_rf = df_rf[df_rf['Route_Pair'].eq(sel_pair)]
 
         cap_opts = ["ALL"] + [str(int(c)) for c in sorted(df_rf['Cap'].dropna().unique().tolist()) if c > 0]
-        if st.session_state.get("nu2_cap") not in cap_opts:
-            st.session_state["nu2_cap"] = "ALL"
+        if st.session_state.get("nu2_cap") not in cap_opts: st.session_state["nu2_cap"] = "ALL"
         sel_cap = r3_2.selectbox("Capacity (kg):", cap_opts, key="nu2_cap")
         if sel_cap != "ALL":
             df_rf = df_rf[df_rf['Cap'].round(0).astype(int).eq(int(sel_cap))]
@@ -8781,11 +8995,9 @@ def render_network_utilization_v2(data):
             if not df_df.empty: df_df = df_df[df_df['VendorName'].eq(sel_ven)]
 
         use_opts = ["ALL"] + sorted({str(x).strip() for x in df_rf.get('VehicleUsageType', pd.Series(dtype=str)).dropna().tolist() if str(x).strip()})
-        if st.session_state.get("nu2_use") not in use_opts:
-            st.session_state["nu2_use"] = "ALL"
+        if st.session_state.get("nu2_use") not in use_opts: st.session_state["nu2_use"] = "ALL"
         sel_use = r3_4.selectbox("Usage Type:", use_opts, key="nu2_use")
-        if sel_use != "ALL":
-            df_rf = df_rf[df_rf['VehicleUsageType'].eq(sel_use)]
+        if sel_use != "ALL": df_rf = df_rf[df_rf['VehicleUsageType'].eq(sel_use)]
 
         q_txt = r3_5.text_input("🔍 Quick Search:", placeholder="Route, Vehicle, RefNo...", key="nu2_search").strip()
         if q_txt:
@@ -8795,7 +9007,7 @@ def render_network_utilization_v2(data):
                 m_qd = df_df.astype(str).apply(lambda c: c.str.contains(q_txt, case=False, regex=False, na=False)).any(axis=1)
                 df_df = df_df[m_qd]
 
-    # Pre-compute segment views once for active scope
+    # Pre-compute segment views
     nat_raw = df_rf[df_rf['Final_Type'].eq('National LH')].copy()
     zon_raw = df_rf[df_rf['Final_Type'].eq('Zonal LH')].copy()
     rf_trip_raw = df_rf[df_rf['Final_Type'].isin(['Regional LH', 'Feeder']) & df_rf['ContractType'].str.upper().eq('FIXED PER TRIP')].copy()
@@ -8804,10 +9016,11 @@ def render_network_utilization_v2(data):
     zon_pair_sum, zon_updown, zon_stats = build_pair_updown_display_table(zon_raw, util_cut)
     rf_trip_sum, rf_trip_updown, rf_trip_stats = build_pair_updown_display_table(rf_trip_raw, util_cut)
     rf_daywise = build_regional_feeder_daywise_table(df_df, df_rf, util_cut)
-
     df_ideas, df_rdb, df_rdr, df_aud = build_dynamic_ai_fleet_optimizer(df_rf, df_df, util_cut, cpk_cut)
 
-    # Active overrides banner
+    def _clean_ui_ud(df_u):
+        return df_u.drop(columns=['_is_sub', '_num_util', '_num_cpk', '_num_cost', '_num_wt'], errors='ignore') if not df_u.empty else df_u
+
     if cpk_ovr.get("corrections") or cpk_ovr.get("divisor_30_vehicles"):
         st.caption(
             f"⚙️ Active Live Rules: **30-Day Vehicles:** `{', '.join(cpk_ovr.get('divisor_30_vehicles', [])) or 'None'}`  ·  "
@@ -8815,18 +9028,18 @@ def render_network_utilization_v2(data):
             f"**Util Cutoff:** `{int(util_cut)}%`  ·  **Period:** `{dur_lbl}`"
         )
 
-    # --- 6 CLEAN EXECUTIVE TABS ---
+    # --- 6 EXECUTIVE TABS ---
     t_ov, t_nat, t_zon, t_rf, t_flg, t_avp = st.tabs([
-        "📊 1. Executive Overview & AI Strategy",
+        "⚡ 1. Call-Answer, Failures & Achievements",
         f"🚛 2. National LH ({len(nat_raw):,})",
         f"🛣️ 3. Zonal LH ({len(zon_raw):,})",
         f"🔄 4. Regional & Feeder ({len(rf_daywise) + len(rf_trip_sum):,})",
         f"🚩 5. Rate Disparity & Audit ({len(df_rdb) + len(df_rdr) + len(df_aud):,})",
-        "👔 6. AVP / RO Report Pack & Corrections"
+        "👔 6. AVP Excel 2013 Pack & Corrections"
     ])
 
     # =========================================================
-    # TAB 1: EXECUTIVE OVERVIEW, HEALTH SCORECARD & AI STRATEGY
+    # TAB 1: INSTANT CALL-ANSWER ENGINE + FAILURES VS ACHIEVEMENTS + AI STRATEGY
     # =========================================================
     with t_ov:
         nz_comb = df_rf[df_rf['Final_Type'].isin(['National LH', 'Zonal LH'])]
@@ -8839,113 +9052,214 @@ def render_network_utilization_v2(data):
 
         tot_rt_under = nat_stats['both_under'] + zon_stats['both_under']
         tot_one_side = nat_stats['one_side_util'] + zon_stats['one_side_util']
-        tot_both_ok = nat_stats['both_healthy'] + zon_stats['both_healthy']
-        tot_ai_sav = float(df_ideas['Est. Monthly Saving'].astype(str).str.replace(r'[^0-9.]', '', regex=True).replace('', '0').astype(float).sum()) if not df_ideas.empty else 0.0
+        tot_stars = nat_stats['star_achievements'] + zon_stats['star_achievements']
+        tot_ai_sav = float(pd.to_numeric(df_ideas['Est. Monthly Saving'], errors='coerce').fillna(0).sum()) if not df_ideas.empty else 0.0
 
         k1, k2, k3, k4, k5, k6 = st.columns(6)
         k1.metric("Nat + Zon Trips", f"{nz_trips:,}")
         k2.metric("Carried Weight", f"{nz_wt/1000:,.1f} MT")
         k3.metric("Total Cost", f"₹{nz_cost/1e7:.2f} Cr")
-        k4.metric("Weighted Util %", f"{nz_util:.1f}%", delta=f"Target ≥{int(util_cut)}%", delta_color="off")
+        k4.metric("Weighted Util %", f"{nz_util:.1f}%", delta="🏆 STAR" if nz_util >= 80 else ("🔴 FAIL" if nz_util < util_cut else "🟡 WATCH"), delta_color="off")
         k5.metric("Weighted CPK", f"₹{nz_cpk:.2f}/kg")
         k6.metric("🤖 AI Saving Scope", f"₹{tot_ai_sav/1e5:.1f} L/mo", delta=f"{len(df_ideas)} ideas", delta_color="off")
 
-        # Power BI Utilization Health Scorecard (Round-Trip Underutilized vs One-Side Utilized vs Healthy)
-        st.markdown(f"### 🎯 Route Utilization Health Scorecard (Standard Cutoff: `{int(util_cut)}%`)")
-        hc1, hc2, hc3, hc4 = st.columns(4)
-        hc1.error(f"**🔴 Round-Trip Underutilized (Both <{int(util_cut)}%)**\n\n# {tot_rt_under}\nNational: **{nat_stats['both_under']}** · Zonal: **{zon_stats['both_under']}**")
-        hc2.warning(f"**🟠 One-Side Utilized (Backhaul Gap)**\n\n# {tot_one_side}\nNational: **{nat_stats['one_side_util']}** · Zonal: **{zon_stats['one_side_util']}**")
-        hc3.success(f"**🟢 Both Sides Healthy (≥{int(util_cut)}%)**\n\n# {tot_both_ok}\nNational: **{nat_stats['both_healthy']}** · Zonal: **{zon_stats['both_healthy']}**")
-        hc4.info(f"**🔄 Regional / Feeder <{int(util_cut)}% (All-Work)**\n\n# {int((rf_daywise['_num_util'] < util_cut).sum()) if not rf_daywise.empty else 0}\nOut of **{len(rf_daywise)}** Day-wise Vehicles")
+        # --- ⚡ INSTANT CALL-ANSWER BOX ("Koi Bhi Sawal — 2 Second Mein Jawab") ---
+        with st.expander("⚡ Instant Call-Answer Engine (CEO / AVP / RO / Vendor Call par 2-Second Jawab)", expanded=True):
+            qa1, qa2, qa3 = st.columns([1.0, 1.6, 1.4])
+            qa_mode = qa1.selectbox("Lookup By:", ["Route Pair", "Origin RO", "Vendor", "Vehicle No"], key="nu3_qa_mode")
+            if qa_mode == "Route Pair":
+                qa_opts = ["-- Pick Route Pair --"] + sorted(df_rf['Route_Pair'].dropna().unique().tolist())
+            elif qa_mode == "Origin RO":
+                qa_opts = ["-- Pick Origin RO --"] + sorted(df_rf['Origin_RO'].dropna().unique().tolist())
+            elif qa_mode == "Vendor":
+                qa_opts = ["-- Pick Vendor --"] + sorted(df_rf['VendorName'].dropna().unique().tolist())
+            else:
+                qa_opts = ["-- Pick Vehicle No --"] + sorted(set(df_rf['Vehicle No'].dropna().tolist()) | (set(df_df['Vehicle No'].dropna().tolist()) if not df_df.empty else set()))
 
-        # Dynamic AI Fleet Optimization & Downsizing Advisor
+            qa_pick = qa2.selectbox(f"Select {qa_mode}:", qa_opts, key="nu3_qa_pick")
+            qa_preset = qa3.selectbox(
+                "Or Quick Executive Question:",
+                [
+                    "-- Select Quick Question --",
+                    "🔴 Top 10 Failures (<60% Util)",
+                    "🏆 Top 10 Star Achievements (≥80% Util)",
+                    "⚖️ Worst Backhaul Imbalance Gaps",
+                    "💸 Highest CPK Routes (>₹5/kg)",
+                    "🏢 RO Ranking (Worst to Best)",
+                    "🚚 Vendor Ranking (Worst to Best)"
+                ],
+                key="nu3_qa_preset"
+            )
+
+            if not qa_pick.startswith("--"):
+                if qa_mode == "Route Pair":
+                    q_sub = df_rf[df_rf['Route_Pair'].eq(qa_pick)]
+                elif qa_mode == "Origin RO":
+                    q_sub = df_rf[df_rf['Origin_RO'].eq(qa_pick)]
+                elif qa_mode == "Vendor":
+                    q_sub = df_rf[df_rf['VendorName'].eq(qa_pick)]
+                else:
+                    q_sub = df_rf[df_rf['Vehicle No'].eq(qa_pick)]
+
+                q_trp = int(q_sub['Trips'].sum()) if not q_sub.empty else 0
+                q_wt = float(q_sub['Wt'].sum()) if not q_sub.empty else 0.0
+                q_cap = float((q_sub['Cap'] * q_sub['Trips']).sum()) if not q_sub.empty else 0.0
+                q_cost = float(q_sub['Cost'].sum()) if not q_sub.empty else 0.0
+                q_u = (q_wt / q_cap * 100.0) if q_cap > 0 else 0.0
+                q_cpk = (q_cost / q_wt) if q_wt > 0 else 0.0
+                verdict = "🏆 STAR ACHIEVEMENT" if q_u >= 80 else ("🔴 FAILURE (<60%)" if q_u < util_cut else "🟡 WATCH (60-80%)")
+
+                # Check matching AI idea for instant spoken action
+                _ai_hit = df_ideas[df_ideas.astype(str).apply(lambda c: c.str.contains(qa_pick, case=False, regex=False, na=False)).any(axis=1)] if not df_ideas.empty else pd.DataFrame()
+                _ai_line = f" | 💡 **Action:** {_ai_hit.iloc[0]['AI Recommendation']} (Saving: ₹{float(_ai_hit.iloc[0]['Est. Monthly Saving']):,.0f}/mo)" if not _ai_hit.empty else ""
+
+                msg_txt = f"**{qa_mode}: `{qa_pick}`** → **{verdict}** · Trips: **{q_trp:,}** · Weight: **{q_wt/1000:,.1f} MT** · Util: **{q_u:.1f}%** · Cost: **₹{q_cost:,.0f}** · CPK: **₹{q_cpk:.2f}/kg**{_ai_line}"
+                if q_u < util_cut: st.error(msg_txt)
+                elif q_u >= 80: st.success(msg_txt)
+                else: st.warning(msg_txt)
+
+                if not q_sub.empty:
+                    _, q_ud, _ = build_pair_updown_display_table(q_sub, util_cut)
+                    if not q_ud.empty:
+                        render_centered_html_table(_clean_ui_ud(q_ud), height=260, show_grand_total=False)
+
+            elif not qa_preset.startswith("--"):
+                comb_pairs = pd.concat([
+                    nat_pair_sum.assign(Segment='National LH') if not nat_pair_sum.empty else pd.DataFrame(),
+                    zon_pair_sum.assign(Segment='Zonal LH') if not zon_pair_sum.empty else pd.DataFrame()
+                ], ignore_index=True)
+                if qa_preset == "🔴 Top 10 Failures (<60% Util)" and not comb_pairs.empty:
+                    show_q = comb_pairs[comb_pairs['_sort_u'] < util_cut].sort_values('_sort_u').head(10).drop(columns=['_sort_u', '_num_cpk', '_num_cost'], errors='ignore')
+                    render_centered_html_table(show_q, height=300, show_grand_total=False)
+                elif qa_preset == "🏆 Top 10 Star Achievements (≥80% Util)" and not comb_pairs.empty:
+                    show_q = comb_pairs[comb_pairs['_sort_u'] >= 80.0].sort_values('_sort_u', ascending=False).head(10).drop(columns=['_sort_u', '_num_cpk', '_num_cost'], errors='ignore')
+                    render_centered_html_table(show_q, height=300, show_grand_total=False)
+                elif qa_preset == "⚖️ Worst Backhaul Imbalance Gaps":
+                    bh_all = nat_stats.get('backhaul_alerts', []) + zon_stats.get('backhaul_alerts', [])
+                    render_centered_html_table(pd.DataFrame(bh_all).sort_values('Empty Capacity (MT)', ascending=False).head(12) if bh_all else pd.DataFrame(), height=300, show_grand_total=False)
+                elif qa_preset == "💸 Highest CPK Routes (>₹5/kg)" and not comb_pairs.empty:
+                    show_q = comb_pairs[comb_pairs['_num_cpk'] > cpk_cut].sort_values('_num_cpk', ascending=False).head(12).drop(columns=['_sort_u', '_num_cpk', '_num_cost'], errors='ignore')
+                    render_centered_html_table(show_q, height=300, show_grand_total=False)
+                elif qa_preset == "🏢 RO Ranking (Worst to Best)" and not nz_comb.empty:
+                    rg_q = nz_comb.groupby('Origin_RO').agg(Trips=('Trips','sum'), Wt=('Wt','sum'), Cap=('Cap', lambda s: float((s*nz_comb.loc[s.index,'Trips']).sum())), Cost=('Cost','sum')).reset_index()
+                    rg_q['Util_N'] = np.where(rg_q['Cap']>0, rg_q['Wt']/rg_q['Cap']*100, 0)
+                    rg_q['CPK_N'] = np.where(rg_q['Wt']>0, rg_q['Cost']/rg_q['Wt'], 0)
+                    rg_q = rg_q.sort_values('Util_N')
+                    render_centered_html_table(pd.DataFrame({
+                        'Origin RO': rg_q['Origin_RO'], 'Trips': rg_q['Trips'].astype(int), 'Wt (MT)': (rg_q['Wt']/1000).round(1),
+                        'Util %': rg_q['Util_N'].apply(lambda x: f"{x:.1f}%"), 'Total Cost': rg_q['Cost'].apply(lambda x: f"₹{x:,.0f}"),
+                        'CPK': rg_q['CPK_N'].apply(lambda x: f"₹{x:.2f}"),
+                        'Badge': np.where(rg_q['Util_N']<util_cut, '🔴 FAIL', np.where(rg_q['Util_N']>=80, '🏆 STAR', '🟡 WATCH'))
+                    }), height=300, show_grand_total=False)
+                elif qa_preset == "🚚 Vendor Ranking (Worst to Best)" and not nz_comb.empty:
+                    vg_q = nz_comb.groupby('VendorName').agg(Trips=('Trips','sum'), Wt=('Wt','sum'), Cap=('Cap', lambda s: float((s*nz_comb.loc[s.index,'Trips']).sum())), Cost=('Cost','sum')).reset_index()
+                    vg_q['Util_N'] = np.where(vg_q['Cap']>0, vg_q['Wt']/vg_q['Cap']*100, 0)
+                    vg_q['CPK_N'] = np.where(vg_q['Wt']>0, vg_q['Cost']/vg_q['Wt'], 0)
+                    vg_q = vg_q.sort_values('Util_N')
+                    render_centered_html_table(pd.DataFrame({
+                        'Vendor': vg_q['VendorName'], 'Trips': vg_q['Trips'].astype(int), 'Wt (MT)': (vg_q['Wt']/1000).round(1),
+                        'Util %': vg_q['Util_N'].apply(lambda x: f"{x:.1f}%"), 'Total Cost': vg_q['Cost'].apply(lambda x: f"₹{x:,.0f}"),
+                        'CPK': vg_q['CPK_N'].apply(lambda x: f"₹{x:.2f}"),
+                        'Badge': np.where(vg_q['Util_N']<util_cut, '🔴 FAIL', np.where(vg_q['Util_N']>=80, '🏆 STAR', '🟡 WATCH'))
+                    }), height=300, show_grand_total=False)
+
+        # --- 🔴 FAILURES VS 🏆 ACHIEVEMENTS SPOTLIGHT ---
+        st.markdown(f"### 🎯 Failures vs Achievements Spotlight (Cutoff: `<{int(util_cut)}%` Fail · `≥80%` Star Achievement)")
+        hc1, hc2, hc3, hc4 = st.columns(4)
+        hc1.error(f"**🔴 Round-Trip Failures (Both <{int(util_cut)}%)**\n\n# {tot_rt_under}\nNational: **{nat_stats['both_under']}** · Zonal: **{zon_stats['both_under']}**")
+        hc2.warning(f"**🟠 One-Side Backhaul Gaps**\n\n# {tot_one_side}\nNational: **{nat_stats['one_side_util']}** · Zonal: **{zon_stats['one_side_util']}**")
+        hc3.success(f"**🏆 Star Achievements (≥80% Util)**\n\n# {tot_stars}\nNational: **{nat_stats['star_achievements']}** · Zonal: **{zon_stats['star_achievements']}**")
+        hc4.info(f"**🔄 Reg/Feeder Day-wise (<{int(util_cut)}% / ≥80%)**\n\n# {int((rf_daywise['_num_util'] < util_cut).sum()) if not rf_daywise.empty else 0} 🔴 / {int((rf_daywise['_num_util'] >= 80).sum()) if not rf_daywise.empty else 0} 🏆\nOut of **{len(rf_daywise)}** Vehicles")
+
+        f_col, a_col = st.columns(2)
+        all_fails = nat_stats.get('failure_cards', []) + zon_stats.get('failure_cards', [])
+        all_stars = nat_stats.get('achievement_cards', []) + zon_stats.get('achievement_cards', [])
+        with f_col:
+            st.markdown("#### 🔴 Top Failures (Action Needed)")
+            if all_fails:
+                df_fc = pd.DataFrame(all_fails).sort_values('Util %').head(8).copy()
+                df_fc['Util %'] = df_fc['Util %'].apply(lambda x: f"{x:.1f}%")
+                df_fc['CPK'] = df_fc['CPK'].apply(lambda x: f"₹{x:.2f}")
+                df_fc['Total Cost'] = df_fc['Total Cost'].apply(lambda x: f"₹{x:,.0f}")
+                render_centered_html_table(df_fc, height=290, show_grand_total=False)
+            else:
+                st.success("Zero both-side underutilized routes!")
+        with a_col:
+            st.markdown("#### 🏆 Top Achievements (Star Performers ≥80%)")
+            if all_stars:
+                df_ac = pd.DataFrame(all_stars).sort_values('Util %', ascending=False).head(8).copy()
+                df_ac['Util %'] = df_ac['Util %'].apply(lambda x: f"{x:.1f}%")
+                df_ac['CPK'] = df_ac['CPK'].apply(lambda x: f"₹{x:.2f}")
+                df_ac['Total Cost'] = df_ac['Total Cost'].apply(lambda x: f"₹{x:,.0f}")
+                render_centered_html_table(df_ac, height=290, show_grand_total=False)
+            else:
+                st.info("No ≥80% star pairs in active filter.")
+
+        # Interactive Quadrant Chart (Utilization vs CPK)
+        if PLOTLY_AVAILABLE and (not nat_pair_sum.empty or not zon_pair_sum.empty):
+            comb_p = pd.concat([
+                nat_pair_sum.assign(Segment='National LH') if not nat_pair_sum.empty else pd.DataFrame(),
+                zon_pair_sum.assign(Segment='Zonal LH') if not zon_pair_sum.empty else pd.DataFrame()
+            ], ignore_index=True)
+            if not comb_p.empty:
+                comb_p['Health'] = np.where(comb_p['_sort_u'] < util_cut, '🔴 Failure (<60%)', np.where(comb_p['_sort_u'] >= 80, '🏆 Star (≥80%)', '🟡 Watch (60-80%)'))
+                fig_q = px.scatter(
+                    comb_p, x='_sort_u', y='_num_cpk', size='_num_cost', color='Health',
+                    hover_name='Route Pair', hover_data=['Segment', 'Capacity', 'Trips', 'Origin RO(s)'],
+                    color_discrete_map={'🔴 Failure (<60%)': '#DC2626', '🟡 Watch (60-80%)': '#D97706', '🏆 Star (≥80%)': '#059669'},
+                    labels={'_sort_u': 'Utilization %', '_num_cpk': 'CPK (₹/kg)'},
+                    title='Performance Quadrant: Utilization % vs CPK (Bubble Size = Total Cost)'
+                )
+                fig_q.add_vline(x=util_cut, line_dash="dash", line_color="#DC2626")
+                fig_q.add_hline(y=cpk_cut, line_dash="dash", line_color="#D97706")
+                fig_q.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color=selected_theme["text"], height=350, margin=dict(t=40, b=20, l=20, r=20))
+                st.plotly_chart(fig_q, use_container_width=True)
+
+        # AI Fleet Optimization Advisor
         st.markdown("### 🤖 Dynamic AI Fleet Optimization & Downsizing Advisor")
         if df_ideas.empty:
-            st.success("🎉 No underutilization, downsizing, or rate disparity alerts for the active filter scope!")
+            st.success("🎉 Zero optimization alerts for the active filter scope!")
         else:
             ai_f1, ai_f2 = st.columns([1.4, 2.6])
             idea_cats = ["ALL IDEAS"] + sorted(df_ideas['Category'].unique().tolist())
             pick_ic = ai_f1.selectbox("Filter AI Idea Type:", idea_cats, key="nu2_ai_cat_sel")
-            show_ideas = df_ideas if pick_ic == "ALL IDEAS" else df_ideas[df_ideas['Category'].eq(pick_ic)].reset_index(drop=True)
-            ai_f2.caption(f"Showing **{len(show_ideas)}** actionable recommendations (sorted by highest monthly ₹ saving). Covers vehicle downsizing (e.g. 22ft → 17ft), redundant vehicle removal, backhaul consolidation & branch rate parity.")
-            render_centered_html_table(show_ideas, height=400, show_grand_total=False, csv_filename="AI_Fleet_Optimization_Ideas.csv")
+            show_ideas = (df_ideas if pick_ic == "ALL IDEAS" else df_ideas[df_ideas['Category'].eq(pick_ic)]).copy().reset_index(drop=True)
+            show_ideas['Est. Monthly Saving'] = show_ideas['Est. Monthly Saving'].apply(lambda x: f"₹{float(x):,.0f}")
+            ai_f2.caption(f"Showing **{len(show_ideas)}** actionable recommendations (sorted by highest monthly ₹ saving).")
+            render_centered_html_table(show_ideas, height=380, show_grand_total=False, csv_filename="AI_Fleet_Optimization_Ideas.csv")
 
-        # Worst Backhaul Imbalance Alerts
-        all_bh = nat_stats.get('backhaul_alerts', []) + zon_stats.get('backhaul_alerts', [])
-        if all_bh:
-            st.markdown("### ⚖️ Top Backhaul Imbalance Alerts (One-Side Full, Return Empty)")
-            df_bh = pd.DataFrame(all_bh).sort_values('Empty Capacity (MT)', ascending=False).reset_index(drop=True)
-            render_centered_html_table(df_bh, height=300, show_grand_total=False, csv_filename="Backhaul_Imbalance_Alerts.csv")
-
-        # Zone-wise & Origin RO-wise Clean Rollups
-        st.markdown("### 🗺️ Zone-wise & Origin RO-wise Rollup (National + Zonal LH)")
-        rz1, rz2 = st.tabs(["🏢 Origin RO-wise", "🗺️ Zone-wise"])
-        for tab_w, g_col, lbl in [(rz1, 'Origin_RO', 'Origin RO'), (rz2, 'Zone', 'Zone')]:
-            with tab_w:
-                if nz_comb.empty:
-                    st.info("No National/Zonal trips in selected scope.")
-                else:
-                    rg = nz_comb.groupby(g_col, dropna=False).agg(
-                        Pairs=('Route_Pair', 'nunique'),
-                        Trips=('Trips', 'sum'),
-                        Wt=('Wt', 'sum'),
-                        Cap=('Cap', lambda s: float((s * nz_comb.loc[s.index, 'Trips']).sum())),
-                        Cost=('Cost', 'sum')
-                    ).reset_index()
-                    rg['Util_N'] = np.where(rg['Cap'] > 0, rg['Wt'] / rg['Cap'] * 100.0, 0.0)
-                    rg['CPK_N'] = np.where(rg['Wt'] > 0, rg['Cost'] / rg['Wt'], 0.0)
-                    rg = rg.sort_values('Util_N', ascending=True)
-                    rg_disp = pd.DataFrame({
-                        lbl: rg[g_col],
-                        'Route Pairs': rg['Pairs'].astype(int),
-                        'Trips': rg['Trips'].astype(int),
-                        'Carried Wt': rg['Wt'].round(0).astype(int),
-                        'Total Cap': rg['Cap'].round(0).astype(int),
-                        'Util %': rg['Util_N'].apply(lambda x: f"{x:.1f}%"),
-                        'Total Cost': rg['Cost'].apply(lambda x: f"₹{x:,.0f}"),
-                        'CPK': rg['CPK_N'].apply(lambda x: f"₹{x:.2f}"),
-                        'Status': np.where(rg['Util_N'] < util_cut, '🔴 Action Needed', np.where(rg['Util_N'] < 80, '🟡 Watch', '🟢 Healthy'))
-                    })
-                    render_centered_html_table(rg_disp, height=340, csv_filename=f"Util_Rollup_{lbl}.csv")
-
-    # Helper for National & Zonal Tabs (Pair -> Capacity -> UP/DOWN + 1-Click Raw Drill-Down)
+    # Helper for National & Zonal Tabs
     def _render_lh_pair_tab(seg_name, seg_raw, seg_pair_sum, seg_updown, seg_stats, t_key):
         if seg_raw.empty:
             st.info(f"No {seg_name} trips match the active filters.")
             return
-        c1, c2, c3, c4, c5 = st.columns(5)
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
         tw, tc, tcap = float(seg_raw['Wt'].sum()), float(seg_raw['Cost'].sum()), float((seg_raw['Cap'] * seg_raw['Trips']).sum())
         c1.metric("Trips", f"{int(seg_raw['Trips'].sum()):,}")
         c2.metric("Weighted Util %", f"{(tw/tcap*100 if tcap else 0):.1f}%")
         c3.metric("Weighted CPK", f"₹{(tc/tw if tw else 0):.2f}")
         c4.metric("🔴 Both <60%", f"{seg_stats['both_under']}")
-        c5.metric("🟠 One-Side Util", f"{seg_stats['one_side_util']}")
+        c5.metric("🟠 One-Side Gap", f"{seg_stats['one_side_util']}")
+        c6.metric("🏆 Stars ≥80%", f"{seg_stats['star_achievements']}")
 
         st.markdown(f"### 🔄 {seg_name} — Capacity-wise UP / DOWN Breakdown (Sorted: Pair → Capacity → UP/DOWN)")
-        render_centered_html_table(seg_updown, height=480, show_grand_total=False, csv_filename=f"{seg_name.replace(' ', '_')}_Pair_UP_DOWN.csv")
+        render_centered_html_table(_clean_ui_ud(seg_updown), height=480, show_grand_total=False, csv_filename=f"{seg_name.replace(' ', '_')}_Pair_UP_DOWN.csv")
 
         with st.expander(f"📋 Compact Pair Summary ({len(seg_pair_sum)} Pair+Capacity Combos)", expanded=False):
-            render_centered_html_table(seg_pair_sum, height=340, show_grand_total=False, csv_filename=f"{seg_name.replace(' ', '_')}_Pair_Summary.csv")
+            render_centered_html_table(seg_pair_sum.drop(columns=['_sort_u', '_num_cpk', '_num_cost'], errors='ignore'), height=340, show_grand_total=False)
 
-        # 1-Click Raw Trip Drill-Down
         st.markdown(f"### 🔍 1-Click Raw Trip Drill-Down ({seg_name})")
-        dr_pairs = sorted(seg_raw['Route_Pair'].unique().tolist())
         dr1, dr2 = st.columns([1.6, 1.4])
-        pick_p = dr1.selectbox("Select Route Pair to Inspect Raw Trips:", ["-- Select Pair --"] + dr_pairs, key=f"{t_key}_drill_pair")
+        pick_p = dr1.selectbox("Select Route Pair to Inspect Raw Trips:", ["-- Select Pair --"] + sorted(seg_raw['Route_Pair'].unique().tolist()), key=f"{t_key}_drill_pair")
         if pick_p != "-- Select Pair --":
             sub_p = seg_raw[seg_raw['Route_Pair'].eq(pick_p)].copy()
-            rt_opts = ["ALL ROUTES IN PAIR"] + sorted(sub_p['Final_Route'].unique().tolist())
-            pick_r = dr2.selectbox("Filter Specific UP/DOWN Route:", rt_opts, key=f"{t_key}_drill_rt")
-            if pick_r != "ALL ROUTES IN PAIR":
-                sub_p = sub_p[sub_p['Final_Route'].eq(pick_r)]
+            pick_r = dr2.selectbox("Filter Specific UP/DOWN Route:", ["ALL ROUTES IN PAIR"] + sorted(sub_p['Final_Route'].unique().tolist()), key=f"{t_key}_drill_rt")
+            if pick_r != "ALL ROUTES IN PAIR": sub_p = sub_p[sub_p['Final_Route'].eq(pick_r)]
             sub_p['Util %'] = np.where(sub_p['Cap'] > 0, (sub_p['Wt'] / sub_p['Cap'] * 100.0).round(1).astype(str) + '%', '0.0%')
             sub_p['CPK'] = np.where(sub_p['Wt'] > 0, (sub_p['Cost'] / sub_p['Wt']).apply(lambda x: f"₹{x:.2f}"), '₹0.00')
             clean_cols = ['Date', 'RefNumber', 'Origin_RO', 'Dest_RO', 'Final_Route', 'VendorName', 'Vehicle No', 'ContractType', 'VehicleUsageType', 'Cap', 'Wt', 'Util %', 'Cost', 'CPK']
-            raw_disp = sub_p[[c for c in clean_cols if c in sub_p.columns]].rename(columns={
-                'Origin_RO': 'Origin RO', 'Dest_RO': 'Dest RO', 'Final_Route': 'Route', 'Cap': 'Capacity', 'Wt': 'Weight', 'Cost': 'Trip Cost'
-            })
-            if 'Trip Cost' in raw_disp.columns:
-                raw_disp['Trip Cost'] = raw_disp['Trip Cost'].apply(lambda x: f"₹{float(x):,.0f}")
+            raw_disp = sub_p[[c for c in clean_cols if c in sub_p.columns]].rename(columns={'Origin_RO': 'Origin RO', 'Dest_RO': 'Dest RO', 'Final_Route': 'Route', 'Cap': 'Capacity', 'Wt': 'Weight', 'Cost': 'Trip Cost'})
+            if 'Trip Cost' in raw_disp.columns: raw_disp['Trip Cost'] = raw_disp['Trip Cost'].apply(lambda x: f"₹{float(x):,.0f}")
             render_centered_html_table(raw_disp.reset_index(drop=True), height=380, show_grand_total=False, csv_filename=f"Raw_{pick_p}.csv")
 
     with t_nat:
@@ -8959,26 +9273,23 @@ def render_network_utilization_v2(data):
     # =========================================================
     with t_rf:
         st.markdown("### 🔄 A. Fixed Per Month & Fixed Per Day Vehicles (Day-wise Calculation)")
-        st.caption("All-Work Weight = `MCD + OFD + PickUp + Co-Loader` against `Active Days × Vehicle Capacity` · Monthly cost prorated `/26` days (or `/30` days for configured override vehicles).")
-
+        st.caption("All-Work Weight = `MCD + OFD + PickUp + Co-Loader` against `Active Days × Vehicle Capacity` · Monthly cost prorated `/26` days (or `/30` days for override vehicles).")
         if rf_daywise.empty:
-            st.info("No Day-wise Regional/Feeder vehicles in the active filter scope. (Ensure `ALL RO CPK AND UTIL FILE.xlsx` is processed so `CPK_Daily_Data` is loaded.)")
+            st.info("No Day-wise Regional/Feeder vehicles in active scope.")
         else:
-            rf1, rf2, rf3, rf4, rf5 = st.columns(5)
-            rf1.metric("Day-wise Vehicles", f"{len(rf_daywise):,}")
-            rf2.metric("🔴 Overall <60%", f"{int((rf_daywise['_num_util'] < util_cut).sum()):,}")
-            rf3.metric("Total All-Work Wt", f"{rf_daywise['_num_wt'].sum()/1000:,.1f} MT")
-            rf4.metric("Total Cost", f"₹{rf_daywise['_num_cost'].sum()/1e5:,.1f} L")
-            _rf_cpk = rf_daywise['_num_cost'].sum() / rf_daywise['_num_wt'].sum() if rf_daywise['_num_wt'].sum() > 0 else 0
-            rf5.metric("Weighted CPK", f"₹{_rf_cpk:.2f}/kg")
+            rf1, rf2, rf3, rf4, rf5, rf6 = st.columns(6)
+            rf1.metric("Vehicles", f"{len(rf_daywise):,}")
+            rf2.metric("🔴 Fails (<60%)", f"{int((rf_daywise['_num_util'] < util_cut).sum()):,}")
+            rf3.metric("🏆 Stars (≥80%)", f"{int((rf_daywise['_num_util'] >= 80).sum()):,}")
+            rf4.metric("All-Work Wt", f"{rf_daywise['_num_wt'].sum()/1000:,.1f} MT")
+            rf5.metric("Total Cost", f"₹{rf_daywise['_num_cost'].sum()/1e5:,.1f} L")
+            rf6.metric("Weighted CPK", f"₹{(rf_daywise['_num_cost'].sum()/rf_daywise['_num_wt'].sum() if rf_daywise['_num_wt'].sum()>0 else 0):.2f}/kg")
 
-            rf_disp_clean = rf_daywise.drop(columns=['_num_util', '_num_cost', '_num_rate', '_num_wt'], errors='ignore')
+            rf_disp_clean = rf_daywise.drop(columns=['_num_util', '_num_mcd_util', '_num_cost', '_num_rate', '_num_wt', '_num_cpk'], errors='ignore')
             render_centered_html_table(rf_disp_clean, height=440, show_grand_total=False, csv_filename="Regional_Feeder_Daywise.csv")
 
-            # 1-Click Vehicle Raw Data Drill-Down (Daily Breakdown + Individual MCD Trips)
             st.markdown("#### 🔍 1-Click Vehicle Raw Drill-Down (Daily All-Work + Individual MCD Trips)")
-            v_opts = ["-- Select Vehicle --"] + rf_daywise['Vehicle No'].tolist()
-            pick_v = st.selectbox("Select Vehicle No:", v_opts, key="nu2_rf_drill_veh")
+            pick_v = st.selectbox("Select Vehicle No:", ["-- Select Vehicle --"] + rf_daywise['Vehicle No'].tolist(), key="nu2_rf_drill_veh")
             if pick_v != "-- Select Vehicle --":
                 vd1, vd2 = st.tabs([f"📅 Daily Breakdown ({pick_v})", f"🚚 Individual MCD Trips ({pick_v})"])
                 with vd1:
@@ -8988,21 +9299,21 @@ def render_network_utilization_v2(data):
                         dcols = ['Date', 'RO_Clean', 'VendorBranch', 'ContractType', 'Divisor_Days', 'Cap', 'MCDWt', 'OFDWt', 'PickupWt', 'ColoaderWt', 'TotalWt', 'Util %', 'TotalCost']
                         vd_disp = sub_vd[[c for c in dcols if c in sub_vd.columns]].rename(columns={'RO_Clean': 'RO', 'VendorBranch': 'Branch', 'Divisor_Days': 'Divisor', 'TotalCost': 'Day Cost'})
                         vd_disp['Day Cost'] = vd_disp['Day Cost'].apply(lambda x: f"₹{float(x):,.0f}")
-                        render_centered_html_table(vd_disp.reset_index(drop=True), height=340, show_grand_total=False, csv_filename=f"Daily_{pick_v}.csv")
+                        render_centered_html_table(vd_disp.reset_index(drop=True), height=340, show_grand_total=False)
                 with vd2:
                     sub_vt = df_rf[df_rf['Vehicle No'].eq(pick_v)].copy()
                     if not sub_vt.empty:
                         tcols = ['Date', 'RefNumber', 'Final_Type', 'Origin_RO', 'Final_Route', 'VehicleUsageType', 'Cap', 'Wt', 'Cost']
                         vt_disp = sub_vt[[c for c in tcols if c in sub_vt.columns]].rename(columns={'Final_Type': 'Type', 'Origin_RO': 'Origin RO', 'Final_Route': 'Route', 'Cost': 'Alloc. Cost'})
                         vt_disp['Alloc. Cost'] = vt_disp['Alloc. Cost'].apply(lambda x: f"₹{float(x):,.0f}")
-                        render_centered_html_table(vt_disp.reset_index(drop=True), height=340, show_grand_total=False, csv_filename=f"Trips_{pick_v}.csv")
+                        render_centered_html_table(vt_disp.reset_index(drop=True), height=340, show_grand_total=False)
 
         st.markdown("---")
         st.markdown("### 🛣️ B. Fixed Per Trip Regional & Feeder Vehicles (Trip-wise Route Pair UP / DOWN)")
         if rf_trip_updown.empty:
             st.info("No Fixed Per Trip Regional/Feeder records in active scope.")
         else:
-            render_centered_html_table(rf_trip_updown, height=400, show_grand_total=False, csv_filename="Regional_Feeder_Tripwise.csv")
+            render_centered_html_table(_clean_ui_ud(rf_trip_updown), height=400, show_grand_total=False, csv_filename="Regional_Feeder_Tripwise.csv")
 
     # =========================================================
     # TAB 5: RATE DISPARITY & DATA QUALITY AUDIT FLAGS
@@ -9012,13 +9323,19 @@ def render_network_utilization_v2(data):
         if df_rdb.empty:
             st.success("✅ No same-branch rate disparities detected for active scope.")
         else:
-            render_centered_html_table(df_rdb, height=360, show_grand_total=False, csv_filename="Branch_Rate_Disparity_Flags.csv")
+            rdb_u = df_rdb.copy()
+            for c_m in ['Min Rate', 'Max Rate', 'Est. Monthly Saving']:
+                if c_m in rdb_u.columns: rdb_u[c_m] = rdb_u[c_m].apply(lambda x: f"₹{float(x):,.0f}")
+            render_centered_html_table(rdb_u, height=360, show_grand_total=False, csv_filename="Branch_Rate_Disparity_Flags.csv")
 
         st.markdown("### 💸 2. Same-Route + Capacity Trip Rate Disparity (National & Zonal)")
         if df_rdr.empty:
             st.success("✅ No same-route trip rate disparities detected.")
         else:
-            render_centered_html_table(df_rdr, height=300, show_grand_total=False, csv_filename="Route_Rate_Disparity_Flags.csv")
+            rdr_u = df_rdr.copy()
+            for c_m in ['Min Rate', 'Max Rate', 'Diff / Trip', 'Est. Monthly Saving']:
+                if c_m in rdr_u.columns: rdr_u[c_m] = rdr_u[c_m].apply(lambda x: f"₹{float(x):,.0f}")
+            render_centered_html_table(rdr_u, height=300, show_grand_total=False, csv_filename="Route_Rate_Disparity_Flags.csv")
 
         st.markdown("### ⚠️ 3. Data Quality Audit (₹0 Cost · Non-Standard Capacity · >150% Overload)")
         if df_aud.empty:
@@ -9027,11 +9344,11 @@ def render_network_utilization_v2(data):
             render_centered_html_table(df_aud, height=300, show_grand_total=False, csv_filename="Data_Quality_Audit.csv")
 
     # =========================================================
-    # TAB 6: AVP / RO CUSTOM REPORT PACK + LIVE COST/CAPACITY/30D OVERRIDES
+    # TAB 6: AVP / RO EXCEL 2013 LIVE-FORMULA REPORT PACK + LIVE OVERRIDES
     # =========================================================
     with t_avp:
-        st.markdown("### 👔 1-Click AVP / RO Custom Executive Report Builder")
-        st.caption("AVP jab kisi bhi RO ki sabhi gaadiyan ya specific categories (National / Zonal / Regional / Feeder / Co-Loader / OFD / PickUp) maange — yahan select karo, Notes dekho, aur styled multi-sheet Excel download karo.")
+        st.markdown("### 👔 1-Click AVP / RO Dynamic Excel 2013 Report Builder")
+        st.caption("100% Excel 2013 friendly: Live `SUM / SUMIF / IFERROR` formulas + Native Charts + Red/Amber/Green Conditional Formatting. Edit any Cost/Capacity cell in Excel 2013 and every KPI updates live!")
 
         all_avp_ros = sorted({
             str(x).strip() for x in pd.concat([
@@ -9050,7 +9367,6 @@ def render_network_utilization_v2(data):
             key="nu2_avp_cats"
         )
 
-        # Build AVP scoped frames
         avp_raw = df_raw_all[parsed_r_dates.dt.date.between(start_d, end_d)].copy()
         avp_daily = df_daily_all.copy()
         if not avp_daily.empty:
@@ -9059,12 +9375,10 @@ def render_network_utilization_v2(data):
 
         if avp_ro != "ALL ROs (Pan-India)":
             avp_raw = avp_raw[avp_raw['Origin_RO'].eq(avp_ro) | avp_raw['Dest_RO'].eq(avp_ro) | avp_raw['RO_Clean'].eq(avp_ro)]
-            if not avp_daily.empty:
-                avp_daily = avp_daily[avp_daily['RO_Clean'].eq(avp_ro)]
+            if not avp_daily.empty: avp_daily = avp_daily[avp_daily['RO_Clean'].eq(avp_ro)]
         if avp_cats:
             avp_raw = avp_raw[avp_raw['Final_Type'].isin(avp_cats)]
-            if not avp_daily.empty:
-                avp_daily = avp_daily[avp_daily['Primary_Type'].isin(avp_cats)]
+            if not avp_daily.empty: avp_daily = avp_daily[avp_daily['Primary_Type'].isin(avp_cats)]
 
         avp_scope_title = f"AVP Fleet Utilization Report · {avp_ro} ({', '.join(avp_cats) if avp_cats else 'All'})"
         avp_nat_s, avp_nat_u, avp_nat_st = build_pair_updown_display_table(avp_raw[avp_raw['Final_Type'].eq('National LH')], util_cut)
@@ -9073,52 +9387,48 @@ def render_network_utilization_v2(data):
         avp_rfd = build_regional_feeder_daywise_table(avp_daily, avp_raw, util_cut)
         avp_ideas, avp_rdb, avp_rdr, avp_aud = build_dynamic_ai_fleet_optimizer(avp_raw, avp_daily, util_cut, cpk_cut)
 
-        # Auto-Written Management Notes Preview for AVP Mail / WhatsApp
         _avp_tot_c = float(avp_daily['TotalCost'].sum()) if not avp_daily.empty else float(avp_raw['Cost'].sum())
         _avp_tot_w = float(avp_daily['TotalWt'].sum()) if not avp_daily.empty else float(avp_raw['Wt'].sum())
-        _avp_sav = float(avp_ideas['Est. Monthly Saving'].astype(str).str.replace(r'[^0-9.]', '', regex=True).replace('', '0').astype(float).sum()) if not avp_ideas.empty else 0.0
+        _avp_sav = float(pd.to_numeric(avp_ideas['Est. Monthly Saving'], errors='coerce').fillna(0).sum()) if not avp_ideas.empty else 0.0
         notes_lines = [
             f"AVP Fleet Utilization & Cost Optimization Note — {avp_ro} ({dur_lbl})",
             f"• Total Cost: ₹{_avp_tot_c/1e5:,.2f} L | Total Weight: {_avp_tot_w/1000:,.1f} MT | Overall CPK: ₹{(_avp_tot_c/_avp_tot_w if _avp_tot_w else 0):.2f}/kg",
-            f"• National LH: {avp_nat_st['both_under']} Round-Trip <{int(util_cut)}%, {avp_nat_st['one_side_util']} One-Side Utilized, {avp_nat_st['both_healthy']} Healthy",
-            f"• Zonal LH: {avp_zon_st['both_under']} Round-Trip <{int(util_cut)}%, {avp_zon_st['one_side_util']} One-Side Utilized, {avp_zon_st['both_healthy']} Healthy",
+            f"• National LH: {avp_nat_st['both_under']} Failures (<{int(util_cut)}%), {avp_nat_st['one_side_util']} Backhaul Gaps, {avp_nat_st['star_achievements']} Star Achievements (≥80%)",
+            f"• Zonal LH: {avp_zon_st['both_under']} Failures (<{int(util_cut)}%), {avp_zon_st['one_side_util']} Backhaul Gaps, {avp_zon_st['star_achievements']} Star Achievements (≥80%)",
             f"• AI Optimization Potential: {len(avp_ideas)} actionable items (Est. Monthly Saving: ₹{_avp_sav:,.0f})",
             ""
         ]
         if not avp_ideas.empty:
             notes_lines.append("Top Priority Actions:")
             for _, ir in avp_ideas.head(6).iterrows():
-                notes_lines.append(f"  • [{ir['Priority']}] {ir['Entity / Route']} ({ir['RO / Branch']}): {ir['AI Recommendation']} [Saving: {ir['Est. Monthly Saving']}]")
+                notes_lines.append(f"  • [{ir['Priority']}] {ir['Entity / Route']} ({ir['RO / Branch']}): {ir['AI Recommendation']} [Saving: ₹{float(ir['Est. Monthly Saving']):,.0f}]")
         st.text_area("📝 Ready-to-Send AVP Summary Notes:", value="\n".join(notes_lines), height=200, key="nu2_avp_notes_box")
 
-        b_av1, b_av2 = st.columns([1.8, 3.2])
-        _avp_sig = (avp_ro, tuple(sorted(avp_cats)), dur_lbl, len(avp_raw), len(avp_daily), len(cpk_ovr.get("corrections", [])))
-        if b_av1.button("⚙️ Prepare AVP Multi-Sheet Styled Excel", key="nu2_prep_avp_xl", type="primary", use_container_width=True):
-            with st.spinner("Building AVP Styled Executive Workbook..."):
+        b_av1, b_av2 = st.columns([2.0, 3.0])
+        _avp_sig = ("v3_xl2013", avp_ro, tuple(sorted(avp_cats)), dur_lbl, len(avp_raw), len(avp_daily), len(cpk_ovr.get("corrections", [])))
+        if b_av1.button("⚙️ Prepare Dynamic Excel 2013 AVP Pack", key="nu2_prep_avp_xl", type="primary", use_container_width=True):
+            with st.spinner("Building Excel 2013 Live-Formula AVP Workbook..."):
                 st.session_state["_nu2_avp_xl"] = (
                     _avp_sig,
                     build_avp_utilization_excel_bytes(
                         avp_scope_title, dur_lbl, avp_raw, avp_daily,
                         avp_nat_u, avp_zon_u, avp_rfd, avp_rft_u,
                         avp_ideas, avp_rdb, avp_rdr, avp_aud,
-                        avp_nat_st, avp_zon_st, util_cut
+                        avp_nat_st, avp_zon_st, util_cut, cpk_cut
                     )
                 )
         if isinstance(st.session_state.get("_nu2_avp_xl"), tuple) and st.session_state["_nu2_avp_xl"][0] == _avp_sig:
             safe_ro = re.sub(r'[^A-Za-z0-9]+', '_', avp_ro).strip('_')
             b_av2.download_button(
-                f"⬇️ Download AVP Fleet Report ({avp_ro}).xlsx",
+                f"⬇️ Download Excel 2013 AVP Report ({avp_ro}).xlsx",
                 data=st.session_state["_nu2_avp_xl"][1],
-                file_name=f"Trackon_AVP_Utilization_{safe_ro}_{get_ist_now():%d_%b_%Y}.xlsx",
+                file_name=f"Trackon_AVP_Excel2013_{safe_ro}_{get_ist_now():%d_%b_%Y}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="nu2_dl_avp_xl"
             )
 
         st.markdown("---")
-        # --- LIVE 30-DAY DIVISOR MANAGER + LIVE COST / CAPACITY CORRECTIONS ---
         st.markdown("### 🛠️ Live Overrides: 30-Day Divisor Vehicles + Cost / Capacity Corrections")
-        st.caption("Koi bhi correction save karte hi poore Network Utilization tab + AI Ideas + AVP Excel mein calculation turant update ho jayega — bina raw file dubara upload kiye!")
-
         ov_c1, ov_c2 = st.columns([1.15, 1.85])
         with ov_c1:
             st.markdown("#### 📅 30-Day Divisor Vehicles (Default = 26d)")
@@ -9146,11 +9456,9 @@ def render_network_utilization_v2(data):
                 fc1, fc2 = st.columns(2)
                 c_scope = fc1.selectbox("Apply Correction By:", ["Vehicle", "Route + Cap"])
                 c_eff = fc2.date_input("Effective From Date:", value=min_d)
-
                 fc3, fc4 = st.columns(2)
                 c_veh = fc3.text_input("Vehicle No (if By Vehicle):", placeholder="e.g. HR68C1561 or KA02AL1966").strip().upper()
                 c_rt = fc4.text_input("Route or Route Pair (if By Route):", placeholder="e.g. DELAP-BHOH-INDH").strip().upper()
-
                 fc5, fc6, fc7 = st.columns(3)
                 c_old_cap = fc5.number_input("Existing Cap (optional, Route mode):", min_value=0, value=0, step=100)
                 c_new_cap = fc6.number_input("Corrected Capacity (0 = keep same):", min_value=0, value=0, step=100)
@@ -9166,14 +9474,11 @@ def render_network_utilization_v2(data):
                         st.error("Enter Route or Route Pair.")
                     else:
                         cpk_ovr["corrections"].append({
-                            "scope_type": c_scope,
-                            "vehicle_no": c_veh,
-                            "route": c_rt,
+                            "scope_type": c_scope, "vehicle_no": c_veh, "route": c_rt,
                             "old_cap": int(c_old_cap),
                             "new_cap": int(c_new_cap) if c_new_cap > 0 else None,
                             "new_cost": float(c_new_cost) if c_new_cost > 0 else None,
-                            "eff_date": c_eff.isoformat(),
-                            "reason": c_reason
+                            "eff_date": c_eff.isoformat(), "reason": c_reason
                         })
                         save_cpk_overrides(cpk_ovr)
                         log_user_activity(st.session_state.get('username'), "Live CPK Override", f"{c_scope}: {c_veh or c_rt} | Cap={c_new_cap} Cost={c_new_cost}")
@@ -9182,8 +9487,7 @@ def render_network_utilization_v2(data):
 
             if cpk_ovr.get("corrections"):
                 st.caption(f"Active Live Corrections ({len(cpk_ovr['corrections'])}):")
-                corr_df = pd.DataFrame(cpk_ovr["corrections"])
-                render_centered_html_table(corr_df, height=200, show_grand_total=False)
+                render_centered_html_table(pd.DataFrame(cpk_ovr["corrections"]), height=200, show_grand_total=False)
                 del_idx = st.selectbox(
                     "Remove a Correction:",
                     ["-- Select --"] + [f"#{i+1} · {r.get('scope_type')} · {r.get('vehicle_no') or r.get('route')}" for i, r in enumerate(cpk_ovr["corrections"])],
