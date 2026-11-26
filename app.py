@@ -827,6 +827,46 @@ def log_user_activity(username, action, details=""):
     except Exception:
         pass
 
+DEFAULT_DIVISOR_30_VEHICLES = ["KL07CW8170", "KL63K6145"]
+
+TRACKON_FLEET_LADDER = [
+    (700, "Tata Ace / 7 ft (700 kg)"),
+    (1200, "Bolero / 8 ft (1,200 kg)"),
+    (1700, "10 ft / Dost (1,700 kg)"),
+    (2500, "14 ft (2,500 kg)"),
+    (3500, "17 ft (3,500 kg)"),
+    (4500, "19 ft (4,500 kg)"),
+    (6000, "20-22 ft (6,000 kg)"),
+    (7000, "22 ft Heavy (7,000 kg)"),
+    (9000, "24 ft / Taurus (9,000 kg)"),
+    (13500, "32 ft MXL (13,500 kg)")
+]
+
+def load_cpk_overrides():
+    path = FILE_MAP.get("CPK_OVERRIDES", "")
+    raw = _read_json_fast(path, None)
+    if isinstance(raw, dict):
+        d30 = sorted({str(v).strip().upper() for v in raw.get("divisor_30_vehicles", DEFAULT_DIVISOR_30_VEHICLES) if str(v).strip()})
+        corrs = raw.get("corrections", [])
+        return {"divisor_30_vehicles": d30, "corrections": corrs if isinstance(corrs, list) else []}
+    default_obj = {"divisor_30_vehicles": list(DEFAULT_DIVISOR_30_VEHICLES), "corrections": []}
+    if path:
+        try:
+            _write_json_fast(path, default_obj)
+        except Exception:
+            pass
+    return default_obj
+
+def save_cpk_overrides(obj):
+    path = FILE_MAP.get("CPK_OVERRIDES", "")
+    if not path:
+        return
+    clean = {
+        "divisor_30_vehicles": sorted({str(v).strip().upper() for v in obj.get("divisor_30_vehicles", []) if str(v).strip()}),
+        "corrections": list(obj.get("corrections", []))
+    }
+    _write_json_fast(path, clean)
+
 SCHEDULED_ROUTE_MASTER_TSV = r"""Route Path	Legwise	Legs	Scheduled Departure Time	Scheduled Arrival Time	Given Driving Hours	Scheduled Halting	Scheduled TAT Till Destination
 BKLH-JPRBPH-DELAP	Leg1	BKLH to JPRBPH	01-09-2026 01:00	01-09-2026 16:00	15:00	Origin	23:01
 BKLH-JPRBPH-DELAP	Leg2	JPRBPH to DELAP	01-09-2026 17:00	02-09-2026 00:01	7:01	1:00 at JPRBPH	23:01
@@ -1104,10 +1144,11 @@ ALL_PORTAL_MODULES = [
     "⚠️ Overall Issues",
     "🗂️ All Trips & Additional/Manual Audit",
     "🎯 My Task & Focus Hub",
-    "🔐 User & Access Control"
+    "🔐 User & Access Control",
+    "🧩 Module Code Manager"
 ]
 
-ADMIN_ONLY_MODULES = {"🎯 My Task & Focus Hub", "🔐 User & Access Control"}
+ADMIN_ONLY_MODULES = {"🎯 My Task & Focus Hub", "🔐 User & Access Control", "🧩 Module Code Manager"}
 STANDARD_MODULES = [m for m in ALL_PORTAL_MODULES if m not in ADMIN_ONLY_MODULES]
 
 # Pre-defined National Route Pairs for Communication Hub
@@ -3152,6 +3193,7 @@ def build_clean_email_message(recipient_title, duration_label, ops_sum_df=None, 
 # ==========================================
 # 4. UI & EXCEL HIGHLIGHTING ENGINE
 # ==========================================
+# === [MODULE_START: Excel Styling & VIP Export Engine] ===
 def clean_dataframe_for_excel(df_in, sheet_type="generic", preserve_order=False):
     if df_in is None or df_in.empty:
         return pd.DataFrame()
@@ -3793,6 +3835,46 @@ def add_total_row_cpk_df(df):
         df_out['Overall Util %'] = df_out['Overall Util %'].apply(lambda x: f"{x * 100:.2f}%" if isinstance(x, (int, float)) else x)
     return df_out
 
+def _max_consecutive_days(date_iterable):
+    """Return longest consecutive-day streak of issues for repeat offender detection."""
+    uniq = sorted({d for d in date_iterable if pd.notna(d)})
+    if not uniq:
+        return 0
+    best = cur = 1
+    for i in range(1, len(uniq)):
+        try:
+            if (uniq[i] - uniq[i - 1]).days == 1:
+                cur += 1
+                if cur > best:
+                    best = cur
+            else:
+                cur = 1
+        except Exception:
+            cur = 1
+    return best
+
+
+def _delay_str_to_hrs(val):
+    if pd.isna(val):
+        return np.nan
+    s = str(val).strip()
+    if not s or s in ('-', 'nan', 'None'):
+        return np.nan
+    neg = s.startswith('-')
+    s_abs = s[1:] if neg else s
+    if ':' in s_abs:
+        pts = s_abs.split(':')
+        try:
+            v = float(pts[0]) + float(pts[1]) / 60.0
+            return -v if neg else v
+        except Exception:
+            return np.nan
+    try:
+        return float(s)
+    except Exception:
+        return np.nan
+
+
 def build_vip_late_departures_sheet(ops_raw):
     """
     Build the dedicated, logically sorted `Late_Departures` sheet EXCLUSIVELY for
@@ -4061,11 +4143,13 @@ def generate_vip_executive_report_to_disk(data_dict, output_path=None):
             write_styled_sheet_to_excel(writer, df_cpk3, 'CPK_Coloader', sheet_type="cpk")
         if not cpk_raw.empty:
             write_styled_sheet_to_excel(writer, cpk_raw, 'Network_Raw', sheet_type="cpk_raw")
+# === [MODULE_END: Excel Styling & VIP Export Engine] ===
 
 # ==========================================
 # 5. MAIN DATA PROCESSING (With Caching, Missing RO Fix & Vendor Grouping)
 # ==========================================
 # Removed ttl=3600 so data never disappears automatically while browser is open
+# === [MODULE_START: Data Processing Engine] ===
 def get_processed_data_cached(file_timestamps):
     data_for_export = {}
     
@@ -4727,6 +4811,7 @@ def process_all_data():
             except Exception:
                 pass
         gc.collect()
+# === [MODULE_END: Data Processing Engine] ===
 
 # ==========================================
 # 6. SIDEBAR: ADMIN PANEL & RATE CORRECTIONS
@@ -5049,7 +5134,8 @@ MENU_SHEETS = {
     # Access control only needs distinct vendor names. Read those columns below
     # instead of loading both full raw sheets on every rerun.
     "🎯 My Task & Focus Hub": (),
-    "🔐 User & Access Control": ()
+    "🔐 User & Access Control": (),
+    "🧩 Module Code Manager": ()
 }
 
 # Dynamically filter Navigation menu based on user's allowed_modules
@@ -5066,6 +5152,8 @@ if is_master_admin:
         menu.insert(1 if len(menu) > 0 else 0, "🎯 My Task & Focus Hub")
     if "🔐 User & Access Control" not in menu:
         menu.append("🔐 User & Access Control")
+    if "🧩 Module Code Manager" not in menu:
+        menu.append("🧩 Module Code Manager")
 if not menu:
     menu = ["🚚 Vendor Performance"]
 
@@ -5377,720 +5465,6 @@ def prepare_payment_dashboard_frame(raw_frame):
         frame['Month Audit'] = 'OK'
     return frame.reset_index(drop=True)
 
-@st.cache_data(show_spinner=False, max_entries=1, ttl=DATA_RETENTION_TTL_SECS)
-def _get_normalized_payment_cached(path, payment_signature, branch_signature, processed_signature):
-    """Ultra-fast payment loader: disk pickle -> streaming XML -> openpyxl fallback."""
-    pkl_path = os.path.join(DATA_DIR, ".payment_norm_fast_cache.pkl")
-    sig = ("pay_norm_v6", payment_signature, branch_signature, processed_signature)
-    hit = _load_disk_pkl_cache(pkl_path, sig)
-    if isinstance(hit, pd.DataFrame) and not hit.empty:
-        return hit
-    payment_raw = read_payment_sheet_cached(path, payment_signature, 'Report')
-    normalized = normalize_overall_payment_raw(payment_raw, None)
-    _save_disk_pkl_cache(pkl_path, sig, normalized)
-    return normalized
-
-def get_normalized_overall_payment(path, data=None, processed_signature=None):
-    if not path or not os.path.exists(path):
-        return pd.DataFrame()
-    payment_signature = file_version(path)
-    branch_path = FILE_MAP.get('BRANCH_MASTER', '')
-    branch_signature = file_version(branch_path) if branch_path and os.path.exists(branch_path) else None
-    return _get_normalized_payment_cached(path, payment_signature, branch_signature, processed_signature)
-
-@st.cache_data(show_spinner=False, max_entries=1, ttl=DATA_RETENTION_TTL_SECS)
-def _read_all_dashboard_sheets_once(path, signature):
-    """Read and pre-normalize the master workbook ONCE with disk pickle cache so every switch is <0.1s."""
-    pkl_path = os.path.join(DATA_DIR, ".monitoring_sheets_fast_cache.pkl")
-    sig = ("mon_sheets_v5", signature)
-    hit = _load_disk_pkl_cache(pkl_path, sig)
-    if isinstance(hit, dict) and hit:
-        return hit
-    engine = 'openpyxl'
-    try:
-        import python_calamine  # noqa: F401
-        engine = 'calamine'
-    except Exception:
-        engine = 'openpyxl'
-    with pd.ExcelFile(path, engine=engine) as workbook:
-        sheets = {name: workbook.parse(name) for name in workbook.sheet_names}
-    if 'Vendor_Perf_Raw' in sheets and not sheets['Vendor_Perf_Raw'].empty:
-        if 'VendorName' in sheets['Vendor_Perf_Raw'].columns:
-            sheets['Vendor_Perf_Raw'] = normalize_vendor_column_cached(sheets['Vendor_Perf_Raw'], 'VendorName')
-        sheets['Vendor_Perf_Summary'] = build_vendor_summary_from_raw(sheets['Vendor_Perf_Raw'])
-    elif 'Vendor_Perf_Summary' in sheets and not sheets['Vendor_Perf_Summary'].empty:
-        if 'VendorName' in sheets['Vendor_Perf_Summary'].columns:
-            sheets['Vendor_Perf_Summary'] = normalize_vendor_column_cached(sheets['Vendor_Perf_Summary'], 'VendorName')
-    if 'Legwise_Processed_Data' in sheets and not sheets['Legwise_Processed_Data'].empty:
-        if 'VendorName' in sheets['Legwise_Processed_Data'].columns:
-            sheets['Legwise_Processed_Data'] = normalize_vendor_column_cached(sheets['Legwise_Processed_Data'], 'VendorName')
-        if '_OpsRemarkOutcome' not in sheets['Legwise_Processed_Data'].columns:
-            sheets['Legwise_Processed_Data']['_OpsRemarkOutcome'] = ops_remark_outcome_series(sheets['Legwise_Processed_Data'])
-    _save_disk_pkl_cache(pkl_path, sig, sheets)
-    return sheets
-
-def read_dashboard_sheets_cached(path, signature, sheet_names):
-    """Serve requested module sheets instantaneously from the single cached workbook."""
-    all_sheets = _read_all_dashboard_sheets_once(path, signature)
-    return {name: all_sheets[name] for name in sheet_names if name in all_sheets}
-
-@st.cache_data(show_spinner=False, max_entries=2)
-def read_binary_asset_cached(path, signature):
-    """Reuse report bytes across Streamlit reruns until the report file changes."""
-    with open(path, 'rb') as source_file:
-        return source_file.read()
-
-@st.cache_data(show_spinner=False, max_entries=8)
-def read_access_vendor_options_cached(path, signature):
-    """Read only vendor-name columns for the access editor, not both full raw sheets."""
-    vendor_names = set()
-    try:
-        with pd.ExcelFile(path, engine='openpyxl') as workbook:
-            for sheet_name in ('Vendor_Perf_Raw', 'CPK_Raw_Data'):
-                if sheet_name not in workbook.sheet_names:
-                    continue
-                header = workbook.parse(sheet_name, nrows=0)
-                if 'VendorName' not in header.columns:
-                    continue
-                values = workbook.parse(sheet_name, usecols=['VendorName'])['VendorName'].dropna().unique()
-                vendor_names.update(
-                    clean_name for clean_name in (normalize_vendor_name(value) for value in values)
-                    if clean_name
-                )
-    except Exception as exc:
-        logging.warning(f"Could not load access-control vendor options: {exc}")
-    return sorted(vendor_names)
-
-def load_dashboard_data(page):
-    if page == "🧭 Scheduled Route Master":
-        return {'Scheduled_Route_Master': get_scheduled_route_master(get_route_lookup_signature())}
-    path = FILE_MAP["FINAL_OUTPUT"]
-    if not os.path.exists(path):
-        if page in ["🏠 Executive Pulse", "🎯 My Task & Focus Hub", "📝 Today's Call Action Plan", "🔐 User & Access Control", "⚠️ Overall Issues", "💳 Payment Dashboard", "📱 Communication Hub"]:
-            data = {"dummy": pd.DataFrame()}
-            if page in ["🏠 Executive Pulse", "⚠️ Overall Issues", "💳 Payment Dashboard", "📱 Communication Hub"] and os.path.exists(FILE_MAP.get('PAYMENT', '')):
-                try:
-                    data['Payment_Raw'] = get_normalized_overall_payment(FILE_MAP['PAYMENT'], data)
-                except Exception as exc:
-                    logging.warning(f"Could not load raw payment data for Overall Issues: {exc}")
-            return data
-        return {}
-    try:
-        processed_signature = file_version(path)
-        payment_path = FILE_MAP.get('PAYMENT', '')
-        payment_signature = file_version(payment_path) if payment_path and os.path.exists(payment_path) else None
-        branch_path = FILE_MAP.get('BRANCH_MASTER', '')
-        branch_signature = file_version(branch_path) if branch_path and os.path.exists(branch_path) else None
-        cb_path = FILE_MAP.get('CUSTOM_BRANCH_RO_MAP', '')
-        cb_signature = file_version(cb_path) if cb_path and os.path.exists(cb_path) else None
-        page_cache_key = ('v8', page, processed_signature, payment_signature, branch_signature, cb_signature)
-        page_cache = st.session_state.setdefault('_dashboard_page_cache', {})
-        if page_cache_key in page_cache:
-            # Page frames are kept for this session, so module navigation avoids another
-            # workbook deserialize and normalization pass. Renderers work on local copies.
-            return dict(page_cache[page_cache_key])
-        if page == "🎯 My Task & Focus Hub":
-            return {'Admin_Tasks_Ready': True}
-        if page == "🔐 User & Access Control":
-            return {'Vendor_Options': read_access_vendor_options_cached(path, processed_signature)}
-        data = read_dashboard_sheets_cached(path, processed_signature, MENU_SHEETS[page])
-        if page in ["🏠 Executive Pulse", "⚠️ Overall Issues", "💳 Payment Dashboard", "📱 Communication Hub"] and os.path.exists(FILE_MAP.get('PAYMENT', '')):
-            try:
-                data['Payment_Raw'] = get_normalized_overall_payment(FILE_MAP['PAYMENT'], data, processed_signature)
-            except Exception as exc:
-                logging.warning(f"Could not load raw payment data for Overall Issues: {exc}")
-        if page in ["📝 Today's Call Action Plan", "🔐 User & Access Control", "⚠️ Overall Issues"] and not data:
-            data = {"dummy": pd.DataFrame()}
-        # Apply live Custom Branch -> RO overrides immediately so website edits show without full re-upload
-        for _df_k, _b_c, _r_c in [
-            ('Legwise_Processed_Data', 'CD_FromBranch', 'Origin RO'),
-            ('Vendor_Perf_Raw', 'CD_FromBranch', 'Origin RO'),
-            ('All_Trips_Audit', 'Origin Branch', 'Origin RO'),
-        ]:
-            if _df_k in data and isinstance(data[_df_k], pd.DataFrame) and not data[_df_k].empty:
-                data[_df_k] = apply_custom_branch_ro_overrides_live(data[_df_k], _b_c, _r_c, 'Zone')
-        page_cache[page_cache_key] = data
-        while len(page_cache) > 10:
-            page_cache.pop(next(iter(page_cache)))
-        return data
-    except Exception as exc:
-        logging.exception("Cannot read dashboard workbook")
-        st.error(f"Cannot read the processed Excel file: {exc}")
-        if st.session_state['role'] == 'Admin':
-            st.exception(exc)
-        st.stop()
-
-if st.session_state.pop('_gh_restored_notice', None):
-    st.info("♻️ 7-Day Cloud Snapshot auto-restored after server wake-up!")
-if st.session_state.pop('_processing_success', False):
-    st.success("Data refreshed successfully. Your Executive Report is ready to download!")
-
-# 📥 EXPORT REPORT - ON-DEMAND GENERATION (Zero RAM overhead during processing!)
-if st.session_state.get('all_vendors', True) and os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
-    st.sidebar.markdown("---")
-    st.sidebar.header("📥 Export Reports")
-    if st.sidebar.button("⚙️ Prepare VIP Executive Report", key="prep_vip_exec_btn", use_container_width=True):
-        with st.spinner("Generating VIP Executive Report..."):
-            try:
-                all_s = _read_all_dashboard_sheets_once(FILE_MAP["FINAL_OUTPUT"], file_version(FILE_MAP["FINAL_OUTPUT"]))
-                generate_vip_executive_report_to_disk(all_s)
-                st.session_state['_vip_exec_report_ready'] = True
-                gc.collect()
-            except Exception as exc:
-                st.sidebar.error(f"Could not generate report: {exc}")
-    if os.path.exists(FILE_MAP["EXECUTIVE_REPORT"]):
-        try:
-            report_path = FILE_MAP["EXECUTIVE_REPORT"]
-            report_bytes = read_binary_asset_cached(report_path, file_version(report_path))
-            st.sidebar.download_button(
-                "📄 Download VIP Executive Report",
-                data=report_bytes,
-                file_name=f"Trackon_Executive_Master_Report_{get_ist_now():%d_%b_%Y}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                type="primary"
-            )
-        except Exception as exc:
-            st.sidebar.error(f"Could not load download: {exc}")
-
-    ts = os.path.getmtime(FILE_MAP["FINAL_OUTPUT"])
-    ist = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
-    dt_obj = datetime.datetime.fromtimestamp(ts, tz=ist)
-    dt = dt_obj.strftime('%d %b %Y, %I:%M %p')
-    exp_dt = (dt_obj + datetime.timedelta(days=DATA_RETENTION_DAYS)).strftime('%d %b %Y')
-    st.sidebar.caption(f"📊 Refreshed: {dt} (IST) · Valid till {exp_dt} (7 Days)")
-
-data = load_dashboard_data(choice)
-if not data and choice not in ["🎯 My Task & Focus Hub", "🔐 User & Access Control", "🧭 Scheduled Route Master", "⚠️ Overall Issues"]:
-    if ops_remark_raw_view or ven_perf_raw_view or overall_issue_raw_view:
-        try:
-            _keep_sid = _get_qp_str('sid', ''); st.query_params.clear(); (_keep_sid and st.query_params.__setitem__('sid', _keep_sid))
-        except Exception:
-            pass
-        st.session_state["ops_win_hide_sidebar"] = False
-        st.session_state["ven_win_hide_sidebar"] = False
-        st.rerun()
-    st.warning("No processed data for this page. Admin must upload the relevant files and process data.")
-    st.stop()
-
-st.markdown(f"""
-<div class="app-topline">
-  <div>
-    <div class="app-eyebrow">Trackon • Fleet Operations</div>
-    <div class="app-brandline">Command Center <span class="app-subline">Network performance at a glance</span></div>
-  </div>
-  <div class="app-chip">{html_module.escape(selected_theme_name)} &nbsp;·&nbsp; {html_module.escape(choice)}</div>
-</div>
-""", unsafe_allow_html=True)
-
-try:
-    import plotly.express as px
-    PLOTLY_AVAILABLE = True
-except ImportError:
-    PLOTLY_AVAILABLE = False
-
-# ==========================================
-# 7B. UNIFIED FILTER BAR, DATE PRESETS & CROSS-FILTER ENGINE
-# ==========================================
-def _clamp_date(val, min_d, max_d):
-    if val is None or val < min_d:
-        return min_d
-    if val > max_d:
-        return max_d
-    return val
-
-def _set_date_preset(key_prefix, start_val, end_val):
-    st.session_state[f"{key_prefix}_sd"] = start_val
-    st.session_state[f"{key_prefix}_ed"] = end_val
-
-def _reset_unified_filters(key_prefix, min_d=None, max_d=None):
-    if min_d is not None and max_d is not None:
-        st.session_state[f"{key_prefix}_sd"] = min_d
-        st.session_state[f"{key_prefix}_ed"] = max_d
-    for suffix in ("zone", "ro", "vendor", "route", "leg"):
-        st.session_state[f"{key_prefix}_{suffix}"] = "ALL"
-    st.session_state[f"{key_prefix}_search"] = ""
-
-def render_duration_selector(df_raw, date_col_name, key_prefix):
-    """Upgraded date selector with Power BI presets (Last 7D, Last 14D, MTD, All)."""
-    if df_raw is None or df_raw.empty or date_col_name not in df_raw.columns:
-        return df_raw, False, "All Available Days"
-
-    parsed_dates = pd.to_datetime(df_raw[date_col_name], dayfirst=True, errors='coerce')
-    valid_dates = parsed_dates.dropna()
-    if valid_dates.empty:
-        return df_raw, False, "All Available Days"
-
-    min_d = valid_dates.min().date()
-    max_d = valid_dates.max().date()
-
-    sd_key, ed_key = f"{key_prefix}_sd", f"{key_prefix}_ed"
-    st.session_state[sd_key] = _clamp_date(st.session_state.get(sd_key, min_d), min_d, max_d)
-    st.session_state[ed_key] = _clamp_date(st.session_state.get(ed_key, max_d), min_d, max_d)
-
-    last_7_start = max(min_d, max_d - datetime.timedelta(days=6))
-    last_14_start = max(min_d, max_d - datetime.timedelta(days=13))
-    mtd_start = max(min_d, max_d.replace(day=1))
-
-    p1, p2, p3, p4, dc1, dc2 = st.columns([0.75, 0.8, 0.7, 0.7, 1.25, 1.25])
-    p1.button("Last 7D", key=f"{key_prefix}_p7", use_container_width=True,
-              on_click=_set_date_preset, args=(key_prefix, last_7_start, max_d))
-    p2.button("Last 14D", key=f"{key_prefix}_p14", use_container_width=True,
-              on_click=_set_date_preset, args=(key_prefix, last_14_start, max_d))
-    p3.button("MTD", key=f"{key_prefix}_pmtd", use_container_width=True,
-              on_click=_set_date_preset, args=(key_prefix, mtd_start, max_d))
-    p4.button("All", key=f"{key_prefix}_pall", use_container_width=True,
-              on_click=_set_date_preset, args=(key_prefix, min_d, max_d))
-
-    start_d = dc1.date_input("Start Date", min_value=min_d, max_value=max_d, key=sd_key, label_visibility="collapsed")
-    end_d = dc2.date_input("End Date", min_value=min_d, max_value=max_d, key=ed_key, label_visibility="collapsed")
-    if start_d > end_d:
-        start_d, end_d = end_d, start_d
-
-    days_cnt = (end_d - start_d).days + 1
-    is_custom = (start_d != min_d) or (end_d != max_d)
-    mask = (parsed_dates.dt.date >= start_d) & (parsed_dates.dt.date <= end_d)
-    filtered_df = df_raw[mask].copy()
-    dur_label = f"{start_d.strftime('%d %b %Y')} to {end_d.strftime('%d %b %Y')} ({days_cnt} Days)"
-    return filtered_df, is_custom, dur_label
-
-def render_unified_filter_bar(
-    df_raw,
-    key_prefix,
-    date_col=None,
-    zone_col=None,
-    ro_col=None,
-    vendor_col=None,
-    route_col=None,
-    leg_col=None,
-    search_placeholder="Search Route, Vendor, Invoice..."
-):
-    """Sticky Power BI-style filter strip with Date Presets, cascading dropdowns & Active Filter Chips."""
-    state = {
-        "is_date_filtered": False,
-        "dur_label": "All Available Days",
-        "zone": "ALL",
-        "ro": "ALL",
-        "vendor": "ALL",
-        "route": "ALL",
-        "leg": "ALL",
-        "search": ""
-    }
-    if df_raw is None or df_raw.empty:
-        return df_raw, state
-
-    for suffix in ("zone", "ro", "vendor", "route", "leg"):
-        pending_key = f"_pending_{key_prefix}_{suffix}"
-        if pending_key in st.session_state:
-            st.session_state[f"{key_prefix}_{suffix}"] = st.session_state.pop(pending_key)
-
-    df_work = df_raw.copy()
-    min_d = max_d = None
-
-    with st.container():
-        st.markdown('<div class="pbi-sticky-anchor"></div>', unsafe_allow_html=True)
-
-        if date_col and date_col in df_work.columns:
-            if pd.api.types.is_datetime64_any_dtype(df_work[date_col]):
-                parsed_dates = df_work[date_col]
-            else:
-                parsed_dates = pd.to_datetime(df_work[date_col], dayfirst=True, errors='coerce')
-            valid_dates = parsed_dates.dropna()
-            if not valid_dates.empty:
-                min_d = valid_dates.min().date()
-                max_d = valid_dates.max().date()
-                sd_key, ed_key = f"{key_prefix}_sd", f"{key_prefix}_ed"
-                st.session_state[sd_key] = _clamp_date(st.session_state.get(sd_key, min_d), min_d, max_d)
-                st.session_state[ed_key] = _clamp_date(st.session_state.get(ed_key, max_d), min_d, max_d)
-
-                last_7_start = max(min_d, max_d - datetime.timedelta(days=6))
-                last_14_start = max(min_d, max_d - datetime.timedelta(days=13))
-                mtd_start = max(min_d, max_d.replace(day=1))
-
-                r1c1, r1c2, r1c3, r1c4, r1c5, r1c6, r1c7 = st.columns([0.65, 0.7, 0.6, 0.6, 1.1, 1.1, 0.85])
-                r1c1.button("Last 7D", key=f"{key_prefix}_u7", use_container_width=True,
-                            on_click=_set_date_preset, args=(key_prefix, last_7_start, max_d))
-                r1c2.button("Last 14D", key=f"{key_prefix}_u14", use_container_width=True,
-                            on_click=_set_date_preset, args=(key_prefix, last_14_start, max_d))
-                r1c3.button("MTD", key=f"{key_prefix}_umtd", use_container_width=True,
-                            on_click=_set_date_preset, args=(key_prefix, mtd_start, max_d))
-                r1c4.button("All", key=f"{key_prefix}_uall", use_container_width=True,
-                            on_click=_set_date_preset, args=(key_prefix, min_d, max_d))
-
-                start_d = r1c5.date_input("Start Date", min_value=min_d, max_value=max_d, key=sd_key, label_visibility="collapsed")
-                end_d = r1c6.date_input("End Date", min_value=min_d, max_value=max_d, key=ed_key, label_visibility="collapsed")
-                r1c7.button("↺ Reset", key=f"{key_prefix}_reset", use_container_width=True,
-                            on_click=_reset_unified_filters, args=(key_prefix, min_d, max_d))
-
-                if start_d > end_d:
-                    start_d, end_d = end_d, start_d
-                days_cnt = (end_d - start_d).days + 1
-                state["is_date_filtered"] = (start_d != min_d) or (end_d != max_d)
-                state["dur_label"] = f"{start_d.strftime('%d %b %Y')} to {end_d.strftime('%d %b %Y')} ({days_cnt} Days)"
-                df_work = df_work[(parsed_dates.dt.date >= start_d) & (parsed_dates.dt.date <= end_d)].copy()
-        else:
-            _, reset_col = st.columns([5.2, 0.8])
-            reset_col.button("↺ Reset", key=f"{key_prefix}_reset_nodate", use_container_width=True,
-                             on_click=_reset_unified_filters, args=(key_prefix, None, None))
-
-        active_controls = []
-        if zone_col and zone_col in df_work.columns:
-            active_controls.append(("zone", "Zone", zone_col))
-        if ro_col and ro_col in df_work.columns:
-            active_controls.append(("ro", "RO", ro_col))
-        if vendor_col and vendor_col in df_work.columns:
-            active_controls.append(("vendor", "Vendor", vendor_col))
-        if route_col and route_col in df_work.columns:
-            active_controls.append(("route", "Route", route_col))
-        if leg_col and leg_col in df_work.columns:
-            active_controls.append(("leg", "Legwise", leg_col))
-
-        col_weights = [1.0] * len(active_controls) + [1.35]
-        row2_cols = st.columns(col_weights)
-
-        for idx, (suffix, label, col_name) in enumerate(active_controls):
-            raw_vals = [
-                v for v in df_work[col_name].dropna().astype(str).str.strip().unique().tolist()
-                if v and v.upper() not in ("NAN", "NONE")
-            ]
-            if suffix == "leg":
-                raw_vals = sorted(raw_vals, key=lambda x: (int(re.search(r'(\d+)', x).group(1)) if re.search(r'(\d+)', x) else 999, x))
-            else:
-                raw_vals = sorted(raw_vals)
-            opts = ["ALL"] + raw_vals
-            w_key = f"{key_prefix}_{suffix}"
-            if st.session_state.get(w_key) not in opts:
-                st.session_state[w_key] = "ALL"
-            chosen = row2_cols[idx].selectbox(label, opts, key=w_key)
-            state[suffix] = chosen
-            if chosen != "ALL":
-                df_work = df_work[df_work[col_name].fillna('').astype(str).str.strip().eq(chosen)].copy()
-
-        search_key = f"{key_prefix}_search"
-        search_val = row2_cols[-1].text_input("🔍 Quick Search", placeholder=search_placeholder, key=search_key)
-        state["search"] = search_val.strip()
-        if state["search"]:
-            q = state["search"]
-            mask = df_work.astype(str).apply(lambda c: c.str.contains(q, case=False, regex=False, na=False)).any(axis=1)
-            df_work = df_work[mask].copy()
-
-        chips = [f'<span class="pbi-chip">📅 {html_module.escape(state["dur_label"])}</span>']
-        for label_name, key_name in [("Zone", "zone"), ("RO", "ro"), ("Vendor", "vendor"), ("Route", "route"), ("Legwise", "leg")]:
-            if state[key_name] != "ALL":
-                chips.append(f'<span class="pbi-chip">{label_name}: {html_module.escape(str(state[key_name]))}</span>')
-        if state["search"]:
-            chips.append(f'<span class="pbi-chip">🔍 “{html_module.escape(state["search"])}”</span>')
-        if len(chips) == 1 and not state["is_date_filtered"]:
-            chips.append('<span class="pbi-chip pbi-chip-muted">All records active · Click any chart bar/point to cross-filter</span>')
-
-        st.markdown(
-            f'<div class="pbi-chip-bar"><span class="pbi-chip-title">Active Filters</span>{"".join(chips)}</div>',
-            unsafe_allow_html=True
-        )
-
-    return df_work, state
-
-
-def render_powerbi_insights(title, metrics, insights, period_note=None):
-    """Render a consistent, filter-aware insight strip for each dashboard module."""
-    st.markdown(f"#### ✨ {title}")
-    if period_note:
-        st.caption(period_note)
-    metric_list = list(metrics or [])
-    for metric_start in range(0, len(metric_list), 4):
-        metric_specs = metric_list[metric_start:metric_start + 4]
-        metric_columns = st.columns(len(metric_specs))
-        for metric_column, metric_spec in zip(metric_columns, metric_specs):
-            label, value = metric_spec[:2]
-            delta = metric_spec[2] if len(metric_spec) > 2 else None
-            metric_column.metric(label, value, delta=delta)
-    insight_list = [str(item).strip() for item in (insights or []) if str(item).strip()]
-    if insight_list:
-        st.caption("Key signals")
-        for insight in insight_list:
-            st.markdown(f"- {insight}")
-
-def render_scheduled_route_master(data):
-    st.markdown("## 🧭 Scheduled Route Master")
-    st.caption("Each row is mapped to its own leg origin, destination, branch names, and ROs · Download a print-ready Excel poster")
-    df_master = data.get('Scheduled_Route_Master', pd.DataFrame()).copy()
-    if df_master.empty:
-        st.warning("The supplied scheduled route table could not be loaded.")
-        return
-
-    lookup_info = df_master.attrs
-    st.caption(f"Route legs, departure/arrival times, TAT, and halting are derived from the uploaded RoutePathReportModel. Branch and RO labels: {lookup_info.get('branch_source') or 'branch list not available'}.")
-    schedule_source = lookup_info.get('schedule_source', '')
-    if schedule_source:
-        if 'Bundled fallback schedule' in schedule_source:
-            st.warning(f"Schedule source: {schedule_source}. Upload the latest National/Zonal Scheduled Route Master workbook in Data Management to refresh these rows.")
-        else:
-            st.caption(f"Schedule source: {schedule_source}")
-    unmapped_count = int(df_master.get('RO', pd.Series(dtype=str)).astype(str).str.upper().eq('RO NOT MAPPED').sum())
-    unmapped_count += int(df_master.get('Destination RO', pd.Series(dtype=str)).astype(str).str.upper().eq('RO NOT MAPPED').sum())
-    if unmapped_count:
-        st.warning(f"{unmapped_count} leg endpoints have no matching RO in the uploaded branch list. Check the branch codes or the RO & Branch List workbook.")
-
-    branch_columns = ['From Branch', 'To Branch', 'Origin', 'Origin Branch', 'Destination', 'Destination Branch']
-    branch_values = sorted({
-        str(value).strip() for col in branch_columns if col in df_master.columns
-        for value in df_master[col].dropna().tolist() if str(value).strip() and str(value).strip() not in ('-', 'nan', 'None')
-    })
-    filter_col, search_col = st.columns([1, 2])
-    selected_branch = filter_col.selectbox("Branch", ["ALL BRANCHES"] + branch_values, key="schedule_branch_filter")
-    search_route = search_col.text_input("Find a route", placeholder="Type a route path or branch code", key="schedule_route_search")
-
-    visible = df_master.copy()
-    if selected_branch != "ALL BRANCHES":
-        branch_mask = pd.Series(False, index=visible.index)
-        for col in branch_columns:
-            if col in visible.columns:
-                branch_mask |= visible[col].astype(str).str.casefold().eq(selected_branch.casefold())
-        visible = visible[branch_mask].copy()
-    if search_route.strip():
-        q = search_route.strip()
-        visible = visible[visible.astype(str).apply(
-            lambda col: col.str.contains(q, case=False, regex=False, na=False)
-        ).any(axis=1)].copy()
-
-    route_path_col = get_col(visible, ['Route Path', 'Route'])
-    origin_branch_col = get_col(visible, ['Origin Branch', 'From Branch', 'Origin'])
-    origin_ro_col = get_col(visible, ['RO', 'Origin RO'])
-    destination_ro_col = get_col(visible, ['Destination RO'])
-    route_count = int(visible[route_path_col].nunique()) if route_path_col else 0
-    branch_count = int(visible[origin_branch_col].nunique()) if origin_branch_col else 0
-    unmapped_endpoints = 0
-    for ro_col in [origin_ro_col, destination_ro_col]:
-        if ro_col:
-            unmapped_endpoints += int(
-                visible[ro_col].fillna('').astype(str).str.strip().str.upper().isin(['RO NOT MAPPED', 'UNMAPPED']).sum()
-            )
-    schedule_fields = [col for col in ['Scheduled Departure Time', 'Scheduled Arrival Time'] if col in visible.columns]
-    complete_schedule_rows = 0
-    if schedule_fields:
-        schedule_present = pd.DataFrame({
-            col: visible[col].fillna('').astype(str).str.strip().str.upper().ne('')
-            & ~visible[col].fillna('').astype(str).str.strip().str.upper().isin(['-', 'NAN', 'NONE'])
-            for col in schedule_fields
-        }, index=visible.index)
-        complete_schedule_rows = int(schedule_present.all(axis=1).sum())
-    schedule_insights = []
-    if route_path_col and not visible.empty:
-        route_counts = visible[route_path_col].dropna().astype(str).value_counts()
-        if not route_counts.empty:
-            top_route = route_counts.index[0].replace('`', '')
-            schedule_insights.append(f"Highest leg volume: `{top_route}` has {int(route_counts.iloc[0]):,} visible legs.")
-    if unmapped_endpoints:
-        schedule_insights.append(f"{unmapped_endpoints:,} visible endpoints have no RO mapping and need a branch-list review.")
-    elif not visible.empty:
-        schedule_insights.append("All visible route endpoints have an RO mapping.")
-    if schedule_fields:
-        schedule_insights.append(
-            f"{complete_schedule_rows:,} of {len(visible):,} visible legs have all available scheduled time fields filled."
-        )
-    render_powerbi_insights(
-        'Scheduled Network Snapshot',
-        [('Visible route legs', f'{len(visible):,}'), ('Route paths', f'{route_count:,}'),
-         ('Origin branches', f'{branch_count:,}'), ('Unmapped endpoints', f'{unmapped_endpoints:,}')],
-        schedule_insights,
-        period_note='Signals follow the selected branch and route search.'
-    )
-
-    branch_label = selected_branch if selected_branch != "ALL BRANCHES" else "All Branches"
-    safe_branch = re.sub(r'[^A-Za-z0-9_-]+', '_', branch_label).strip('_') or 'all_branches'
-
-    poster_specs = [
-        {
-            'key': 'departure', 'tab': '🚚 Departure Poster', 'label': 'Scheduled Departure Poster',
-            'columns': ['Route Code', 'Route Path', 'Legwise', 'Legs', 'RO', 'Origin Branch', 'Departure Route Day', 'Scheduled Departure Time'],
-            'scope_columns': ['Origin', 'Origin Branch', 'From Branch'],
-            'caption': 'Departure schedule from each route branch. Route Day is the same offset used by Vendor Performance.',
-            'widths': {'Route Code': 12, 'Route Path': 28, 'Legwise': 11, 'Legs': 24, 'Origin RO': 16, 'Origin Branch': 28, 'Departure Route Day': 18, 'Scheduled Departure Time': 24},
-            'paper_size': 8, 'landscape': True
-        },
-        {
-            'key': 'arrival', 'tab': '🏁 Arrival Poster', 'label': 'Scheduled Arrival Poster',
-            'columns': ['Route Code', 'Route Path', 'Legwise', 'Legs', 'Origin Branch', 'RO', 'Destination Branch', 'Destination RO', 'Arrival Route Day', 'Scheduled Arrival Time', 'Scheduled Driving Hours'],
-            'scope_columns': ['Destination', 'Destination Branch', 'To Branch'],
-            'caption': 'Arrival schedule at each destination branch, with route day and scheduled leg hours.',
-            'widths': {'Route Code': 12, 'Route Path': 26, 'Legwise': 10, 'Legs': 21, 'Origin Branch': 22, 'Origin RO': 15, 'Destination Branch': 25, 'Destination RO': 18, 'Arrival Route Day': 18, 'Scheduled Arrival Time': 22, 'Scheduled Leg Hours': 20},
-            'paper_size': 8, 'landscape': True
-        },
-        {
-            'key': 'halting', 'tab': '⏱️ Halting Poster', 'label': 'Scheduled Halting Poster',
-            'columns': ['Route Code', 'Route Path', 'Legwise', 'Legs', 'Origin Branch', 'RO', 'Departure Route Day', 'Scheduled Departure Time', 'Arrival Route Day', 'Scheduled Arrival Time', 'Scheduled Halting', 'Scheduled TAT Till Destination'],
-            'scope_columns': ['Origin', 'Origin Branch', 'From Branch', 'Scheduled Halting'],
-            'caption': 'Halting is the scheduled departure minus scheduled arrival at the origin branch; route TAT follows the existing processing calculation.',
-            'widths': {'Route Code': 12, 'Route Path': 25, 'Legwise': 10, 'Legs': 20, 'Origin Branch': 21, 'Origin RO': 15, 'Departure Route Day': 18, 'Scheduled Departure Time': 22, 'Arrival Route Day': 18, 'Scheduled Arrival Time': 22, 'Scheduled Halting': 20, 'Scheduled TAT Till Destination': 24},
-            'paper_size': 8, 'landscape': True
-        }
-    ]
-    poster_tabs = st.tabs([spec['tab'] for spec in poster_specs])
-    selected_key = _lookup_key(selected_branch)
-    for poster_tab, spec in zip(poster_tabs, poster_specs):
-        with poster_tab:
-            poster_source = visible.copy()
-            if selected_branch != 'ALL BRANCHES':
-                branch_mask = pd.Series(False, index=poster_source.index)
-                for col in spec['scope_columns']:
-                    if col in poster_source.columns:
-                        branch_mask |= poster_source[col].fillna('').astype(str).apply(_lookup_key).eq(selected_key)
-                poster_source = poster_source[branch_mask].copy()
-
-            poster = poster_source.reindex(columns=spec['columns']).fillna('')
-            poster = poster.rename(columns={'RO': 'Origin RO', 'Scheduled Driving Hours': 'Scheduled Leg Hours'})
-            st.caption(spec['caption'])
-            if poster.empty:
-                st.info(f"No {spec['label'].lower()} rows for {branch_label} with these filters.")
-                continue
-            render_centered_html_table(poster, height=400)
-            file_stem = f"Scheduled_{spec['key'].title()}_Poster_{safe_branch}"
-            _p_sig = (spec['key'], safe_branch, len(poster))
-            _pc1, _pc2 = st.columns([1.6, 3.4])
-            if _pc1.button(f"📥 Prepare {spec['label']} (Excel)", key=f"prep_srm_{spec['key']}_{safe_branch}", use_container_width=True, type="primary"):
-                with st.spinner(f"Building {spec['label']}..."):
-                    st.session_state[f"_srm_xl_{spec['key']}"] = (
-                        _p_sig,
-                        build_formatted_excel_bytes(
-                            poster, spec['label'], f"{spec['label']} · {branch_label}",
-                            width_overrides=spec['widths'], paper_size=spec['paper_size'], landscape=spec['landscape']
-                        )
-                    )
-            if st.session_state.get(f"_srm_xl_{spec['key']}") and st.session_state[f"_srm_xl_{spec['key']}"][0] == _p_sig:
-                _pc2.download_button(
-                    f"⬇️ Download {spec['label']} (Excel)",
-                    data=st.session_state[f"_srm_xl_{spec['key']}"][1],
-                    file_name=f"{file_stem}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key=f"schedule_poster_{spec['key']}_{safe_branch}"
-                )
-
-    master_columns = [
-        'Route Code', 'RO', 'Origin', 'Origin Branch', 'Destination', 'Destination Branch', 'Destination RO',
-        'Route Path', 'Legwise', 'Legs', 'Departure Route Day', 'Scheduled Departure Time',
-        'Arrival Route Day', 'Scheduled Arrival Time',
-        'Scheduled Driving Hours', 'Scheduled Halting', 'Scheduled TAT Till Destination'
-    ]
-    with st.expander("Full leg-wise route master preview", expanded=False):
-        render_centered_html_table(visible.reindex(columns=master_columns).fillna(''), height=460)
-
-def get_overall_issue_frames(data):
-    ops_raw = data.get('Legwise_Processed_Data', pd.DataFrame())
-    pay_raw = data.get('Payment_Raw', data.get('Master_Database', pd.DataFrame()))
-    if not st.session_state.get('all_vendors', True):
-        ops_vendor_col = get_col(ops_raw, ['VendorName', 'Vendor Name'])
-        pay_vendor_col = get_col(pay_raw, ['Vendor Name', 'VendorName'])
-        ops_raw = filter_df_by_user_vendors(ops_raw, ops_vendor_col) if ops_vendor_col else ops_raw.iloc[0:0].copy()
-        pay_raw = filter_df_by_user_vendors(pay_raw, pay_vendor_col) if pay_vendor_col else pay_raw.iloc[0:0].copy()
-    return ops_raw, pay_raw
-
-def get_overall_cpk_frame(data):
-    cpk_raw = data.get('CPK_Raw_Data', pd.DataFrame())
-    if not st.session_state.get('all_vendors', True):
-        vendor_col = get_col(cpk_raw, ['VendorName', 'Vendor Name'])
-        cpk_raw = filter_df_by_user_vendors(cpk_raw, vendor_col) if vendor_col else cpk_raw.iloc[0:0].copy()
-    return cpk_raw
-
-def get_overall_issue_date_bounds(ops_raw, pay_raw, cpk_raw=None):
-    available = []
-    frames = [(ops_raw, ['MCD_StartDate', 'Date']), (pay_raw, ['Base Date', 'Invoice Date'])]
-    if isinstance(cpk_raw, pd.DataFrame):
-        frames.append((cpk_raw, ['Date']))
-    for frame, candidates in frames:
-        date_col = get_col(frame, candidates)
-        if date_col and not frame.empty:
-            parsed = pd.to_datetime(frame[date_col], dayfirst=True, errors='coerce').dropna()
-            if not parsed.empty:
-                available.extend([parsed.min().date(), parsed.max().date()])
-    if available:
-        return min(available), max(available)
-    today = get_ist_now().date()
-    return today - datetime.timedelta(days=13), today
-
-def filter_overall_issue_frames(ops_raw, pay_raw, start_date, end_date, selected_zone='ALL ZONES'):
-    def apply_filters(frame, date_candidates):
-        result = frame.copy()
-        if result.empty:
-            return result
-        date_col = get_col(result, date_candidates)
-        if date_col:
-            parsed = pd.to_datetime(result[date_col], dayfirst=True, errors='coerce')
-            mask = parsed.dt.date.between(start_date, end_date)
-            result = result[mask].copy()
-        if selected_zone != 'ALL ZONES':
-            zone_col = get_col(result, ['Zone'])
-            if zone_col:
-                result = result[result[zone_col].fillna('UNKNOWN ZONE').astype(str).str.strip().str.upper().eq(selected_zone.upper())].copy()
-            else:
-                result = result.iloc[0:0].copy()
-        return result
-    return apply_filters(ops_raw, ['MCD_StartDate', 'Date']), apply_filters(pay_raw, ['Base Date', 'Invoice Date'])
-
-def filter_overall_utilization_frame(cpk_raw, start_date, end_date, selected_zone='ALL ZONES'):
-    result = cpk_raw.copy() if isinstance(cpk_raw, pd.DataFrame) else pd.DataFrame()
-    if result.empty:
-        return result
-    date_col = get_col(result, ['Date'])
-    if date_col:
-        parsed = pd.to_datetime(result[date_col], dayfirst=True, errors='coerce')
-        result = result[parsed.dt.date.between(start_date, end_date)].copy()
-    if selected_zone != 'ALL ZONES':
-        zone_col = get_col(result, ['Zone'])
-        result = result[result[zone_col].fillna('UNKNOWN ZONE').astype(str).str.strip().str.upper().eq(selected_zone.upper())].copy() if zone_col else result.iloc[0:0].copy()
-    return result
-
-def get_overall_issue_query_url():
-    try:
-        return str(st.context.url)
-    except Exception:
-        return ''
-
-# --------------------- Overall Issues: in-session drill-down and export ---------------------
-
-
-
-
-
-
-
-
-def _max_consecutive_days(date_iterable):
-    """Return longest consecutive-day streak of issues for repeat offender detection."""
-    uniq = sorted({d for d in date_iterable if pd.notna(d)})
-    if not uniq:
-        return 0
-    best = cur = 1
-    for i in range(1, len(uniq)):
-        try:
-            if (uniq[i] - uniq[i - 1]).days == 1:
-                cur += 1
-                if cur > best:
-                    best = cur
-            else:
-                cur = 1
-        except Exception:
-            cur = 1
-    return best
-
-def _delay_str_to_hrs(val):
-    if pd.isna(val):
-        return np.nan
-    s = str(val).strip()
-    if not s or s in ('-', 'nan', 'None'):
-        return np.nan
-    neg = s.startswith('-')
-    s_abs = s[1:] if neg else s
-    if ':' in s_abs:
-        pts = s_abs.split(':')
-        try:
-            v = float(pts[0]) + float(pts[1]) / 60.0
-            return -v if neg else v
-        except Exception:
-            return np.nan
-    try:
-        return float(s)
-    except Exception:
-        return np.nan
 
 def build_daily_overall_issues_pack(ops_df, ven_df, pay_df, cpk_df, group_by_mode="Branch-wise"):
     """
@@ -6403,6 +5777,689 @@ def build_daily_overall_issues_pack(ops_df, ven_df, pay_df, cpk_df, group_by_mod
     return pack
 
 
+@st.cache_data(show_spinner=False, max_entries=1, ttl=DATA_RETENTION_TTL_SECS)
+def _get_normalized_payment_cached(path, payment_signature, branch_signature, processed_signature):
+    """Ultra-fast payment loader: disk pickle -> streaming XML -> openpyxl fallback."""
+    pkl_path = os.path.join(DATA_DIR, ".payment_norm_fast_cache.pkl")
+    sig = ("pay_norm_v6", payment_signature, branch_signature, processed_signature)
+    hit = _load_disk_pkl_cache(pkl_path, sig)
+    if isinstance(hit, pd.DataFrame) and not hit.empty:
+        return hit
+    payment_raw = read_payment_sheet_cached(path, payment_signature, 'Report')
+    normalized = normalize_overall_payment_raw(payment_raw, None)
+    _save_disk_pkl_cache(pkl_path, sig, normalized)
+    return normalized
+
+def get_normalized_overall_payment(path, data=None, processed_signature=None):
+    if not path or not os.path.exists(path):
+        return pd.DataFrame()
+    payment_signature = file_version(path)
+    branch_path = FILE_MAP.get('BRANCH_MASTER', '')
+    branch_signature = file_version(branch_path) if branch_path and os.path.exists(branch_path) else None
+    return _get_normalized_payment_cached(path, payment_signature, branch_signature, processed_signature)
+
+@st.cache_data(show_spinner=False, max_entries=1, ttl=DATA_RETENTION_TTL_SECS)
+def _read_all_dashboard_sheets_once(path, signature):
+    """Read and pre-normalize the master workbook ONCE with disk pickle cache so every switch is <0.1s."""
+    pkl_path = os.path.join(DATA_DIR, ".monitoring_sheets_fast_cache.pkl")
+    sig = ("mon_sheets_v5", signature)
+    hit = _load_disk_pkl_cache(pkl_path, sig)
+    if isinstance(hit, dict) and hit:
+        return hit
+    engine = 'openpyxl'
+    try:
+        import python_calamine  # noqa: F401
+        engine = 'calamine'
+    except Exception:
+        engine = 'openpyxl'
+    with pd.ExcelFile(path, engine=engine) as workbook:
+        sheets = {name: workbook.parse(name) for name in workbook.sheet_names}
+    if 'Vendor_Perf_Raw' in sheets and not sheets['Vendor_Perf_Raw'].empty:
+        if 'VendorName' in sheets['Vendor_Perf_Raw'].columns:
+            sheets['Vendor_Perf_Raw'] = normalize_vendor_column_cached(sheets['Vendor_Perf_Raw'], 'VendorName')
+        sheets['Vendor_Perf_Summary'] = build_vendor_summary_from_raw(sheets['Vendor_Perf_Raw'])
+    elif 'Vendor_Perf_Summary' in sheets and not sheets['Vendor_Perf_Summary'].empty:
+        if 'VendorName' in sheets['Vendor_Perf_Summary'].columns:
+            sheets['Vendor_Perf_Summary'] = normalize_vendor_column_cached(sheets['Vendor_Perf_Summary'], 'VendorName')
+    if 'Legwise_Processed_Data' in sheets and not sheets['Legwise_Processed_Data'].empty:
+        if 'VendorName' in sheets['Legwise_Processed_Data'].columns:
+            sheets['Legwise_Processed_Data'] = normalize_vendor_column_cached(sheets['Legwise_Processed_Data'], 'VendorName')
+        if '_OpsRemarkOutcome' not in sheets['Legwise_Processed_Data'].columns:
+            sheets['Legwise_Processed_Data']['_OpsRemarkOutcome'] = ops_remark_outcome_series(sheets['Legwise_Processed_Data'])
+    _save_disk_pkl_cache(pkl_path, sig, sheets)
+    return sheets
+
+def read_dashboard_sheets_cached(path, signature, sheet_names):
+    """Serve requested module sheets instantaneously from the single cached workbook."""
+    all_sheets = _read_all_dashboard_sheets_once(path, signature)
+    return {name: all_sheets[name] for name in sheet_names if name in all_sheets}
+
+@st.cache_data(show_spinner=False, max_entries=2)
+def read_binary_asset_cached(path, signature):
+    """Reuse report bytes across Streamlit reruns until the report file changes."""
+    with open(path, 'rb') as source_file:
+        return source_file.read()
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def read_access_vendor_options_cached(path, signature):
+    """Read only vendor-name columns for the access editor, not both full raw sheets."""
+    vendor_names = set()
+    try:
+        with pd.ExcelFile(path, engine='openpyxl') as workbook:
+            for sheet_name in ('Vendor_Perf_Raw', 'CPK_Raw_Data'):
+                if sheet_name not in workbook.sheet_names:
+                    continue
+                header = workbook.parse(sheet_name, nrows=0)
+                if 'VendorName' not in header.columns:
+                    continue
+                values = workbook.parse(sheet_name, usecols=['VendorName'])['VendorName'].dropna().unique()
+                vendor_names.update(
+                    clean_name for clean_name in (normalize_vendor_name(value) for value in values)
+                    if clean_name
+                )
+    except Exception as exc:
+        logging.warning(f"Could not load access-control vendor options: {exc}")
+    return sorted(vendor_names)
+
+def load_dashboard_data(page):
+    if page == "🧭 Scheduled Route Master":
+        return {'Scheduled_Route_Master': get_scheduled_route_master(get_route_lookup_signature())}
+    path = FILE_MAP["FINAL_OUTPUT"]
+    if not os.path.exists(path):
+        if page in ["🏠 Executive Pulse", "🎯 My Task & Focus Hub", "📝 Today's Call Action Plan", "🔐 User & Access Control", "⚠️ Overall Issues", "💳 Payment Dashboard", "📱 Communication Hub"]:
+            data = {"dummy": pd.DataFrame()}
+            if page in ["🏠 Executive Pulse", "⚠️ Overall Issues", "💳 Payment Dashboard", "📱 Communication Hub"] and os.path.exists(FILE_MAP.get('PAYMENT', '')):
+                try:
+                    data['Payment_Raw'] = get_normalized_overall_payment(FILE_MAP['PAYMENT'], data)
+                except Exception as exc:
+                    logging.warning(f"Could not load raw payment data for Overall Issues: {exc}")
+            return data
+        return {}
+    try:
+        processed_signature = file_version(path)
+        payment_path = FILE_MAP.get('PAYMENT', '')
+        payment_signature = file_version(payment_path) if payment_path and os.path.exists(payment_path) else None
+        branch_path = FILE_MAP.get('BRANCH_MASTER', '')
+        branch_signature = file_version(branch_path) if branch_path and os.path.exists(branch_path) else None
+        cb_path = FILE_MAP.get('CUSTOM_BRANCH_RO_MAP', '')
+        cb_signature = file_version(cb_path) if cb_path and os.path.exists(cb_path) else None
+        page_cache_key = ('v8', page, processed_signature, payment_signature, branch_signature, cb_signature)
+        page_cache = st.session_state.setdefault('_dashboard_page_cache', {})
+        if page_cache_key in page_cache:
+            # Page frames are kept for this session, so module navigation avoids another
+            # workbook deserialize and normalization pass. Renderers work on local copies.
+            return dict(page_cache[page_cache_key])
+        if page in ("🎯 My Task & Focus Hub", "🧩 Module Code Manager"):
+            return {'Admin_Tasks_Ready': True}
+        if page == "🔐 User & Access Control":
+            return {'Vendor_Options': read_access_vendor_options_cached(path, processed_signature)}
+        data = read_dashboard_sheets_cached(path, processed_signature, MENU_SHEETS[page])
+        if page in ["🏠 Executive Pulse", "⚠️ Overall Issues", "💳 Payment Dashboard", "📱 Communication Hub"] and os.path.exists(FILE_MAP.get('PAYMENT', '')):
+            try:
+                data['Payment_Raw'] = get_normalized_overall_payment(FILE_MAP['PAYMENT'], data, processed_signature)
+            except Exception as exc:
+                logging.warning(f"Could not load raw payment data for Overall Issues: {exc}")
+        if page in ["📝 Today's Call Action Plan", "🔐 User & Access Control", "⚠️ Overall Issues"] and not data:
+            data = {"dummy": pd.DataFrame()}
+        # Apply live Custom Branch -> RO overrides immediately so website edits show without full re-upload
+        for _df_k, _b_c, _r_c in [
+            ('Legwise_Processed_Data', 'CD_FromBranch', 'Origin RO'),
+            ('Vendor_Perf_Raw', 'CD_FromBranch', 'Origin RO'),
+            ('All_Trips_Audit', 'Origin Branch', 'Origin RO'),
+        ]:
+            if _df_k in data and isinstance(data[_df_k], pd.DataFrame) and not data[_df_k].empty:
+                data[_df_k] = apply_custom_branch_ro_overrides_live(data[_df_k], _b_c, _r_c, 'Zone')
+        page_cache[page_cache_key] = data
+        while len(page_cache) > 10:
+            page_cache.pop(next(iter(page_cache)))
+        return data
+    except Exception as exc:
+        logging.exception("Cannot read dashboard workbook")
+        st.error(f"Cannot read the processed Excel file: {exc}")
+        if st.session_state['role'] == 'Admin':
+            st.exception(exc)
+        st.stop()
+
+if st.session_state.pop('_gh_restored_notice', None):
+    st.info("♻️ 7-Day Cloud Snapshot auto-restored after server wake-up!")
+if st.session_state.pop('_processing_success', False):
+    st.success("Data refreshed successfully. Your Executive Report is ready to download!")
+
+# 📥 EXPORT REPORT - ON-DEMAND GENERATION (Zero RAM overhead during processing!)
+if st.session_state.get('all_vendors', True) and os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
+    st.sidebar.markdown("---")
+    st.sidebar.header("📥 Export Reports")
+    if st.sidebar.button("⚙️ Prepare VIP Executive Report", key="prep_vip_exec_btn", use_container_width=True):
+        with st.spinner("Generating VIP Executive Report..."):
+            try:
+                all_s = _read_all_dashboard_sheets_once(FILE_MAP["FINAL_OUTPUT"], file_version(FILE_MAP["FINAL_OUTPUT"]))
+                generate_vip_executive_report_to_disk(all_s)
+                st.session_state['_vip_exec_report_ready'] = True
+                gc.collect()
+            except Exception as exc:
+                st.sidebar.error(f"Could not generate report: {exc}")
+    if os.path.exists(FILE_MAP["EXECUTIVE_REPORT"]):
+        try:
+            report_path = FILE_MAP["EXECUTIVE_REPORT"]
+            report_bytes = read_binary_asset_cached(report_path, file_version(report_path))
+            st.sidebar.download_button(
+                "📄 Download VIP Executive Report",
+                data=report_bytes,
+                file_name=f"Trackon_Executive_Master_Report_{get_ist_now():%d_%b_%Y}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                type="primary"
+            )
+        except Exception as exc:
+            st.sidebar.error(f"Could not load download: {exc}")
+
+    ts = os.path.getmtime(FILE_MAP["FINAL_OUTPUT"])
+    ist = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+    dt_obj = datetime.datetime.fromtimestamp(ts, tz=ist)
+    dt = dt_obj.strftime('%d %b %Y, %I:%M %p')
+    exp_dt = (dt_obj + datetime.timedelta(days=DATA_RETENTION_DAYS)).strftime('%d %b %Y')
+    st.sidebar.caption(f"📊 Refreshed: {dt} (IST) · Valid till {exp_dt} (7 Days)")
+
+data = load_dashboard_data(choice)
+if not data and choice not in ["🎯 My Task & Focus Hub", "🔐 User & Access Control", "🧭 Scheduled Route Master", "⚠️ Overall Issues", "🧩 Module Code Manager"]:
+    if ops_remark_raw_view or ven_perf_raw_view or overall_issue_raw_view:
+        try:
+            _keep_sid = _get_qp_str('sid', ''); st.query_params.clear(); (_keep_sid and st.query_params.__setitem__('sid', _keep_sid))
+        except Exception:
+            pass
+        st.session_state["ops_win_hide_sidebar"] = False
+        st.session_state["ven_win_hide_sidebar"] = False
+        st.rerun()
+    st.warning("No processed data for this page. Admin must upload the relevant files and process data.")
+    st.stop()
+
+st.markdown(f"""
+<div class="app-topline">
+  <div>
+    <div class="app-eyebrow">Trackon • Fleet Operations</div>
+    <div class="app-brandline">Command Center <span class="app-subline">Network performance at a glance</span></div>
+  </div>
+  <div class="app-chip">{html_module.escape(selected_theme_name)} &nbsp;·&nbsp; {html_module.escape(choice)}</div>
+</div>
+""", unsafe_allow_html=True)
+
+try:
+    import plotly.express as px
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    PLOTLY_AVAILABLE = False
+
+# ==========================================
+# 7B. UNIFIED FILTER BAR, DATE PRESETS & CROSS-FILTER ENGINE
+# ==========================================
+def _clamp_date(val, min_d, max_d):
+    if val is None or val < min_d:
+        return min_d
+    if val > max_d:
+        return max_d
+    return val
+
+def _set_date_preset(key_prefix, start_val, end_val):
+    st.session_state[f"{key_prefix}_sd"] = start_val
+    st.session_state[f"{key_prefix}_ed"] = end_val
+
+def _reset_unified_filters(key_prefix, min_d=None, max_d=None):
+    if min_d is not None and max_d is not None:
+        st.session_state[f"{key_prefix}_sd"] = min_d
+        st.session_state[f"{key_prefix}_ed"] = max_d
+    for suffix in ("zone", "ro", "vendor", "route", "leg"):
+        st.session_state[f"{key_prefix}_{suffix}"] = "ALL"
+    st.session_state[f"{key_prefix}_search"] = ""
+
+def render_duration_selector(df_raw, date_col_name, key_prefix):
+    """Upgraded date selector with Power BI presets (Last 7D, Last 14D, MTD, All)."""
+    if df_raw is None or df_raw.empty or date_col_name not in df_raw.columns:
+        return df_raw, False, "All Available Days"
+
+    parsed_dates = pd.to_datetime(df_raw[date_col_name], dayfirst=True, errors='coerce')
+    valid_dates = parsed_dates.dropna()
+    if valid_dates.empty:
+        return df_raw, False, "All Available Days"
+
+    min_d = valid_dates.min().date()
+    max_d = valid_dates.max().date()
+
+    sd_key, ed_key = f"{key_prefix}_sd", f"{key_prefix}_ed"
+    st.session_state[sd_key] = _clamp_date(st.session_state.get(sd_key, min_d), min_d, max_d)
+    st.session_state[ed_key] = _clamp_date(st.session_state.get(ed_key, max_d), min_d, max_d)
+
+    last_7_start = max(min_d, max_d - datetime.timedelta(days=6))
+    last_14_start = max(min_d, max_d - datetime.timedelta(days=13))
+    mtd_start = max(min_d, max_d.replace(day=1))
+
+    p1, p2, p3, p4, dc1, dc2 = st.columns([0.75, 0.8, 0.7, 0.7, 1.25, 1.25])
+    p1.button("Last 7D", key=f"{key_prefix}_p7", use_container_width=True,
+              on_click=_set_date_preset, args=(key_prefix, last_7_start, max_d))
+    p2.button("Last 14D", key=f"{key_prefix}_p14", use_container_width=True,
+              on_click=_set_date_preset, args=(key_prefix, last_14_start, max_d))
+    p3.button("MTD", key=f"{key_prefix}_pmtd", use_container_width=True,
+              on_click=_set_date_preset, args=(key_prefix, mtd_start, max_d))
+    p4.button("All", key=f"{key_prefix}_pall", use_container_width=True,
+              on_click=_set_date_preset, args=(key_prefix, min_d, max_d))
+
+    start_d = dc1.date_input("Start Date", min_value=min_d, max_value=max_d, key=sd_key, label_visibility="collapsed")
+    end_d = dc2.date_input("End Date", min_value=min_d, max_value=max_d, key=ed_key, label_visibility="collapsed")
+    if start_d > end_d:
+        start_d, end_d = end_d, start_d
+
+    days_cnt = (end_d - start_d).days + 1
+    is_custom = (start_d != min_d) or (end_d != max_d)
+    mask = (parsed_dates.dt.date >= start_d) & (parsed_dates.dt.date <= end_d)
+    filtered_df = df_raw[mask].copy()
+    dur_label = f"{start_d.strftime('%d %b %Y')} to {end_d.strftime('%d %b %Y')} ({days_cnt} Days)"
+    return filtered_df, is_custom, dur_label
+
+def render_unified_filter_bar(
+    df_raw,
+    key_prefix,
+    date_col=None,
+    zone_col=None,
+    ro_col=None,
+    vendor_col=None,
+    route_col=None,
+    leg_col=None,
+    search_placeholder="Search Route, Vendor, Invoice..."
+):
+    """Sticky Power BI-style filter strip with Date Presets, cascading dropdowns & Active Filter Chips."""
+    state = {
+        "is_date_filtered": False,
+        "dur_label": "All Available Days",
+        "zone": "ALL",
+        "ro": "ALL",
+        "vendor": "ALL",
+        "route": "ALL",
+        "leg": "ALL",
+        "search": ""
+    }
+    if df_raw is None or df_raw.empty:
+        return df_raw, state
+
+    for suffix in ("zone", "ro", "vendor", "route", "leg"):
+        pending_key = f"_pending_{key_prefix}_{suffix}"
+        if pending_key in st.session_state:
+            st.session_state[f"{key_prefix}_{suffix}"] = st.session_state.pop(pending_key)
+
+    df_work = df_raw.copy()
+    min_d = max_d = None
+
+    with st.container():
+        st.markdown('<div class="pbi-sticky-anchor"></div>', unsafe_allow_html=True)
+
+        if date_col and date_col in df_work.columns:
+            if pd.api.types.is_datetime64_any_dtype(df_work[date_col]):
+                parsed_dates = df_work[date_col]
+            else:
+                parsed_dates = pd.to_datetime(df_work[date_col], dayfirst=True, errors='coerce')
+            valid_dates = parsed_dates.dropna()
+            if not valid_dates.empty:
+                min_d = valid_dates.min().date()
+                max_d = valid_dates.max().date()
+                sd_key, ed_key = f"{key_prefix}_sd", f"{key_prefix}_ed"
+                st.session_state[sd_key] = _clamp_date(st.session_state.get(sd_key, min_d), min_d, max_d)
+                st.session_state[ed_key] = _clamp_date(st.session_state.get(ed_key, max_d), min_d, max_d)
+
+                last_7_start = max(min_d, max_d - datetime.timedelta(days=6))
+                last_14_start = max(min_d, max_d - datetime.timedelta(days=13))
+                mtd_start = max(min_d, max_d.replace(day=1))
+
+                r1c1, r1c2, r1c3, r1c4, r1c5, r1c6, r1c7 = st.columns([0.65, 0.7, 0.6, 0.6, 1.1, 1.1, 0.85])
+                r1c1.button("Last 7D", key=f"{key_prefix}_u7", use_container_width=True,
+                            on_click=_set_date_preset, args=(key_prefix, last_7_start, max_d))
+                r1c2.button("Last 14D", key=f"{key_prefix}_u14", use_container_width=True,
+                            on_click=_set_date_preset, args=(key_prefix, last_14_start, max_d))
+                r1c3.button("MTD", key=f"{key_prefix}_umtd", use_container_width=True,
+                            on_click=_set_date_preset, args=(key_prefix, mtd_start, max_d))
+                r1c4.button("All", key=f"{key_prefix}_uall", use_container_width=True,
+                            on_click=_set_date_preset, args=(key_prefix, min_d, max_d))
+
+                start_d = r1c5.date_input("Start Date", min_value=min_d, max_value=max_d, key=sd_key, label_visibility="collapsed")
+                end_d = r1c6.date_input("End Date", min_value=min_d, max_value=max_d, key=ed_key, label_visibility="collapsed")
+                r1c7.button("↺ Reset", key=f"{key_prefix}_reset", use_container_width=True,
+                            on_click=_reset_unified_filters, args=(key_prefix, min_d, max_d))
+
+                if start_d > end_d:
+                    start_d, end_d = end_d, start_d
+                days_cnt = (end_d - start_d).days + 1
+                state["is_date_filtered"] = (start_d != min_d) or (end_d != max_d)
+                state["dur_label"] = f"{start_d.strftime('%d %b %Y')} to {end_d.strftime('%d %b %Y')} ({days_cnt} Days)"
+                df_work = df_work[(parsed_dates.dt.date >= start_d) & (parsed_dates.dt.date <= end_d)].copy()
+        else:
+            _, reset_col = st.columns([5.2, 0.8])
+            reset_col.button("↺ Reset", key=f"{key_prefix}_reset_nodate", use_container_width=True,
+                             on_click=_reset_unified_filters, args=(key_prefix, None, None))
+
+        active_controls = []
+        if zone_col and zone_col in df_work.columns:
+            active_controls.append(("zone", "Zone", zone_col))
+        if ro_col and ro_col in df_work.columns:
+            active_controls.append(("ro", "RO", ro_col))
+        if vendor_col and vendor_col in df_work.columns:
+            active_controls.append(("vendor", "Vendor", vendor_col))
+        if route_col and route_col in df_work.columns:
+            active_controls.append(("route", "Route", route_col))
+        if leg_col and leg_col in df_work.columns:
+            active_controls.append(("leg", "Legwise", leg_col))
+
+        col_weights = [1.0] * len(active_controls) + [1.35]
+        row2_cols = st.columns(col_weights)
+
+        for idx, (suffix, label, col_name) in enumerate(active_controls):
+            raw_vals = [
+                v for v in df_work[col_name].dropna().astype(str).str.strip().unique().tolist()
+                if v and v.upper() not in ("NAN", "NONE")
+            ]
+            if suffix == "leg":
+                raw_vals = sorted(raw_vals, key=lambda x: (int(re.search(r'(\d+)', x).group(1)) if re.search(r'(\d+)', x) else 999, x))
+            else:
+                raw_vals = sorted(raw_vals)
+            opts = ["ALL"] + raw_vals
+            w_key = f"{key_prefix}_{suffix}"
+            if st.session_state.get(w_key) not in opts:
+                st.session_state[w_key] = "ALL"
+            chosen = row2_cols[idx].selectbox(label, opts, key=w_key)
+            state[suffix] = chosen
+            if chosen != "ALL":
+                df_work = df_work[df_work[col_name].fillna('').astype(str).str.strip().eq(chosen)].copy()
+
+        search_key = f"{key_prefix}_search"
+        search_val = row2_cols[-1].text_input("🔍 Quick Search", placeholder=search_placeholder, key=search_key)
+        state["search"] = search_val.strip()
+        if state["search"]:
+            q = state["search"]
+            mask = df_work.astype(str).apply(lambda c: c.str.contains(q, case=False, regex=False, na=False)).any(axis=1)
+            df_work = df_work[mask].copy()
+
+        chips = [f'<span class="pbi-chip">📅 {html_module.escape(state["dur_label"])}</span>']
+        for label_name, key_name in [("Zone", "zone"), ("RO", "ro"), ("Vendor", "vendor"), ("Route", "route"), ("Legwise", "leg")]:
+            if state[key_name] != "ALL":
+                chips.append(f'<span class="pbi-chip">{label_name}: {html_module.escape(str(state[key_name]))}</span>')
+        if state["search"]:
+            chips.append(f'<span class="pbi-chip">🔍 “{html_module.escape(state["search"])}”</span>')
+        if len(chips) == 1 and not state["is_date_filtered"]:
+            chips.append('<span class="pbi-chip pbi-chip-muted">All records active · Click any chart bar/point to cross-filter</span>')
+
+        st.markdown(
+            f'<div class="pbi-chip-bar"><span class="pbi-chip-title">Active Filters</span>{"".join(chips)}</div>',
+            unsafe_allow_html=True
+        )
+
+    return df_work, state
+
+
+def render_powerbi_insights(title, metrics, insights, period_note=None):
+    """Render a consistent, filter-aware insight strip for each dashboard module."""
+    st.markdown(f"#### ✨ {title}")
+    if period_note:
+        st.caption(period_note)
+    metric_list = list(metrics or [])
+    for metric_start in range(0, len(metric_list), 4):
+        metric_specs = metric_list[metric_start:metric_start + 4]
+        metric_columns = st.columns(len(metric_specs))
+        for metric_column, metric_spec in zip(metric_columns, metric_specs):
+            label, value = metric_spec[:2]
+            delta = metric_spec[2] if len(metric_spec) > 2 else None
+            metric_column.metric(label, value, delta=delta)
+    insight_list = [str(item).strip() for item in (insights or []) if str(item).strip()]
+    if insight_list:
+        st.caption("Key signals")
+        for insight in insight_list:
+            st.markdown(f"- {insight}")
+
+# === [MODULE_START: Scheduled Route Master] ===
+def render_scheduled_route_master(data):
+    st.markdown("## 🧭 Scheduled Route Master")
+    st.caption("Each row is mapped to its own leg origin, destination, branch names, and ROs · Download a print-ready Excel poster")
+    df_master = data.get('Scheduled_Route_Master', pd.DataFrame()).copy()
+    if df_master.empty:
+        st.warning("The supplied scheduled route table could not be loaded.")
+        return
+
+    lookup_info = df_master.attrs
+    st.caption(f"Route legs, departure/arrival times, TAT, and halting are derived from the uploaded RoutePathReportModel. Branch and RO labels: {lookup_info.get('branch_source') or 'branch list not available'}.")
+    schedule_source = lookup_info.get('schedule_source', '')
+    if schedule_source:
+        if 'Bundled fallback schedule' in schedule_source:
+            st.warning(f"Schedule source: {schedule_source}. Upload the latest National/Zonal Scheduled Route Master workbook in Data Management to refresh these rows.")
+        else:
+            st.caption(f"Schedule source: {schedule_source}")
+    unmapped_count = int(df_master.get('RO', pd.Series(dtype=str)).astype(str).str.upper().eq('RO NOT MAPPED').sum())
+    unmapped_count += int(df_master.get('Destination RO', pd.Series(dtype=str)).astype(str).str.upper().eq('RO NOT MAPPED').sum())
+    if unmapped_count:
+        st.warning(f"{unmapped_count} leg endpoints have no matching RO in the uploaded branch list. Check the branch codes or the RO & Branch List workbook.")
+
+    branch_columns = ['From Branch', 'To Branch', 'Origin', 'Origin Branch', 'Destination', 'Destination Branch']
+    branch_values = sorted({
+        str(value).strip() for col in branch_columns if col in df_master.columns
+        for value in df_master[col].dropna().tolist() if str(value).strip() and str(value).strip() not in ('-', 'nan', 'None')
+    })
+    filter_col, search_col = st.columns([1, 2])
+    selected_branch = filter_col.selectbox("Branch", ["ALL BRANCHES"] + branch_values, key="schedule_branch_filter")
+    search_route = search_col.text_input("Find a route", placeholder="Type a route path or branch code", key="schedule_route_search")
+
+    visible = df_master.copy()
+    if selected_branch != "ALL BRANCHES":
+        branch_mask = pd.Series(False, index=visible.index)
+        for col in branch_columns:
+            if col in visible.columns:
+                branch_mask |= visible[col].astype(str).str.casefold().eq(selected_branch.casefold())
+        visible = visible[branch_mask].copy()
+    if search_route.strip():
+        q = search_route.strip()
+        visible = visible[visible.astype(str).apply(
+            lambda col: col.str.contains(q, case=False, regex=False, na=False)
+        ).any(axis=1)].copy()
+
+    route_path_col = get_col(visible, ['Route Path', 'Route'])
+    origin_branch_col = get_col(visible, ['Origin Branch', 'From Branch', 'Origin'])
+    origin_ro_col = get_col(visible, ['RO', 'Origin RO'])
+    destination_ro_col = get_col(visible, ['Destination RO'])
+    route_count = int(visible[route_path_col].nunique()) if route_path_col else 0
+    branch_count = int(visible[origin_branch_col].nunique()) if origin_branch_col else 0
+    unmapped_endpoints = 0
+    for ro_col in [origin_ro_col, destination_ro_col]:
+        if ro_col:
+            unmapped_endpoints += int(
+                visible[ro_col].fillna('').astype(str).str.strip().str.upper().isin(['RO NOT MAPPED', 'UNMAPPED']).sum()
+            )
+    schedule_fields = [col for col in ['Scheduled Departure Time', 'Scheduled Arrival Time'] if col in visible.columns]
+    complete_schedule_rows = 0
+    if schedule_fields:
+        schedule_present = pd.DataFrame({
+            col: visible[col].fillna('').astype(str).str.strip().str.upper().ne('')
+            & ~visible[col].fillna('').astype(str).str.strip().str.upper().isin(['-', 'NAN', 'NONE'])
+            for col in schedule_fields
+        }, index=visible.index)
+        complete_schedule_rows = int(schedule_present.all(axis=1).sum())
+    schedule_insights = []
+    if route_path_col and not visible.empty:
+        route_counts = visible[route_path_col].dropna().astype(str).value_counts()
+        if not route_counts.empty:
+            top_route = route_counts.index[0].replace('`', '')
+            schedule_insights.append(f"Highest leg volume: `{top_route}` has {int(route_counts.iloc[0]):,} visible legs.")
+    if unmapped_endpoints:
+        schedule_insights.append(f"{unmapped_endpoints:,} visible endpoints have no RO mapping and need a branch-list review.")
+    elif not visible.empty:
+        schedule_insights.append("All visible route endpoints have an RO mapping.")
+    if schedule_fields:
+        schedule_insights.append(
+            f"{complete_schedule_rows:,} of {len(visible):,} visible legs have all available scheduled time fields filled."
+        )
+    render_powerbi_insights(
+        'Scheduled Network Snapshot',
+        [('Visible route legs', f'{len(visible):,}'), ('Route paths', f'{route_count:,}'),
+         ('Origin branches', f'{branch_count:,}'), ('Unmapped endpoints', f'{unmapped_endpoints:,}')],
+        schedule_insights,
+        period_note='Signals follow the selected branch and route search.'
+    )
+
+    branch_label = selected_branch if selected_branch != "ALL BRANCHES" else "All Branches"
+    safe_branch = re.sub(r'[^A-Za-z0-9_-]+', '_', branch_label).strip('_') or 'all_branches'
+
+    poster_specs = [
+        {
+            'key': 'departure', 'tab': '🚚 Departure Poster', 'label': 'Scheduled Departure Poster',
+            'columns': ['Route Code', 'Route Path', 'Legwise', 'Legs', 'RO', 'Origin Branch', 'Departure Route Day', 'Scheduled Departure Time'],
+            'scope_columns': ['Origin', 'Origin Branch', 'From Branch'],
+            'caption': 'Departure schedule from each route branch. Route Day is the same offset used by Vendor Performance.',
+            'widths': {'Route Code': 12, 'Route Path': 28, 'Legwise': 11, 'Legs': 24, 'Origin RO': 16, 'Origin Branch': 28, 'Departure Route Day': 18, 'Scheduled Departure Time': 24},
+            'paper_size': 8, 'landscape': True
+        },
+        {
+            'key': 'arrival', 'tab': '🏁 Arrival Poster', 'label': 'Scheduled Arrival Poster',
+            'columns': ['Route Code', 'Route Path', 'Legwise', 'Legs', 'Origin Branch', 'RO', 'Destination Branch', 'Destination RO', 'Arrival Route Day', 'Scheduled Arrival Time', 'Scheduled Driving Hours'],
+            'scope_columns': ['Destination', 'Destination Branch', 'To Branch'],
+            'caption': 'Arrival schedule at each destination branch, with route day and scheduled leg hours.',
+            'widths': {'Route Code': 12, 'Route Path': 26, 'Legwise': 10, 'Legs': 21, 'Origin Branch': 22, 'Origin RO': 15, 'Destination Branch': 25, 'Destination RO': 18, 'Arrival Route Day': 18, 'Scheduled Arrival Time': 22, 'Scheduled Leg Hours': 20},
+            'paper_size': 8, 'landscape': True
+        },
+        {
+            'key': 'halting', 'tab': '⏱️ Halting Poster', 'label': 'Scheduled Halting Poster',
+            'columns': ['Route Code', 'Route Path', 'Legwise', 'Legs', 'Origin Branch', 'RO', 'Departure Route Day', 'Scheduled Departure Time', 'Arrival Route Day', 'Scheduled Arrival Time', 'Scheduled Halting', 'Scheduled TAT Till Destination'],
+            'scope_columns': ['Origin', 'Origin Branch', 'From Branch', 'Scheduled Halting'],
+            'caption': 'Halting is the scheduled departure minus scheduled arrival at the origin branch; route TAT follows the existing processing calculation.',
+            'widths': {'Route Code': 12, 'Route Path': 25, 'Legwise': 10, 'Legs': 20, 'Origin Branch': 21, 'Origin RO': 15, 'Departure Route Day': 18, 'Scheduled Departure Time': 22, 'Arrival Route Day': 18, 'Scheduled Arrival Time': 22, 'Scheduled Halting': 20, 'Scheduled TAT Till Destination': 24},
+            'paper_size': 8, 'landscape': True
+        }
+    ]
+    poster_tabs = st.tabs([spec['tab'] for spec in poster_specs])
+    selected_key = _lookup_key(selected_branch)
+    for poster_tab, spec in zip(poster_tabs, poster_specs):
+        with poster_tab:
+            poster_source = visible.copy()
+            if selected_branch != 'ALL BRANCHES':
+                branch_mask = pd.Series(False, index=poster_source.index)
+                for col in spec['scope_columns']:
+                    if col in poster_source.columns:
+                        branch_mask |= poster_source[col].fillna('').astype(str).apply(_lookup_key).eq(selected_key)
+                poster_source = poster_source[branch_mask].copy()
+
+            poster = poster_source.reindex(columns=spec['columns']).fillna('')
+            poster = poster.rename(columns={'RO': 'Origin RO', 'Scheduled Driving Hours': 'Scheduled Leg Hours'})
+            st.caption(spec['caption'])
+            if poster.empty:
+                st.info(f"No {spec['label'].lower()} rows for {branch_label} with these filters.")
+                continue
+            render_centered_html_table(poster, height=400)
+            file_stem = f"Scheduled_{spec['key'].title()}_Poster_{safe_branch}"
+            _p_sig = (spec['key'], safe_branch, len(poster))
+            _pc1, _pc2 = st.columns([1.6, 3.4])
+            if _pc1.button(f"📥 Prepare {spec['label']} (Excel)", key=f"prep_srm_{spec['key']}_{safe_branch}", use_container_width=True, type="primary"):
+                with st.spinner(f"Building {spec['label']}..."):
+                    st.session_state[f"_srm_xl_{spec['key']}"] = (
+                        _p_sig,
+                        build_formatted_excel_bytes(
+                            poster, spec['label'], f"{spec['label']} · {branch_label}",
+                            width_overrides=spec['widths'], paper_size=spec['paper_size'], landscape=spec['landscape']
+                        )
+                    )
+            if st.session_state.get(f"_srm_xl_{spec['key']}") and st.session_state[f"_srm_xl_{spec['key']}"][0] == _p_sig:
+                _pc2.download_button(
+                    f"⬇️ Download {spec['label']} (Excel)",
+                    data=st.session_state[f"_srm_xl_{spec['key']}"][1],
+                    file_name=f"{file_stem}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"schedule_poster_{spec['key']}_{safe_branch}"
+                )
+
+    master_columns = [
+        'Route Code', 'RO', 'Origin', 'Origin Branch', 'Destination', 'Destination Branch', 'Destination RO',
+        'Route Path', 'Legwise', 'Legs', 'Departure Route Day', 'Scheduled Departure Time',
+        'Arrival Route Day', 'Scheduled Arrival Time',
+        'Scheduled Driving Hours', 'Scheduled Halting', 'Scheduled TAT Till Destination'
+    ]
+    with st.expander("Full leg-wise route master preview", expanded=False):
+        render_centered_html_table(visible.reindex(columns=master_columns).fillna(''), height=460)
+# === [MODULE_END: Scheduled Route Master] ===
+
+def get_overall_issue_frames(data):
+    ops_raw = data.get('Legwise_Processed_Data', pd.DataFrame())
+    pay_raw = data.get('Payment_Raw', data.get('Master_Database', pd.DataFrame()))
+    if not st.session_state.get('all_vendors', True):
+        ops_vendor_col = get_col(ops_raw, ['VendorName', 'Vendor Name'])
+        pay_vendor_col = get_col(pay_raw, ['Vendor Name', 'VendorName'])
+        ops_raw = filter_df_by_user_vendors(ops_raw, ops_vendor_col) if ops_vendor_col else ops_raw.iloc[0:0].copy()
+        pay_raw = filter_df_by_user_vendors(pay_raw, pay_vendor_col) if pay_vendor_col else pay_raw.iloc[0:0].copy()
+    return ops_raw, pay_raw
+
+def get_overall_cpk_frame(data):
+    cpk_raw = data.get('CPK_Raw_Data', pd.DataFrame())
+    if not st.session_state.get('all_vendors', True):
+        vendor_col = get_col(cpk_raw, ['VendorName', 'Vendor Name'])
+        cpk_raw = filter_df_by_user_vendors(cpk_raw, vendor_col) if vendor_col else cpk_raw.iloc[0:0].copy()
+    return cpk_raw
+
+def get_overall_issue_date_bounds(ops_raw, pay_raw, cpk_raw=None):
+    available = []
+    frames = [(ops_raw, ['MCD_StartDate', 'Date']), (pay_raw, ['Base Date', 'Invoice Date'])]
+    if isinstance(cpk_raw, pd.DataFrame):
+        frames.append((cpk_raw, ['Date']))
+    for frame, candidates in frames:
+        date_col = get_col(frame, candidates)
+        if date_col and not frame.empty:
+            parsed = pd.to_datetime(frame[date_col], dayfirst=True, errors='coerce').dropna()
+            if not parsed.empty:
+                available.extend([parsed.min().date(), parsed.max().date()])
+    if available:
+        return min(available), max(available)
+    today = get_ist_now().date()
+    return today - datetime.timedelta(days=13), today
+
+def filter_overall_issue_frames(ops_raw, pay_raw, start_date, end_date, selected_zone='ALL ZONES'):
+    def apply_filters(frame, date_candidates):
+        result = frame.copy()
+        if result.empty:
+            return result
+        date_col = get_col(result, date_candidates)
+        if date_col:
+            parsed = pd.to_datetime(result[date_col], dayfirst=True, errors='coerce')
+            mask = parsed.dt.date.between(start_date, end_date)
+            result = result[mask].copy()
+        if selected_zone != 'ALL ZONES':
+            zone_col = get_col(result, ['Zone'])
+            if zone_col:
+                result = result[result[zone_col].fillna('UNKNOWN ZONE').astype(str).str.strip().str.upper().eq(selected_zone.upper())].copy()
+            else:
+                result = result.iloc[0:0].copy()
+        return result
+    return apply_filters(ops_raw, ['MCD_StartDate', 'Date']), apply_filters(pay_raw, ['Base Date', 'Invoice Date'])
+
+def filter_overall_utilization_frame(cpk_raw, start_date, end_date, selected_zone='ALL ZONES'):
+    result = cpk_raw.copy() if isinstance(cpk_raw, pd.DataFrame) else pd.DataFrame()
+    if result.empty:
+        return result
+    date_col = get_col(result, ['Date'])
+    if date_col:
+        parsed = pd.to_datetime(result[date_col], dayfirst=True, errors='coerce')
+        result = result[parsed.dt.date.between(start_date, end_date)].copy()
+    if selected_zone != 'ALL ZONES':
+        zone_col = get_col(result, ['Zone'])
+        result = result[result[zone_col].fillna('UNKNOWN ZONE').astype(str).str.strip().str.upper().eq(selected_zone.upper())].copy() if zone_col else result.iloc[0:0].copy()
+    return result
+
+def get_overall_issue_query_url():
+    try:
+        return str(st.context.url)
+    except Exception:
+        return ''
+
+# --------------------- Overall Issues: in-session drill-down and export ---------------------
+
+
+
+
+
+
+
+
+
+
+
+
 def build_daily_overall_issues_excel_bytes(pack, report_title, focus="All Modules"):
     """Build styled, worst-first Escalation Excel Workbook scoped to the selected focus."""
     buf = io.BytesIO()
@@ -6481,6 +6538,7 @@ def build_daily_overall_issues_email_text(pack, scope_label, dur_label, focus="A
     return "\n".join(lines)
 
 
+# === [MODULE_START: Overall Issues (UI & Raw Window)] ===
 def _build_oi_raw_drill_url(base_url, token, mod, start_d, end_d, metric="", zone="ALL", ro="ALL", branch="ALL", route="ALL", vendor="ALL", leg="ALL"):
     """Build a signed URL that opens the big-screen formatted Raw Data window for any clicked cell."""
     if not base_url:
@@ -6929,10 +6987,12 @@ def render_overall_issues(data):
                 height=240,
                 key="oi_daily_mail_preview"
             )
+# === [MODULE_END: Overall Issues (UI & Raw Window)] ===
 
 
 
 
+# === [MODULE_START: Executive Pulse] ===
 def render_executive_pulse(data):
     """Morning 9 AM Command View: Data Freshness, Latest Day vs 7D Trend, Top Urgent Red Flags & 1-Click Brief."""
     st.markdown("## 🏠 Executive Morning Pulse")
@@ -7054,6 +7114,7 @@ def render_executive_pulse(data):
     with st.expander("📲 1-Click Copy Morning WhatsApp Brief", expanded=False):
         brief_txt = build_daily_overall_issues_email_text(pack, "Pan-India Pulse", f"As of {get_ist_now():%d %b %Y}", focus="All Modules")
         st.text_area("Copy for Morning Leadership Group:", value=brief_txt, height=230, key="pulse_wa_brief")
+# === [MODULE_END: Executive Pulse] ===
 
 
 
@@ -7123,6 +7184,7 @@ ADMIN_ROUTINE_PACKS = {
     ]
 }
 
+# === [MODULE_START: Admin Task & Focus Hub] ===
 def _default_admin_tasks_store():
     return {"seq": 1, "active_focus_id": "", "tasks": []}
 
@@ -7864,6 +7926,7 @@ def render_admin_task_hub(data):
                         st.error("Invalid backup JSON format.")
                 except Exception as exc:
                     st.error(f"Could not read JSON: {exc}")
+# === [MODULE_END: Admin Task & Focus Hub] ===
 
 
 
@@ -7871,21 +7934,9 @@ def render_admin_task_hub(data):
 # ==========================================
 # 7D. NETWORK UTILIZATION v3 — DYNAMIC ENGINE, INSTANT CALL-ANSWER, FAILURES/ACHIEVEMENTS & EXCEL 2013 LIVE WORKBOOK
 # ==========================================
-DEFAULT_DIVISOR_30_VEHICLES = ["KL07CW8170", "KL63K6145"]
 
-TRACKON_FLEET_LADDER = [
-    (700, "Tata Ace / 7 ft (700 kg)"),
-    (1200, "Bolero / 8 ft (1,200 kg)"),
-    (1700, "10 ft / Dost (1,700 kg)"),
-    (2500, "14 ft (2,500 kg)"),
-    (3500, "17 ft (3,500 kg)"),
-    (4500, "19 ft (4,500 kg)"),
-    (6000, "20-22 ft (6,000 kg)"),
-    (7000, "22 ft Heavy (7,000 kg)"),
-    (9000, "24 ft / Taurus (9,000 kg)"),
-    (13500, "32 ft MXL (13,500 kg)")
-]
 
+# === [MODULE_START: Network Utilization] ===
 def _fleet_size_label(cap_kg):
     c = float(cap_kg or 0)
     if c <= 0:
@@ -7907,30 +7958,7 @@ def _recommend_smaller_truck(curr_cap, req_wt_kg):
         return smaller[-1]
     return None
 
-def load_cpk_overrides():
-    path = FILE_MAP.get("CPK_OVERRIDES", "")
-    raw = _read_json_fast(path, None)
-    if isinstance(raw, dict):
-        d30 = sorted({str(v).strip().upper() for v in raw.get("divisor_30_vehicles", DEFAULT_DIVISOR_30_VEHICLES) if str(v).strip()})
-        corrs = raw.get("corrections", [])
-        return {"divisor_30_vehicles": d30, "corrections": corrs if isinstance(corrs, list) else []}
-    default_obj = {"divisor_30_vehicles": list(DEFAULT_DIVISOR_30_VEHICLES), "corrections": []}
-    if path:
-        try:
-            _write_json_fast(path, default_obj)
-        except Exception:
-            pass
-    return default_obj
 
-def save_cpk_overrides(obj):
-    path = FILE_MAP.get("CPK_OVERRIDES", "")
-    if not path:
-        return
-    clean = {
-        "divisor_30_vehicles": sorted({str(v).strip().upper() for v in obj.get("divisor_30_vehicles", []) if str(v).strip()}),
-        "corrections": list(obj.get("corrections", []))
-    }
-    _write_json_fast(path, clean)
 
 def apply_live_cpk_overrides(df_raw_in, df_daily_in=None, overrides=None):
     """Apply live 30-day divisor vehicles AND live Cost/Capacity corrections dynamically to BOTH Raw & Daily tables."""
@@ -9500,8 +9528,10 @@ def render_network_utilization_v2(data):
                         save_cpk_overrides(cpk_ovr)
                         st.warning("Correction removed.")
                         st.rerun()
+# === [MODULE_END: Network Utilization] ===
 
 
+# === [MODULE_START: All Trips Audit] ===
 def render_all_trips_audit(data):
     """Standalone module for ALL 20,222 raw legwise trips + Additional (2nd+) + Non-Scheduled (Manual) audit."""
     st.markdown("<h2>🗂️ All Trips & Additional / Manual Audit</h2>", unsafe_allow_html=True)
@@ -9607,7 +9637,9 @@ def render_all_trips_audit(data):
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="all_audit_dl_btn"
         )
+# === [MODULE_END: All Trips Audit] ===
 
+# === [MODULE_START: Operations Summary (Gauges & Raw Window)] ===
 def render_ops_remark_gauges(ops_outcome_counts, ops_total_trips, ops_outcome_labels, gauge_context):
     """Render interactive Remark-wise gauges; double-clicking any gauge opens its full raw data in a new window."""
     if THEME_IS_LIGHT:
@@ -10867,7 +10899,9 @@ def render_ops_remark_raw_window(data, query):
         use_container_width=True,
         key="ops_win_download_btn"
     )
+# === [MODULE_END: Operations Summary (Gauges & Raw Window)] ===
 
+# === [MODULE_START: Vendor Performance (Gauges & Raw Window)] ===
 def render_vendor_perf_gauges_open_window(ven_counts, ven_total, gauge_context):
     """Render Vendor Arrival Performance gauges on main page; double-clicking opens full-width ven_raw=1 window."""
     items = [
@@ -11450,6 +11484,7 @@ def render_vendor_perf_raw_window(data, query):
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="ven_win_download_btn"
         )
+# === [MODULE_END: Vendor Performance (Gauges & Raw Window)] ===
 
 # -------------------------------------------------------------
 # A. DAILY STANDUP (Operations Summary)
@@ -11465,6 +11500,7 @@ elif choice == "⚠️ Overall Issues":
 elif choice == "🗂️ All Trips & Additional/Manual Audit":
     render_all_trips_audit(data)
 elif choice == "📊 Operations Summary":
+    # === [MODULE_START: Operations Summary (Main Tab)] ===
     if ops_remark_raw_view:
         render_ops_remark_raw_window(data, ops_remark_query)
         st.stop()
@@ -11690,12 +11726,14 @@ elif choice == "📊 Operations Summary":
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="ops_ready_download_btn"
             )
+    # === [MODULE_END: Operations Summary (Main Tab)] ===
 
 
 # -------------------------------------------------------------
 # B. VENDOR PERFORMANCE (With Dynamic User/Vendor Restriction)
 # -------------------------------------------------------------
 elif choice == "🚚 Vendor Performance":
+    # === [MODULE_START: Vendor Performance (Main Tab)] ===
     if ven_perf_raw_view:
         render_vendor_perf_raw_window(data, ven_perf_query)
         st.stop()
@@ -11868,12 +11906,14 @@ elif choice == "🚚 Vendor Performance":
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="ven_ready_download_btn"
             )
+    # === [MODULE_END: Vendor Performance (Main Tab)] ===
 
 
 # -------------------------------------------------------------
 # C. VENDOR PAYMENT DASHBOARD 
 # -------------------------------------------------------------
 elif choice == "💳 Payment Dashboard":
+    # === [MODULE_START: Payment Dashboard] ===
     st.markdown("<h2>Pending Payments Tracker</h2>", unsafe_allow_html=True)
 
     if 'Master_Database' in data or 'Payment_Raw' in data:
@@ -12382,11 +12422,13 @@ elif choice == "💳 Payment Dashboard":
                     mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                     key='payment_detail_download'
                 )
+    # === [MODULE_END: Payment Dashboard] ===
 
 # -------------------------------------------------------------
 # D. COMMUNICATION HUB (3 Full Sub-Modules: National, Vendor, RO)
 # -------------------------------------------------------------
 elif choice == "📱 Communication Hub":
+    # === [MODULE_START: Communication Hub] ===
     st.markdown("<h2>📱 Communication Hub (National Routes, Vendors & Regional Offices)</h2>", unsafe_allow_html=True)
     
     df_ops_raw_base = data.get('Legwise_Processed_Data', pd.DataFrame()).copy()
@@ -12965,6 +13007,7 @@ elif choice == "📱 Communication Hub":
         render_centered_html_table(d_pack["vendor_leg_repeat"], height=360)
         st.markdown("#### 💳 Verification Preview: Stuck Payment Bills by RO")
         render_centered_html_table(d_pack["payment_summary"], height=340)
+    # === [MODULE_END: Communication Hub] ===
 
 # -------------------------------------------------------------
 # E. NETWORK UTILIZATION v2 (Dynamic Engine + AI Fleet Optimizer + AVP Excel)
@@ -12976,6 +13019,7 @@ elif choice == "💰 Network Utilization":
 # F. TODAY'S CALL ACTION PLAN (MOM) (100% Legacy Lookup Restored)
 # -------------------------------------------------------------
 elif choice == "📝 Today's Call Action Plan":
+    # === [MODULE_START: Action Plan (MOM)] ===
     st.markdown("<h2>Today's Call Action Plan (MOM)</h2>", unsafe_allow_html=True)
     st.caption("Here you can view, export, and email all the action plans you saved across modules.")
     
@@ -13104,11 +13148,13 @@ elif choice == "📝 Today's Call Action Plan":
         
         c2.markdown(f'<a href="{gmail_url}" target="_blank"><button style="background-color: #EF4444; color: white; padding: 10px; border: none; border-radius: 8px; width: 100%; cursor: pointer; font-weight: 600;">2️⃣ Compose Email (Gmail) ✉️</button></a>', unsafe_allow_html=True)
         st.caption("Tip: Download ki hui Action Plan ki Excel sheet ko compose hote waqt attach kar dena.")
+    # === [MODULE_END: Action Plan (MOM)] ===
 
 # -------------------------------------------------------------
 # G. USER & ACCESS CONTROL MODULE (Admin IAM Management)
 # -------------------------------------------------------------
 elif choice == "🔐 User & Access Control":
+    # === [MODULE_START: User & Access Control] ===
     if st.session_state.get('username') != 'admin':
         st.error("🚫 Access Denied. Only Master Administrator can manage User IDs & Permissions.")
         st.stop()
@@ -13331,3 +13377,163 @@ elif choice == "🔐 User & Access Control":
         render_centered_html_table(pd.DataFrame(audit_events), height=320, show_grand_total=False, csv_filename="Portal_Activity_Audit_Log.csv")
     else:
         st.info("No activity logged yet. Events will appear here automatically as users sign in or update settings.")
+    # === [MODULE_END: User & Access Control] ===
+elif choice == "🧩 Module Code Manager":
+    if st.session_state.get('username') != 'admin':
+        st.error("🚫 Master Admin access only.")
+        st.stop()
+
+    st.markdown("## 🧩 Single-File Module Code Manager (`app.py`)")
+    st.caption("Koi `.zip` ya extra folder nahi — sirf **1 single `app.py`**! Neeche koi bhi module select kar, sirf uska chhota code Copy karke Gemini ko de, aur wapas milne par yahin paste karke **1-click GitHub Push** ya **Download `app.py`** kar le!")
+
+    _app_path = os.path.abspath(__file__)
+    with open(_app_path, "r", encoding="utf-8") as _af:
+        _full_app_code = _af.read()
+
+    # Parse all MODULE_START / MODULE_END blocks dynamically from app.py
+    _mod_pattern = re.compile(
+        r'^([ \t]*)# === \[MODULE_START: ([^\]]+)\] ===\r?\n(.*?)^[ \t]*# === \[MODULE_END: \2\] ===\r?\n?',
+        re.MULTILINE | re.DOTALL
+    )
+    _found_mods = {}
+    for _m in _mod_pattern.finditer(_full_app_code):
+        _indent_str, _m_name, _m_body = _m.group(1), _m.group(2).strip(), _m.group(3)
+        _start_line = _full_app_code[:_m.start()].count("\n") + 1
+        _end_line = _full_app_code[:_m.end()].count("\n")
+        _found_mods[_m_name] = {
+            "indent": _indent_str,
+            "body": _m_body,
+            "span": (_m.start(3), _m.end(3)),
+            "start_line": _start_line,
+            "end_line": _end_line,
+            "lines": len(_m_body.splitlines())
+        }
+
+    if not _found_mods:
+        st.warning("No module markers found in app.py.")
+        st.stop()
+
+    _m_names = list(_found_mods.keys())
+    mc1, mc2, mc3 = st.columns([2.2, 1.0, 1.0])
+    _sel_mod = mc1.selectbox("Select Module from `app.py`:", _m_names, key="sf_mcm_pick")
+    _minfo = _found_mods[_sel_mod]
+    mc2.metric("Module Size", f"{_minfo['lines']:,} lines", delta=f"L{_minfo['start_line']}-L{_minfo['end_line']}", delta_color="off")
+    mc3.metric("Full `app.py`", f"{len(_full_app_code.splitlines()):,} lines", delta=f"{len(_full_app_code)/1024:.0f} KB", delta_color="off")
+
+    _t_copy, _t_patch = st.tabs(["📋 1. Copy / Download Module Code (Send to Gemini)", "🚀 2. Paste Updated Module → Auto-Merge & Push `app.py`"])
+
+    with _t_copy:
+        _safe_fn = re.sub(r'[^A-Za-z0-9]+', '_', _sel_mod).strip('_').lower() + ".py"
+        _dl_c1, _dl_c2 = st.columns([1.6, 3.4])
+        _dl_c1.download_button(
+            f"⬇️ Download `{_safe_fn}`",
+            data=_minfo["body"].encode("utf-8"),
+            file_name=_safe_fn,
+            mime="text/x-python",
+            type="primary",
+            use_container_width=True,
+            key=f"sf_mcm_dl_{_safe_fn}"
+        )
+        _dl_c2.caption("💡 Code box ke top-right **Copy** icon par click kar aur seedha chat mein paste kar de — poora `app.py` bhejne ki zaroorat nahi!")
+        st.code(_minfo["body"], language="python")
+
+    with _t_patch:
+        _gh_tok, _gh_rep = _get_github_sync_config()
+        if _gh_tok:
+            st.success(f"☁️ GitHub 1-Click Direct Push Ready → `{_gh_rep}/app.py`")
+        else:
+            st.info("💡 `GITHUB_TOKEN` Streamlit Secrets mein nahi hai — tu yahan se **Auto-Merged `app.py` Download** karke GitHub par upload kar sakta hai (ya Secrets mein `GITHUB_TOKEN` daal ke 1-click push chala sakta hai).")
+
+        _pasted = st.text_area(
+            f"Paste Updated Code ONLY for `{_sel_mod}`:",
+            value="",
+            height=360,
+            placeholder=f"Gemini ne jo updated code diya hai `{_sel_mod}` ka, wo yahan paste kar...",
+            key=f"sf_mcm_paste_{_sel_mod}"
+        )
+        _c_msg = st.text_input("Commit Message:", value=f"Update {_sel_mod} in app.py", key=f"sf_mcm_msg_{_sel_mod}")
+
+        def _build_merged_app_code(raw_pasted):
+            _clean = raw_pasted.replace("\r\n", "\n")
+            # Strip accidental markdown code fences if user copied ```python ... ```
+            _clean = re.sub(r'^\s*```(?:python)?\s*\n', '', _clean)
+            _clean = re.sub(r'\n\s*```\s*$', '', _clean)
+            # Strip accidental MODULE_START/END markers if pasted along with code
+            _clean = re.sub(r'^[ \t]*# === \[MODULE_START: [^\]]+\] ===\n', '', _clean)
+            _clean = re.sub(r'\n?[ \t]*# === \[MODULE_END: [^\]]+\] ===\s*$', '', _clean)
+            if not _clean.endswith("\n"):
+                _clean += "\n"
+            # Auto-align indentation if module is inside an elif block (4 spaces) and user pasted 0-indented code
+            _req_ind = _minfo["indent"]
+            if _req_ind:
+                _non_empty = [ln for ln in _clean.splitlines() if ln.strip()]
+                if _non_empty and not _non_empty[0].startswith(_req_ind):
+                    _clean = "\n".join((_req_ind + ln) if ln.strip() else "" for ln in _clean.splitlines()) + "\n"
+            _s_pos, _e_pos = _minfo["span"]
+            return _full_app_code[:_s_pos] + _clean + _full_app_code[_e_pos:]
+
+        _pb1, _pb2, _pb3 = st.columns(3)
+        if _pb1.button("✅ Validate Merged `app.py`", key="sf_mcm_val_btn", use_container_width=True):
+            if not _pasted.strip():
+                st.error("Pehle updated module code paste kar.")
+            else:
+                _merged = _build_merged_app_code(_pasted)
+                try:
+                    import ast as _ast_chk
+                    _ast_chk.parse(_merged, filename="app.py")
+                    st.session_state["_sf_mcm_ready_app"] = (_sel_mod, _merged)
+                    st.success(f"✅ Full `app.py` ({len(_merged.splitlines()):,} lines) Syntax 100% Valid! Safe to Push or Download.")
+                except SyntaxError as _se:
+                    st.error(f"❌ SyntaxError on merged `app.py` line {_se.lineno}: {_se.msg}")
+
+        if _pb2.button("🚀 Validate & Push `app.py` to GitHub", type="primary", key="sf_mcm_push_btn", use_container_width=True):
+            if not _pasted.strip():
+                st.error("Pehle updated module code paste kar.")
+            elif not _gh_tok:
+                st.error("GITHUB_TOKEN Streamlit Secrets mein set nahi hai. Side wale button se merged `app.py` download kar le.")
+            else:
+                _merged = _build_merged_app_code(_pasted)
+                try:
+                    import ast as _ast_chk
+                    _ast_chk.parse(_merged, filename="app.py")
+                except SyntaxError as _se:
+                    st.error(f"❌ Push Blocked — SyntaxError on line {_se.lineno}: {_se.msg}")
+                else:
+                    try:
+                        import requests
+                        _api = f"https://api.github.com/repos/{_gh_rep}/contents/app.py"
+                        _hdrs = {
+                            "Authorization": f"Bearer {_gh_tok}",
+                            "Accept": "application/vnd.github+json",
+                            "X-GitHub-Api-Version": "2022-11-28"
+                        }
+                        _rg = requests.get(_api, headers=_hdrs, timeout=20)
+                        _sha = _rg.json().get("sha") if _rg.status_code == 200 else None
+                        _pl = {
+                            "message": _c_msg or f"Update {_sel_mod}",
+                            "content": base64.b64encode(_merged.encode("utf-8")).decode("ascii")
+                        }
+                        if _sha:
+                            _pl["sha"] = _sha
+                        with st.spinner("Pushing merged `app.py` to GitHub..."):
+                            _rp = requests.put(_api, headers=_hdrs, json=_pl, timeout=45)
+                        if _rp.status_code in (200, 201):
+                            log_user_activity("admin", "GitHub app.py Module Push", _sel_mod)
+                            st.success(f"✅ `{_sel_mod}` merged & pushed to `{_gh_rep}/app.py`! Streamlit ~20 sec mein auto-reload ho jayega.")
+                        else:
+                            st.error(f"GitHub API Error {_rp.status_code}: {_rp.text[:220]}")
+                    except Exception as _ex:
+                        st.error(f"Push failed: {_ex}")
+
+        _ready_pair = st.session_state.get("_sf_mcm_ready_app")
+        if isinstance(_ready_pair, tuple) and _ready_pair[0] == _sel_mod:
+            _pb3.download_button(
+                "⬇️ Download Merged `app.py`",
+                data=_ready_pair[1].encode("utf-8"),
+                file_name="app.py",
+                mime="text/x-python",
+                use_container_width=True,
+                key="sf_mcm_dl_merged_app"
+            )
+        else:
+            _pb3.caption("Click **Validate** first to enable Download Merged `app.py`.")
