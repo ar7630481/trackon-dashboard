@@ -3157,6 +3157,10 @@ def clean_dataframe_for_excel(df_in, sheet_type="generic", preserve_order=False)
     if not preserve_order:
         df = sort_by_route_and_leg(df)
     
+    if sheet_type in ("late_dep", "zone_insights"):
+        cols_to_remove = [c for c in JUNK_EXCEL_COLS if c in df.columns and c != 'Zone']
+        df.drop(columns=cols_to_remove, inplace=True, errors='ignore')
+        return df
     cols_to_remove = [c for c in JUNK_EXCEL_COLS if c in df.columns]
     df.drop(columns=cols_to_remove, inplace=True, errors='ignore')
     
@@ -3497,6 +3501,18 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic",
                     pct = parse_pct_from_str(s_val)
                     if pct is not None:
                         chosen_fmt = red_fmt if pct > 0 else muted_fmt
+                    elif c_lower == 'late departures':
+                        try:
+                            chosen_fmt = red_fmt if float(val_str) > 0 else muted_fmt
+                        except Exception:
+                            pass
+                elif c_lower == 'severity':
+                    if 'chronic' in s_lower or 'critical' in s_lower or 'action' in s_lower:
+                        chosen_fmt = red_fmt
+                    elif 'watch' in s_lower:
+                        chosen_fmt = yellow_fmt
+                    elif 'isolated' in s_lower or 'controlled' in s_lower or 'strong' in s_lower:
+                        chosen_fmt = green_fmt
                 elif 'ontime dep, ontime arr' in c_lower or 'ontime arrival' in c_lower:
                     pct = parse_pct_from_str(s_val)
                     if pct is not None:
@@ -3739,6 +3755,173 @@ def add_total_row_cpk_df(df):
         df_out['Overall Util %'] = df_out['Overall Util %'].apply(lambda x: f"{x * 100:.2f}%" if isinstance(x, (int, float)) else x)
     return df_out
 
+def build_vip_late_departures_sheet(ops_raw):
+    """
+    Build the dedicated, logically sorted `Late_Departures` sheet EXCLUSIVELY for
+    Prepare VIP Executive Report (never shown as a confusing column in UI modules).
+    Sorting order (worst-first & clean hierarchy):
+      1. Severity Rank (Chronic Repeat -> Watchlist -> Isolated)
+      2. Late Departures count (DESC)
+      3. Late Departure % (DESC)
+      4. Repeat Days (DESC)
+      5. Avg Dep Delay Hrs (DESC)
+      6. Zone (A->Z) -> Origin RO (A->Z) -> Origin Branch (A->Z) -> Route Path (A->Z) -> Leg_Num (1->N)
+    """
+    if not isinstance(ops_raw, pd.DataFrame) or ops_raw.empty:
+        return pd.DataFrame()
+
+    o = ops_raw.copy()
+    if '_OpsRemarkOutcome' not in o.columns:
+        o['_OpsRemarkOutcome'] = ops_remark_outcome_series(o)
+
+    o['_zone'] = o.get('Zone', pd.Series('UNKNOWN ZONE', index=o.index)).fillna('UNKNOWN ZONE').astype(str).str.strip().str.upper()
+    o['_ro'] = _clean_ro_series(o.get('Origin RO', pd.Series('', index=o.index)))
+    o['_brn'] = o.get('CD_FromBranch', pd.Series('', index=o.index)).fillna('').astype(str).str.strip().str.upper()
+    o.loc[o['_brn'].eq(''), '_brn'] = o['_ro']
+    o['_route'] = o.get('Route Path', pd.Series('', index=o.index)).fillna('').astype(str).str.strip()
+    o['_legwise'] = o.get('Legwise', pd.Series('', index=o.index)).fillna('').astype(str).str.strip()
+    o['_legs'] = o.get('Legs', pd.Series('', index=o.index)).fillna('').astype(str).str.strip()
+    o['_dt'] = pd.to_datetime(o.get('MCD_StartDate', pd.Series('', index=o.index)), dayfirst=True, errors='coerce').dt.date
+
+    sch_dep = pd.to_datetime(o.get('Scheduled Departure Time', pd.Series('', index=o.index)), dayfirst=True, errors='coerce')
+    act_dep = pd.to_datetime(o.get('Actual Departure Time', pd.Series('', index=o.index)), dayfirst=True, errors='coerce')
+    o['_dep_delay_hrs'] = (act_dep - sch_dep).dt.total_seconds() / 3600.0
+
+    out_s = o['_OpsRemarkOutcome'].fillna('Other').astype(str)
+    o['_is_ld'] = out_s.str.contains('Late Dep|No Departure', case=False, regex=True, na=False).astype(int)
+    o['_ll'] = out_s.eq('Late Dep, Late Arr').astype(int)
+    o['_lo'] = out_s.eq('Late Dep, Ontime Arr').astype(int)
+    o['_lit'] = out_s.eq('Late Dep, In-Transit').astype(int)
+    o['_nd'] = out_s.eq('No Departure').astype(int)
+
+    has_lit = bool(o['_lit'].sum() > 0)
+    has_nd = bool(o['_nd'].sum() > 0)
+
+    sla = get_sla_thresholds()
+    chr_d = sla["chronic_days"]
+    esc_pct = sla["late_dep_esc_pct"]
+
+    g_cols = ['_zone', '_ro', '_brn', '_route', '_legwise', '_legs']
+    rows = []
+    for keys, grp in o.groupby(g_cols, dropna=False):
+        ld_cnt = int(grp['_is_ld'].sum())
+        if ld_cnt == 0:
+            continue
+        z_v, ro_v, brn_v, rt_v, lgw_v, lgs_v = keys
+        tot = len(grp)
+        ld_pct = (ld_cnt / tot * 100.0) if tot else 0.0
+        ll_c = int(grp['_ll'].sum())
+        lo_c = int(grp['_lo'].sum())
+        lit_c = int(grp['_lit'].sum())
+        nd_c = int(grp['_nd'].sum())
+
+        ld_grp = grp[grp['_is_ld'] == 1]
+        ld_dates = ld_grp['_dt'].dropna().tolist()
+        rep_days = len(set(ld_dates))
+        streak = _max_consecutive_days(ld_dates)
+
+        valid_delays = ld_grp['_dep_delay_hrs'].dropna()
+        pos_delays = valid_delays[valid_delays > 0]
+        avg_d = float(pos_delays.mean()) if not pos_delays.empty else 0.0
+        max_d = float(pos_delays.max()) if not pos_delays.empty else 0.0
+
+        if rep_days >= chr_d or streak >= chr_d or (ld_cnt >= 5 and ld_pct >= esc_pct):
+            sev_lbl = "🔴 Chronic Repeat"
+            sev_rank = 0
+        elif rep_days >= 2 or ld_cnt >= 2:
+            sev_lbl = "🟡 Watchlist"
+            sev_rank = 1
+        else:
+            sev_lbl = "🟢 Isolated"
+            sev_rank = 2
+
+        leg_num_m = re.search(r'(\d+)', str(lgw_v))
+        leg_num_val = int(leg_num_m.group(1)) if leg_num_m else 999
+        avg_str = format_hrs_safe(avg_d) if avg_d > 0 else "0:00"
+        max_str = format_hrs_safe(max_d) if max_d > 0 else "0:00"
+
+        rem = f"{brn_v} · {lgw_v} ({lgs_v}): {ld_cnt}/{tot} late dep ({ld_pct:.1f}%), {rep_days}d repeat, avg {avg_str}h"
+        rec = {
+            'Zone': z_v,
+            'Origin RO': ro_v,
+            'Origin Branch': brn_v,
+            'Route Path': rt_v,
+            'Legwise': lgw_v,
+            'Legs': lgs_v,
+            'Total Trips': tot,
+            'Late Departures': ld_cnt,
+            'Late Departure %': format_pct_cnt(ld_cnt, tot),
+            'Late Dep, Late Arr': format_pct_cnt(ll_c, tot),
+            'Late Dep, Ontime Arr': format_pct_cnt(lo_c, tot),
+        }
+        if has_lit:
+            rec['Late Dep, In-Transit'] = format_pct_cnt(lit_c, tot)
+        if has_nd:
+            rec['No Departure'] = format_pct_cnt(nd_c, tot)
+        rec.update({
+            'Avg Dep Delay (Hrs)': avg_str,
+            'Max Dep Delay (Hrs)': max_str,
+            'Repeat Days': rep_days,
+            'Max Streak': f"{streak}d",
+            'Severity': sev_lbl,
+            'Action Remark': rem,
+            '_s_sev': sev_rank,
+            '_s_cnt': ld_cnt,
+            '_s_pct': ld_pct,
+            '_s_rep': rep_days,
+            '_s_avg': avg_d,
+            '_s_leg': leg_num_val,
+        })
+        rows.append(rec)
+
+    if not rows:
+        return pd.DataFrame(columns=['Zone', 'Origin RO', 'Origin Branch', 'Route Path', 'Legwise', 'Legs', 'Total Trips', 'Late Departures', 'Late Departure %', 'Severity', 'Action Remark'])
+
+    df_ld = pd.DataFrame(rows).sort_values(
+        by=['_s_sev', '_s_cnt', '_s_pct', '_s_rep', '_s_avg', 'Zone', 'Origin RO', 'Origin Branch', 'Route Path', '_s_leg'],
+        ascending=[True, False, False, False, False, True, True, True, True, True]
+    ).drop(columns=['_s_sev', '_s_cnt', '_s_pct', '_s_rep', '_s_avg', '_s_leg']).reset_index(drop=True)
+
+    # Grand Total row across ALL affected route-legs (and Pan-India reference note)
+    tot_trips_all = int(len(o))
+    tot_ld_all = int(o['_is_ld'].sum())
+    tot_ll_all = int(o['_ll'].sum())
+    tot_lo_all = int(o['_lo'].sum())
+    tot_lit_all = int(o['_lit'].sum())
+    tot_nd_all = int(o['_nd'].sum())
+    all_pos_delays = o.loc[o['_is_ld'] == 1, '_dep_delay_hrs'].dropna()
+    all_pos_delays = all_pos_delays[all_pos_delays > 0]
+    g_avg = format_hrs_safe(float(all_pos_delays.mean())) if not all_pos_delays.empty else "0:00"
+    g_max = format_hrs_safe(float(all_pos_delays.max())) if not all_pos_delays.empty else "0:00"
+
+    gt = {
+        'Zone': 'ALL ZONES',
+        'Origin RO': 'GRAND TOTAL',
+        'Origin Branch': f'{len(df_ld):,} Affected Legs',
+        'Route Path': '-',
+        'Legwise': '-',
+        'Legs': '-',
+        'Total Trips': tot_trips_all,
+        'Late Departures': tot_ld_all,
+        'Late Departure %': format_pct_cnt(tot_ld_all, tot_trips_all),
+        'Late Dep, Late Arr': format_pct_cnt(tot_ll_all, tot_trips_all),
+        'Late Dep, Ontime Arr': format_pct_cnt(tot_lo_all, tot_trips_all),
+    }
+    if has_lit:
+        gt['Late Dep, In-Transit'] = format_pct_cnt(tot_lit_all, tot_trips_all)
+    if has_nd:
+        gt['No Departure'] = format_pct_cnt(tot_nd_all, tot_trips_all)
+    gt.update({
+        'Avg Dep Delay (Hrs)': g_avg,
+        'Max Dep Delay (Hrs)': g_max,
+        'Repeat Days': '-',
+        'Max Streak': '-',
+        'Severity': 'TOTAL',
+        'Action Remark': f"Pan-India: {tot_ld_all:,}/{tot_trips_all:,} late departures ({(tot_ld_all/tot_trips_all*100):.1f}%) across {len(df_ld):,} route-legs" if tot_trips_all else "-"
+    })
+    return pd.concat([df_ld, pd.DataFrame([gt])], ignore_index=True)
+
+
 def generate_vip_executive_report_to_disk(data_dict, output_path=None):
     """
     Generate the Decision-First, AI-Ready VIP Executive Master Report.
@@ -3768,9 +3951,13 @@ def generate_vip_executive_report_to_disk(data_dict, output_path=None):
     util_under = int(util_df["Utilization Class"].astype(str).str.contains("Underutilized", na=False).sum()) if not util_df.empty else 0
     chronic_brn = int(pack.get("branch_repeat", pd.DataFrame()).get("Status", pd.Series(dtype=str)).astype(str).str.contains("Chronic", na=False).sum()) if not pack.get("branch_repeat", pd.DataFrame()).empty else 0
 
+    late_dep_sheet_df = build_vip_late_departures_sheet(ops_raw)
+    ld_total_cnt = int(late_dep_sheet_df.iloc[-1]['Late Departures']) if not late_dep_sheet_df.empty and str(late_dep_sheet_df.iloc[-1].get('Origin RO', '')) == 'GRAND TOTAL' else 0
+
     scorecard_df = pd.DataFrame([
         {"Metric / Control Check": "Operations Scheduled Trips (National + Zonal)", "Count / Value": ops_tot, "Exception / Red Flag": ops_exc, "Exception %": f"{(ops_exc/ops_tot*100):.1f}%" if ops_tot else "0.0%", "Cross-Check Sheet": "Operations_Raw"},
-        {"Metric / Control Check": "Chronic Repeat Branches (3+ Late Dep Days)", "Count / Value": len(pack.get("branch_repeat", pd.DataFrame())), "Exception / Red Flag": chronic_brn, "Exception %": f"{(chronic_brn/max(len(pack.get('branch_repeat', pd.DataFrame())),1)*100):.1f}%", "Cross-Check Sheet": "3_Branch_Insights"},
+        {"Metric / Control Check": "Late Departures (Dedicated Sorted Audit)", "Count / Value": ops_tot, "Exception / Red Flag": ld_total_cnt, "Exception %": f"{(ld_total_cnt/ops_tot*100):.1f}%" if ops_tot else "0.0%", "Cross-Check Sheet": "Late_Departures"},
+        {"Metric / Control Check": "Chronic Repeat Branches (3+ Repeat Days)", "Count / Value": len(pack.get("branch_repeat", pd.DataFrame())), "Exception / Red Flag": chronic_brn, "Exception %": f"{(chronic_brn/max(len(pack.get('branch_repeat', pd.DataFrame())),1)*100):.1f}%", "Cross-Check Sheet": "3_Branch_Insights"},
         {"Metric / Control Check": "Vendor Scheduled Trips (National + Zonal)", "Count / Value": ven_tot, "Exception / Red Flag": ven_late, "Exception %": f"{(ven_late/ven_tot*100):.1f}%" if ven_tot else "0.0%", "Cross-Check Sheet": "Vendor_Perf_Raw"},
         {"Metric / Control Check": "Active Payment Bills (Excl. Cancelled/Failed)", "Count / Value": pay_tot, "Exception / Red Flag": pay_stuck, "Exception %": f"₹{pay_stuck_amt/1e7:.2f} Cr stuck", "Cross-Check Sheet": "Payment_Raw"},
         {"Metric / Control Check": f"National & Zonal Routes (<{int(get_sla_thresholds()['util_red_pct'])}% Utilization)", "Count / Value": len(util_df), "Exception / Red Flag": util_under, "Exception %": f"{(util_under/len(util_df)*100):.1f}%" if len(util_df) else "0.0%", "Cross-Check Sheet": "CPK_Nat_Zon"},
@@ -3790,10 +3977,12 @@ def generate_vip_executive_report_to_disk(data_dict, output_path=None):
     with pd.ExcelWriter(output_path or FILE_MAP["EXECUTIVE_REPORT"], engine='xlsxwriter') as writer:
         # Decision-First Executive & AI-Ready Sheets at the front
         write_styled_sheet_to_excel(writer, scorecard_df, '0_Executive_Scorecard', sheet_type="generic", preserve_order=True)
+        if not late_dep_sheet_df.empty:
+            write_styled_sheet_to_excel(writer, late_dep_sheet_df, 'Late_Departures', sheet_type="late_dep", preserve_order=True)
         if not pack.get("top_actions", pd.DataFrame()).empty:
             write_styled_sheet_to_excel(writer, pack["top_actions"], '0B_Top_Priority_Actions', sheet_type="generic", preserve_order=True)
         if not pack.get("zone_summary", pd.DataFrame()).empty:
-            write_styled_sheet_to_excel(writer, pack["zone_summary"], '1_Zone_Insights', sheet_type="generic", preserve_order=True)
+            write_styled_sheet_to_excel(writer, pack["zone_summary"], '1_Zone_Insights', sheet_type="zone_insights", preserve_order=True)
         if not pack.get("ro_summary", pd.DataFrame()).empty:
             write_styled_sheet_to_excel(writer, pack["ro_summary"], '2_RO_Insights', sheet_type="generic", preserve_order=True)
         if not pack.get("branch_repeat", pd.DataFrame()).empty:
@@ -5857,7 +6046,6 @@ def build_daily_overall_issues_pack(ops_df, ven_df, pay_df, cpk_df, group_by_mod
                 rd.update({
                     'Total Trips': tot,
                     'Ontime Dep, Ontime Arr': format_pct_cnt(oo, tot),
-                    'Late Departure': format_pct_cnt(ld, tot),
                     'Late Dep, Late Arr': format_pct_cnt(ll, tot),
                     'Ontime Dep, Late Arr': format_pct_cnt(ol, tot),
                     'Late Dep, Ontime Arr': format_pct_cnt(lo, tot),
@@ -5885,7 +6073,7 @@ def build_daily_overall_issues_pack(ops_df, ven_df, pay_df, cpk_df, group_by_mod
                 "Module": "Operations",
                 "Entity": f"{r['Origin Branch']} ({r['RO Name']})",
                 "Repeat Days": int(r['Repeat Days']),
-                "Impact": r['Late Departure'],
+                "Impact": r['Late Dep, Late Arr'],
                 "Status": r['Status'],
                 "Escalation Remark": r['Escalation Remark']
             })
@@ -6457,7 +6645,7 @@ def render_overall_issues(data):
     base_url_now = get_overall_issue_query_url()
     oi_tok = create_overall_issue_access_token(st.session_state.get('username', ''))
 
-    ops_clickable_cols = {'Total Trips', 'Ontime Dep, Ontime Arr', 'Late Departure', 'Late Dep, Late Arr', 'Ontime Dep, Late Arr', 'Late Dep, Ontime Arr'}
+    ops_clickable_cols = {'Total Trips', 'Ontime Dep, Ontime Arr', 'Late Dep, Late Arr', 'Ontime Dep, Late Arr', 'Late Dep, Ontime Arr'}
     ven_clickable_cols = {'Total Trips', 'Ontime Arrival', 'Late Arrival', 'In-Transit'}
     pay_clickable_cols = {'Total Bills', 'Payment Pending / Paid', 'Draft', 'Cost Control Pending', 'Finance Pending', 'Finance Hold'}
 
@@ -6514,7 +6702,7 @@ def render_overall_issues(data):
         st.markdown(f"### 🔥 Branch-wise Chronic Repeat Offenders (Click any count/% for full-screen raw data) · `{scope_lbl}`")
         render_centered_html_table(pack["branch_repeat"], height=420, csv_filename="Branch_Chronic_Repeats.csv", cell_link_fn=_ops_link)
 
-        st.markdown("### 🛣️ Branch + Route Late Departures")
+        st.markdown("### 🛣️ Branch + Route Ops Exceptions")
         render_centered_html_table(pack["branch_route_repeat"], height=420, csv_filename="Branch_Route_Escalations.csv", cell_link_fn=_ops_link)
 
         _rz_c1, _rz_c2 = st.tabs(["🏢 RO-wise Summary", "🗺️ Zone-wise Summary"])
@@ -6718,7 +6906,8 @@ def render_executive_pulse(data):
 
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric(f"Ops On-Time ({ops_latest_lbl})", f"{ops_ot_last:.1f}%" if not ops_raw.empty else "—", delta=f"{ops_delta:+.1f}% vs 7D avg" if not ops_raw.empty else None)
-    k2.metric("Overall Ops Late Dep", f"{ops_ld_all:.1f}%" if not ops_raw.empty else "—", delta=f"{len(pack.get('branch_repeat', pd.DataFrame()))} branches affected", delta_color="off")
+    ops_ll_all = float(ops_raw['_OpsRemarkOutcome'].eq('Late Dep, Late Arr').mean() * 100.0) if not ops_raw.empty else 0.0
+    k2.metric("Late Dep, Late Arr", f"{ops_ll_all:.1f}%" if not ops_raw.empty else "—", delta=f"{len(pack.get('branch_repeat', pd.DataFrame()))} branches affected", delta_color="off")
     k3.metric("Vendor On-Time SLA", f"{ven_ot_all:.1f}%" if not ven_raw.empty else "—", delta=f"{ven_delta:+.1f}% latest vs 7D" if not ven_raw.empty else None)
     k4.metric("Stuck Payment Bills", f"{len(pay_stuck_df):,}", delta=f"₹{pay_stuck_amt/1e7:.2f} Cr pending", delta_color="off")
     k5.metric(f"Routes < {int(sla['util_red_pct'])}% Util", f"{util_under:,}", delta=f"of {len(util_df):,} routes", delta_color="off")
@@ -6728,7 +6917,7 @@ def render_executive_pulse(data):
 
     p_c1, p_c2 = st.columns(2)
     with p_c1:
-        st.markdown("### 🏢 Worst ROs (Late Departures)")
+        st.markdown("### 🏢 Worst ROs (Ops Exceptions)")
         render_centered_html_table(pack.get("ro_summary", pd.DataFrame()).head(10), height=340, csv_filename="Pulse_Worst_ROs.csv")
     with p_c2:
         st.markdown("### 🚚 Worst Vendor Legs (Delays)")
@@ -6873,7 +7062,7 @@ def render_ops_remark_gauges(ops_outcome_counts, ops_total_trips, ops_outcome_la
     for outcome_label, outcome_tone, outcome_icon in ops_outcome_labels:
         outcome_count = ops_outcome_counts[outcome_label]
         primary_outcome = outcome_label in {
-            'Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr', 'Late Departure',
+            'Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr',
             'Late Dep, Late Arr', 'Late Dep, Ontime Arr'
         }
         if not (primary_outcome or outcome_count > 0):
@@ -7092,7 +7281,7 @@ def render_centered_html_table(
         'Vendor', 'VendorName', 'Vendor Name', 'Invoice Month', 'User ID', 'Route Code', 'Module Name'
     }
     pill_set = set(pill_cols or []) | {
-        'Remark', 'Remark % (Count)', 'Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr', 'Late Departure',
+        'Remark', 'Remark % (Count)', 'Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr',
         'Late Dep, Late Arr', 'Late Dep, Ontime Arr', 'Late Dep, In-Transit',
         'Ontime Dep, In-Transit', 'Missing Schedule', 'No Departure',
         'Ontime Arrival', 'Late Arrival', 'In-Transit',
@@ -8860,7 +9049,6 @@ elif choice == "📊 Operations Summary":
                 else:
                     remarks.append(f"{ent}: {ld_v}/{t_v} late dep ({ld_p:.1f}%) — watch")
 
-            res['Late Departure'] = [format_pct_cnt(c, t) for c, t in zip(ld_c, tot_c)]
             for lbl in shown_outcomes:
                 res[lbl] = [format_pct_cnt(c, t) for c, t in zip(res[lbl], tot_c)]
             res['Status'] = np.where(oo_pct >= 85, '🟢 Strong', np.where(oo_pct >= 70, '🟡 Watch', '🔴 Action Needed'))
@@ -8868,7 +9056,7 @@ elif choice == "📊 Operations Summary":
             res['_sort_ld'] = ld_c
             res['_sort_pct'] = ld_pct
 
-            front_o = g_keys + ['Total Trips', 'Ontime Dep, Ontime Arr', 'Late Departure'] + [c for c in shown_outcomes if c != 'Ontime Dep, Ontime Arr'] + ['Status', 'Decision Remark']
+            front_o = g_keys + ['Total Trips', 'Ontime Dep, Ontime Arr'] + [c for c in shown_outcomes if c != 'Ontime Dep, Ontime Arr'] + ['Status', 'Decision Remark']
             if mode == "Route & Leg-wise":
                 res['_leg_n'] = extract_leg_num_val(res['Legwise']) if 'Legwise' in res.columns else 999
                 res = res.sort_values(by=[c for c in ['Origin RO', 'Route Path', '_leg_n'] if c in res.columns], ascending=True)
@@ -10195,7 +10383,7 @@ elif choice == "📱 Communication Hub":
             unsafe_allow_html=True
         )
 
-        st.markdown("#### 🔥 Verification Preview: Branch Repeat Offenders (Late Departures)")
+        st.markdown("#### 🔥 Verification Preview: Branch Repeat Offenders (Ops Exceptions)")
         render_centered_html_table(d_pack["branch_repeat"], height=360)
         st.markdown("#### 🚚 Verification Preview: Vendor Repeat Delays (Late Arrivals)")
         render_centered_html_table(d_pack["vendor_leg_repeat"], height=360)
