@@ -2376,30 +2376,30 @@ def sort_by_route_and_leg(df):
         return df
     df_out = df.copy()
     sort_cols = []
+    asc_flags = []
     if 'Route Path' in df_out.columns:
-        sort_cols.append('Route Path')
+        sort_cols.append('Route Path'); asc_flags.append(True)
     elif 'Route' in df_out.columns:
-        sort_cols.append('Route')
+        sort_cols.append('Route'); asc_flags.append(True)
     elif 'Route (UP/DOWN)' in df_out.columns:
-        sort_cols.append('Route (UP/DOWN)')
-        
+        sort_cols.append('Route (UP/DOWN)'); asc_flags.append(True)
+
     if 'Legwise' in df_out.columns:
         df_out['_leg_sort_num_'] = extract_leg_num_val(df_out['Legwise'])
-        sort_cols.append('_leg_sort_num_')
-        sort_cols.append('Legwise')
-        
+        sort_cols.extend(['_leg_sort_num_', 'Legwise'])
+        asc_flags.extend([True, True])
+
     if 'VendorName' in df_out.columns:
-        sort_cols.append('VendorName')
-        
-    if 'Date' in df_out.columns:
-        sort_cols.append('Date')
-    elif 'MCD_StartDate' in df_out.columns:
-        sort_cols.append('MCD_StartDate')
-        
+        sort_cols.append('VendorName'); asc_flags.append(True)
+
+    dt_col = 'Date' if 'Date' in df_out.columns else ('MCD_StartDate' if 'MCD_StartDate' in df_out.columns else None)
+    if dt_col:
+        df_out['_dt_sort_'] = pd.to_datetime(df_out[dt_col], dayfirst=True, errors='coerce')
+        sort_cols.append('_dt_sort_'); asc_flags.append(False)
+
     if sort_cols:
-        df_out = df_out.sort_values(by=sort_cols, ascending=True)
-    if '_leg_sort_num_' in df_out.columns:
-        df_out.drop(columns=['_leg_sort_num_'], inplace=True, errors='ignore')
+        df_out = df_out.sort_values(by=sort_cols, ascending=asc_flags, kind='mergesort', na_position='last')
+    df_out.drop(columns=['_leg_sort_num_', '_dt_sort_'], inplace=True, errors='ignore')
     return df_out
 
 def time_to_hrs(t):
@@ -2799,7 +2799,7 @@ def get_scheduled_route_master(file_signature=()):
         df['Destination RO'] = [record.get('ro', '') or 'RO NOT MAPPED' for record in destination_records]
         df['Origin Branch'] = [record.get('name', '') or record.get('code', '') or str(value) for record, value in zip(origin_records, df['Origin'])]
         df['Destination Branch'] = [record.get('name', '') or record.get('code', '') or str(value) for record, value in zip(destination_records, df['Destination'])]
-        result = df.reindex(columns=output_cols).fillna('')
+        result = sort_by_route_and_leg(df.reindex(columns=output_cols).fillna('')).reset_index(drop=True)
         result.attrs['branch_source'] = branch_source
         result.attrs['ondemand_source'] = ''
         result.attrs['schedule_source'] = schedule_source
@@ -3475,8 +3475,14 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic",
         'bold': True, 'align': 'center', 'valign': 'vcenter'
     })
     total_row_fmt = workbook.add_format({
-        'bold': True, 'bg_color': '#E2E8F0', 'font_color': '#0F172A',
-        'border': 1, 'align': 'center', 'valign': 'vcenter'
+        'bold': True, 'bg_color': '#D9E8FB', 'font_color': '#0F172A',
+        'border': 1, 'top': 2, 'bottom': 2, 'top_color': '#1E3A8A', 'bottom_color': '#1E3A8A',
+        'align': 'center', 'valign': 'vcenter'
+    })
+    sub_row_fmt = workbook.add_format({
+        'bold': True, 'bg_color': '#EAF2FB', 'font_color': '#0F172A',
+        'border': 1, 'top': 1, 'bottom': 2, 'top_color': '#64748B', 'bottom_color': '#1E3A8A',
+        'align': 'center', 'valign': 'vcenter'
     })
     row_green_fmt = workbook.add_format({'border': 1, 'bg_color': '#E2F0D9', 'font_color': '#1F4E2B', 'align': 'center', 'valign': 'vcenter'})
     row_red_fmt = workbook.add_format({'border': 1, 'bg_color': '#FCE4D6', 'font_color': '#7F1D1D', 'align': 'center', 'valign': 'vcenter'})
@@ -3493,8 +3499,17 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic",
     for col_idx, col_name in enumerate(df.columns):
         worksheet.write(0, col_idx, str(col_name), header_fmt)
 
+    _sla_xl = get_sla_thresholds()
+    _xl_u_cut = _sla_xl["util_red_pct"]
+    _xl_cpk_cut = _sla_xl["high_cpk"]
     for row_idx, (_, row) in enumerate(df.iterrows(), start=1):
-        is_total_row = any(str(row.get(k, '')).upper() in ['TOTAL', 'GRAND TOTAL'] for k in ['VendorRO', 'RO Name', 'Route Path', 'Origin RO'])
+        _first_val_u = str(row.iloc[0]).strip().upper() if len(row) > 0 else ''
+        _side_val_u = str(row.get('Side', '')).strip().upper()
+        is_sub_row = _first_val_u.startswith('↳') or _side_val_u == 'UP+DOWN' or (_first_val_u.endswith(' TOTAL') and _first_val_u != 'GRAND TOTAL')
+        is_total_row = (
+            _first_val_u in ('TOTAL', 'GRAND TOTAL', 'TOTAL SAVINGS', 'NETWORK TOTAL')
+            or any(str(row.get(k, '')).strip().upper() in ('TOTAL', 'GRAND TOTAL') for k in ('VendorRO', 'RO Name', 'Route Path', 'Origin RO', 'Route Pair', 'RO'))
+        )
         row_labels = ' '.join(str(row.get(col, '')).strip().lower() for col in ['Payment Group', 'Operations Outcome', 'Remark with 15 min waiver', 'Remark', 'Status'] if col in row.index)
         if 'late dep, late arr' in row_labels or 'late arrival' in row_labels or 'no dep' in row_labels:
             row_status_fmt = row_red_fmt
@@ -3525,9 +3540,29 @@ def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic",
             s_lower = s_val.lower()
             c_lower = str(col_name).lower()
             
-            chosen_fmt = total_row_fmt if is_total_row else (row_status_fmt or cell_fmt)
+            chosen_fmt = total_row_fmt if is_total_row else (sub_row_fmt if is_sub_row else (row_status_fmt or cell_fmt))
             
-            if not is_total_row:
+            # Always highlight Util % (<60% Red, 60-80% Amber, >=80% Green), CPK (>cutoff Red), Priority & Underutil Status even on Subtotal rows
+            if 'util' in c_lower and 'class' not in c_lower and 'status' not in c_lower:
+                pct_u = parse_pct_from_str(s_val)
+                if pct_u is None and isinstance(val_str, (int, float)) and not isinstance(val_str, bool):
+                    pct_u = float(val_str) * 100.0 if float(val_str) <= 2.0 else float(val_str)
+                if pct_u is not None:
+                    chosen_fmt = red_fmt if pct_u < _xl_u_cut else (yellow_fmt if pct_u < 80.0 else green_fmt)
+            elif 'underutil' in c_lower or c_lower in ('classification', 'priority'):
+                if any(k in s_lower for k in ('round trip', 'round-trip', 'single side under', 'single-side <', 'fail', 'p1')):
+                    chosen_fmt = red_fmt
+                elif any(k in s_lower for k in ('one side', 'one-side', 'watch', 'p2')):
+                    chosen_fmt = yellow_fmt
+                elif any(k in s_lower for k in ('balanced', 'star', 'healthy', 'efficient')):
+                    chosen_fmt = green_fmt
+            elif 'cpk' in c_lower:
+                _cpk_m = re.search(r'(\d+(?:\.\d+)?)', s_val.replace(',', ''))
+                if _cpk_m and float(_cpk_m.group(1)) > _xl_cpk_cut:
+                    chosen_fmt = red_fmt
+                elif not is_total_row and not is_sub_row:
+                    chosen_fmt = blue_bold_fmt
+            elif not is_total_row:
                 if any(k in c_lower for k in ['payment pending / paid', 'payment pending', 'paid achievement']):
                     chosen_fmt = green_fmt if (parse_pct_from_str(s_val) or 0) > 0 or (s_val.isdigit() and int(s_val) > 0) else muted_fmt
                 elif 'other' in c_lower or 'draft' in c_lower:
@@ -4781,6 +4816,7 @@ def process_all_data():
         st.session_state.pop('_vip_exec_report_ready', None)
         try:
             st.cache_data.clear()
+            st.cache_resource.clear()
         except Exception:
             pass
 
@@ -4862,6 +4898,7 @@ if st.session_state['role'] == 'Admin':
         st.session_state.pop('_dashboard_page_cache', None)
         try:
             st.cache_data.clear()
+            st.cache_resource.clear()
         except Exception:
             pass
         st.sidebar.success("Old Data Removed! You can paste new data now.")
@@ -4969,6 +5006,7 @@ if st.session_state['role'] == 'Admin':
                 st.session_state.pop('_pay_prepared_frame_cache_v5', None)
                 try:
                     st.cache_data.clear()
+                    st.cache_resource.clear()
                 except Exception:
                     pass
                 st.success(f"✅ Restored {cnt_r} files! Reloading dashboard...")
@@ -4978,22 +5016,30 @@ if st.session_state['role'] == 'Admin':
         st.caption("Agar kisi Branch (e.g. DELSP, SRTKDH) ka RO sheet mein nahi hai toh yahan map karo — ye permanently save rahega, agli Ro & Branch list mein na bhi ho tab bhi yahi RO uthega!")
         _cb_map = load_custom_branch_ro_map()
 
-        # Auto-detect currently UNMAPPED branches from fast cache if available
+        # Auto-detect currently UNMAPPED branches (cached per workbook version — 0ms on module switch!)
         _unmapped_hint = []
         try:
             if os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
-                _all_s_hint = _read_all_dashboard_sheets_once(FILE_MAP["FINAL_OUTPUT"], file_version(FILE_MAP["FINAL_OUTPUT"]))
-                for _sh_k, _b_col, _r_col in [
-                    ('All_Trips_Audit', 'Origin Branch', 'Origin RO'),
-                    ('Legwise_Processed_Data', 'CD_FromBranch', 'Origin RO'),
-                    ('Vendor_Perf_Raw', 'CD_FromBranch', 'Origin RO'),
-                ]:
-                    _df_h = _all_s_hint.get(_sh_k, pd.DataFrame())
-                    if not _df_h.empty and _b_col in _df_h.columns and _r_col in _df_h.columns:
-                        _um = _df_h[_df_h[_r_col].fillna('').astype(str).str.upper().isin(['UNMAPPED', 'RO NOT MAPPED', ''])][_b_col].dropna().astype(str).str.strip().str.upper().unique().tolist()
-                        for _u in _um:
-                            if _u and _u not in _cb_map and _u not in _unmapped_hint:
-                                _unmapped_hint.append(_u)
+                _um_sig = (file_version(FILE_MAP["FINAL_OUTPUT"]), tuple(sorted(_cb_map.keys())))
+                _um_cached = st.session_state.get("_cached_unmapped_branches_v1")
+                if isinstance(_um_cached, tuple) and _um_cached[0] == _um_sig:
+                    _unmapped_hint = _um_cached[1]
+                else:
+                    _all_s_hint = _read_all_dashboard_sheets_once(FILE_MAP["FINAL_OUTPUT"], file_version(FILE_MAP["FINAL_OUTPUT"]))
+                    _um_set = set()
+                    for _sh_k, _b_col, _r_col in [
+                        ('All_Trips_Audit', 'Origin Branch', 'Origin RO'),
+                        ('Legwise_Processed_Data', 'CD_FromBranch', 'Origin RO'),
+                        ('Vendor_Perf_Raw', 'CD_FromBranch', 'Origin RO'),
+                    ]:
+                        _df_h = _all_s_hint.get(_sh_k, pd.DataFrame())
+                        if not _df_h.empty and _b_col in _df_h.columns and _r_col in _df_h.columns:
+                            _um = _df_h[_df_h[_r_col].fillna('').astype(str).str.upper().isin(['UNMAPPED', 'RO NOT MAPPED', ''])][_b_col].dropna().astype(str).str.strip().str.upper().unique().tolist()
+                            for _u in _um:
+                                if _u and _u not in _cb_map:
+                                    _um_set.add(_u)
+                    _unmapped_hint = sorted(_um_set)
+                    st.session_state["_cached_unmapped_branches_v1"] = (_um_sig, _unmapped_hint)
         except Exception:
             pass
         if _unmapped_hint:
@@ -5021,6 +5067,7 @@ if st.session_state['role'] == 'Admin':
                     st.session_state.pop('_overall_issues_summary_cache', None)
                     try:
                         st.cache_data.clear()
+                        st.cache_resource.clear()
                     except Exception:
                         pass
                     log_user_activity(st.session_state.get('username'), "Branch->RO Map", f"{final_bcode} -> {cb_ro_in} ({cb_zone_in or 'Auto'})")
@@ -5039,6 +5086,7 @@ if st.session_state['role'] == 'Admin':
                 st.session_state.pop('_dashboard_page_cache', None)
                 try:
                     st.cache_data.clear()
+                    st.cache_resource.clear()
                 except Exception:
                     pass
                 st.success(f"Removed `{_del_cb}`.")
@@ -5079,6 +5127,7 @@ if st.session_state['role'] == 'Admin':
         st.session_state.pop('_dashboard_page_cache', None)
         try:
             st.cache_data.clear()
+            st.cache_resource.clear()
         except Exception:
             pass
         for _cp in (".monitoring_sheets_fast_cache.pkl", ".payment_norm_fast_cache.pkl"):
@@ -5350,6 +5399,16 @@ def prepare_payment_dashboard_frame(raw_frame):
     """Keep all categories, exclude CANCELLED/DECLINED/FAILED, and compute exact buckets, Pending With, and Days Pending."""
     if not isinstance(raw_frame, pd.DataFrame) or raw_frame.empty:
         return pd.DataFrame()
+    _pay_p = FILE_MAP.get('PAYMENT', '')
+    _pay_sig = file_version(_pay_p) if _pay_p and os.path.exists(_pay_p) else None
+    _vcm_p = FILE_MAP.get('VENDOR_CATEGORY_MAP', '')
+    _vcm_sig = os.stat(_vcm_p).st_mtime_ns if _vcm_p and os.path.exists(_vcm_p) else 0
+    _uvcm_p = FILE_MAP.get('USER_VENDOR_CATEGORY_MAP', '')
+    _uvcm_sig = os.stat(_uvcm_p).st_mtime_ns if _uvcm_p and os.path.exists(_uvcm_p) else 0
+    _cache_key = (id(raw_frame), len(raw_frame), _pay_sig, st.session_state.get('username', ''), _vcm_sig, _uvcm_sig)
+    _hit = st.session_state.get('_pay_prepared_frame_cache_v5')
+    if isinstance(_hit, tuple) and _hit[0] == _cache_key:
+        return _hit[1]
     frame = raw_frame.copy()
 
     status = frame.get('Status', pd.Series('', index=frame.index)).fillna('').astype(str).str.strip().str.upper().str.replace(' ', '_', regex=False)
@@ -5463,7 +5522,9 @@ def prepare_payment_dashboard_frame(raw_frame):
         )
     if 'Month Audit' not in frame.columns:
         frame['Month Audit'] = 'OK'
-    return frame.reset_index(drop=True)
+    _res_pay = frame.reset_index(drop=True)
+    st.session_state['_pay_prepared_frame_cache_v5'] = (_cache_key, _res_pay)
+    return _res_pay
 
 
 def build_daily_overall_issues_pack(ops_df, ven_df, pay_df, cpk_df, group_by_mode="Branch-wise"):
@@ -5633,7 +5694,18 @@ def build_daily_overall_issues_pack(ops_df, ven_df, pay_df, cpk_df, group_by_mod
                 vl_rows.append(row_out)
         df_vl = pd.DataFrame(vl_rows)
         if not df_vl.empty:
-            df_vl = df_vl.sort_values(by=['_s1', '_s2', '_s3', 'Total Trips'], ascending=[False, False, False, False]).drop(columns=['_s1', '_s2', '_s3']).reset_index(drop=True)
+            if 'Legwise' in df_vl.columns and 'Route Path' in df_vl.columns:
+                df_vl['_leg_n'] = extract_leg_num_val(df_vl['Legwise'])
+                _vl_gk = [c for c in ['Vendor', 'Route Path'] if c in df_vl.columns]
+                df_vl['_grp_s1'] = df_vl.groupby(_vl_gk)['_s1'].transform('max')
+                df_vl['_grp_s2'] = df_vl.groupby(_vl_gk)['_s2'].transform('sum')
+                df_vl = df_vl.sort_values(
+                    by=['_grp_s1', '_grp_s2'] + _vl_gk + ['_leg_n'],
+                    ascending=[False, False] + [True] * len(_vl_gk) + [True],
+                    kind='mergesort'
+                ).drop(columns=['_s1', '_s2', '_s3', '_leg_n', '_grp_s1', '_grp_s2'], errors='ignore').reset_index(drop=True)
+            else:
+                df_vl = df_vl.sort_values(by=['_s1', '_s2', '_s3', 'Total Trips'], ascending=[False, False, False, False], kind='mergesort').drop(columns=['_s1', '_s2', '_s3']).reset_index(drop=True)
         pack["vendor_leg_repeat"] = df_vl
 
         vr_rows = []
@@ -5777,7 +5849,7 @@ def build_daily_overall_issues_pack(ops_df, ven_df, pay_df, cpk_df, group_by_mod
     return pack
 
 
-@st.cache_data(show_spinner=False, max_entries=1, ttl=DATA_RETENTION_TTL_SECS)
+@st.cache_resource(show_spinner=False, max_entries=1, ttl=DATA_RETENTION_TTL_SECS)
 def _get_normalized_payment_cached(path, payment_signature, branch_signature, processed_signature):
     """Ultra-fast payment loader: disk pickle -> streaming XML -> openpyxl fallback."""
     pkl_path = os.path.join(DATA_DIR, ".payment_norm_fast_cache.pkl")
@@ -5798,7 +5870,7 @@ def get_normalized_overall_payment(path, data=None, processed_signature=None):
     branch_signature = file_version(branch_path) if branch_path and os.path.exists(branch_path) else None
     return _get_normalized_payment_cached(path, payment_signature, branch_signature, processed_signature)
 
-@st.cache_data(show_spinner=False, max_entries=1, ttl=DATA_RETENTION_TTL_SECS)
+@st.cache_resource(show_spinner=False, max_entries=1, ttl=DATA_RETENTION_TTL_SECS)
 def _read_all_dashboard_sheets_once(path, signature):
     """Read and pre-normalize the master workbook ONCE with disk pickle cache so every switch is <0.1s."""
     pkl_path = os.path.join(DATA_DIR, ".monitoring_sheets_fast_cache.pkl")
@@ -5834,7 +5906,7 @@ def read_dashboard_sheets_cached(path, signature, sheet_names):
     all_sheets = _read_all_dashboard_sheets_once(path, signature)
     return {name: all_sheets[name] for name in sheet_names if name in all_sheets}
 
-@st.cache_data(show_spinner=False, max_entries=2)
+@st.cache_resource(show_spinner=False, max_entries=2)
 def read_binary_asset_cached(path, signature):
     """Reuse report bytes across Streamlit reruns until the report file changes."""
     with open(path, 'rb') as source_file:
@@ -8113,6 +8185,7 @@ def build_pair_updown_display_table(df_seg, util_cutoff_pct=60.0):
             if u1 < util_cutoff_pct and u2 < util_cutoff_pct:
                 stats["both_under"] += 1
                 pair_class = "🔴 FAIL: Round-Trip <60%"
+                underutil_flag = "🔴 Round Trip Underutilized"
                 stats["failure_cards"].append({
                     "Route Pair": pair, "Cap": cap_val, "Origin RO": p_ros, "Trips": p_trips,
                     "Util %": round(p_util, 1), "CPK": round(p_cpk, 2), "Total Cost": round(p_cost, 0),
@@ -8120,7 +8193,8 @@ def build_pair_updown_display_table(df_seg, util_cutoff_pct=60.0):
                 })
             elif (u1 >= util_cutoff_pct and u2 < util_cutoff_pct) or (u2 >= util_cutoff_pct and u1 < util_cutoff_pct):
                 stats["one_side_util"] += 1
-                pair_class = "🟠 WATCH: One-Side Utilized"
+                pair_class = "🟠 WATCH: One-Side Underutilized"
+                underutil_flag = "🟠 One Side Underutilized"
                 hi_d, hi_u = (d1, u1) if u1 >= u2 else (d2, u2)
                 lo_d, lo_u = (d2, u2) if u1 >= u2 else (d1, u1)
                 lo_grp = p_grp[p_grp['Direction'].eq(lo_d)]
@@ -8139,6 +8213,7 @@ def build_pair_updown_display_table(df_seg, util_cutoff_pct=60.0):
                     })
             else:
                 stats["both_healthy"] += 1
+                underutil_flag = "🟢 Balanced (Both ≥60%)"
                 if p_util >= 80.0:
                     stats["star_achievements"] += 1
                     pair_class = "🏆 STAR: Both ≥80%"
@@ -8154,13 +8229,16 @@ def build_pair_updown_display_table(df_seg, util_cutoff_pct=60.0):
             if u1 < util_cutoff_pct:
                 stats["single_dir_under"] += 1
                 pair_class = "🔴 FAIL: Single-Side <60%"
+                underutil_flag = "🔴 Single Side Underutilized"
             elif u1 >= 80.0:
                 stats["single_dir_ok"] += 1
                 stats["star_achievements"] += 1
                 pair_class = "🏆 STAR: Single-Side ≥80%"
+                underutil_flag = "🟢 Single Side Healthy"
             else:
                 stats["single_dir_ok"] += 1
                 pair_class = "🟢 Single-Side Healthy"
+                underutil_flag = "🟢 Single Side Healthy"
 
         dir_agg = dir_agg.sort_values(by=['Direction', 'Final_Route'], ascending=[True, True])
         first_dir = dir_agg['Direction'].iloc[0]
@@ -8168,7 +8246,7 @@ def build_pair_updown_display_table(df_seg, util_cutoff_pct=60.0):
         for _, r in dir_agg.iterrows():
             leg_tag = "UP" if r['Direction'] == first_dir else "DOWN"
             u_v = float(r['Util_Pct'])
-            st_lbl = "🔴 FAIL (<60%)" if u_v < util_cutoff_pct else ("🏆 STAR (≥80%)" if u_v >= 80.0 else "🟡 WATCH (60-80%)")
+            st_lbl = f"🔴 FAIL (<{int(util_cutoff_pct)}%)" if u_v < util_cutoff_pct else ("🏆 STAR (≥80%)" if u_v >= 80.0 else "🟡 WATCH (60-80%)")
             updown_rows.append({
                 "Route Pair": pair, "Capacity": cap_val, "Side": leg_tag,
                 "Origin RO": r['Origin_RO'], "Dest RO": r['Dest_RO'], "Route": r['Final_Route'],
@@ -8176,7 +8254,7 @@ def build_pair_updown_display_table(df_seg, util_cutoff_pct=60.0):
                 "Carried Wt": int(round(r['Total_Wt'])), "Total Cap": int(round(r['Total_Cap'])),
                 "Util %": f"{u_v:.1f}%", "Per Trip Cost": f"₹{r['Per_Trip_Cost']:,.0f}",
                 "Total Cost": f"₹{r['Total_Cost']:,.0f}", "CPK": f"₹{r['CPK']:.2f}",
-                "Vendor(s)": r['Vendors'], "Status": st_lbl,
+                "Vendor(s)": r['Vendors'], "Underutil Status": underutil_flag, "Status": st_lbl,
                 "_is_sub": False, "_num_util": u_v, "_num_cpk": float(r['CPK']), "_num_cost": float(r['Total_Cost']), "_num_wt": float(r['Total_Wt'])
             })
 
@@ -8189,7 +8267,7 @@ def build_pair_updown_display_table(df_seg, util_cutoff_pct=60.0):
             "Carried Wt": int(round(p_wt)), "Total Cap": int(round(p_cap)),
             "Util %": f"{p_util:.1f}%", "Per Trip Cost": f"₹{p_ptc:,.0f}",
             "Total Cost": f"₹{p_cost:,.0f}", "CPK": f"₹{p_cpk:.2f}",
-            "Vendor(s)": p_vens, "Status": pair_class,
+            "Vendor(s)": p_vens, "Underutil Status": underutil_flag, "Status": pair_class,
             "_is_sub": True, "_num_util": p_util, "_num_cpk": p_cpk, "_num_cost": p_cost, "_num_wt": p_wt
         })
 
@@ -8198,7 +8276,7 @@ def build_pair_updown_display_table(df_seg, util_cutoff_pct=60.0):
             "Routes": len(dir_agg), "Trips": p_trips, "Carried Wt": int(round(p_wt)),
             "Total Cap": int(round(p_cap)), "Overall Util %": f"{p_util:.1f}%",
             "Total Cost": f"₹{p_cost:,.0f}", "Overall CPK": f"₹{p_cpk:.2f}",
-            "Classification": pair_class, "Vendor(s)": p_vens,
+            "Underutil Status": underutil_flag, "Classification": pair_class, "Vendor(s)": p_vens,
             "_sort_u": p_util, "_num_cpk": p_cpk, "_num_cost": p_cost
         })
 
@@ -8303,9 +8381,10 @@ def build_dynamic_ai_fleet_optimizer(df_raw_f, df_daily_f, util_cutoff_pct=60.0,
                 smaller = _recommend_smaller_truck(cap_v, max_side_avg_wt)
                 if both_under and comb_util < 35.0:
                     est_sav = tot_cost * 0.45 * month_scale
+                    _brns_lbl = ", ".join(sorted(set(grp['Origin'].dropna().astype(str))))
                     ideas.append({
                         "Priority": "🔴 P1 - Critical", "Category": f"{seg} · Remove / Merge",
-                        "RO / Branch": ros_lbl, "Entity / Route": f"{pair} ({cap_v:,} kg)",
+                        "RO": ros_lbl, "Branch": _brns_lbl, "Entity / Route": f"{pair} ({cap_v:,} kg)",
                         "Current Metric": f"Util {comb_util:.1f}% (Both <{int(util_cutoff_pct)}%) · CPK ₹{comb_cpk:.2f}",
                         "AI Recommendation": f"Remove dedicated {_fleet_size_label(cap_v)} & shift {max_side_avg_wt:,.0f} kg/trip load to alternate day / co-loader",
                         "Est. Monthly Saving": round(est_sav, 0), "_sav": est_sav
@@ -8323,9 +8402,10 @@ def build_dynamic_ai_fleet_optimizer(df_raw_f, df_daily_f, util_cutoff_pct=60.0,
                     est_sav = max(0.0, trip_sav * tot_trips * month_scale)
                     new_util = (tot_wt / (tot_trips * new_cap) * 100.0) if new_cap > 0 else 0.0
                     tag_why = f"Both sides <{int(util_cutoff_pct)}%" if both_under else f"Combined {comb_util:.1f}% (Avg {max_side_avg_wt:,.0f} kg fits smaller truck)"
+                    _brns_lbl = ", ".join(sorted(set(grp['Origin'].dropna().astype(str))))
                     ideas.append({
                         "Priority": "🔴 P1 - Downsize" if both_under else "🟠 P2 - Downsize",
-                        "Category": f"{seg} · Downsize Truck", "RO / Branch": ros_lbl,
+                        "Category": f"{seg} · Downsize Truck", "RO": ros_lbl, "Branch": _brns_lbl,
                         "Entity / Route": f"{pair} ({cap_v:,} kg)",
                         "Current Metric": f"Util {comb_util:.1f}% · Avg {max_side_avg_wt:,.0f} kg/trip · CPK ₹{comb_cpk:.2f}",
                         "AI Recommendation": f"Replace {_fleet_size_label(cap_v)} with {new_lbl} → Util jumps to {new_util:.1f}% ({tag_why}; {rate_basis})",
@@ -8337,9 +8417,10 @@ def build_dynamic_ai_fleet_optimizer(df_raw_f, df_daily_f, util_cutoff_pct=60.0,
                     lo_row, hi_row = sides.loc[sides['util'].idxmin()], sides.loc[sides['util'].idxmax()]
                     empty_mt = max(0.0, (lo_row['trips'] * cap_v - lo_row['wt']) / 1000.0)
                     est_val = lo_row['cost'] * max(0.10, (util_cutoff_pct - u_lo) / 100.0) * 0.5 * month_scale
+                    _brns_lbl = ", ".join(sorted(set(grp['Origin'].dropna().astype(str))))
                     ideas.append({
                         "Priority": "🟠 P2 - Backhaul", "Category": f"{seg} · One-Side Empty",
-                        "RO / Branch": ros_lbl, "Entity / Route": f"{pair} ({cap_v:,} kg)",
+                        "RO": ros_lbl, "Branch": _brns_lbl, "Entity / Route": f"{pair} ({cap_v:,} kg)",
                         "Current Metric": f"{hi_row['Direction']} {u_hi:.1f}% vs {lo_row['Direction']} {u_lo:.1f}% (Gap {u_hi-u_lo:.1f}%)",
                         "AI Recommendation": f"Backhaul leakage of {empty_mt:.1f} MT on {lo_row['Direction']} — club regional/co-loader load or renegotiate 1-way rate",
                         "Est. Monthly Saving": round(est_val, 0), "_sav": est_val
@@ -8360,7 +8441,7 @@ def build_dynamic_ai_fleet_optimizer(df_raw_f, df_daily_f, util_cutoff_pct=60.0,
                 })
                 ideas.append({
                     "Priority": "🟠 P2 - Rate Parity", "Category": f"{seg} · Rate Variance",
-                    "RO / Branch": str(grp['Origin_RO'].iloc[0]), "Entity / Route": f"{rt} ({cap_v:,} kg)",
+                    "RO": str(grp['Origin_RO'].iloc[0]), "Branch": str(grp['Origin'].iloc[0]), "Entity / Route": f"{rt} ({cap_v:,} kg)",
                     "Current Metric": f"Min ₹{mn:,.0f} vs Max ₹{mx:,.0f} (₹{mx-mn:,.0f}/trip gap)",
                     "AI Recommendation": f"Align all {len(above)} higher-rate trips on {rt} to benchmark ₹{mn:,.0f}/trip",
                     "Est. Monthly Saving": round(est_sav, 0), "_sav": est_sav
@@ -8387,7 +8468,7 @@ def build_dynamic_ai_fleet_optimizer(df_raw_f, df_daily_f, util_cutoff_pct=60.0,
                 if est_sav >= 10000:
                     ideas.append({
                         "Priority": "🔴 P1 - Rate Parity" if est_sav >= 50000 else "🟠 P2 - Rate Parity",
-                        "Category": f"{seg} · Branch Rate Gap", "RO / Branch": f"{ro} · {brn[:28]}",
+                        "Category": f"{seg} · Branch Rate Gap", "RO": ro, "Branch": brn,
                         "Entity / Route": f"{len(valid_g)} Vehs ({int(cap_v):,} kg · {ct})",
                         "Current Metric": f"Min ₹{mn_r:,.0f} vs Max ₹{mx_r:,.0f} ({len(above)} costly)",
                         "AI Recommendation": f"Shift/renegotiate {high_vehs} to ₹{mn_r:,.0f} (branch benchmark)",
@@ -8411,7 +8492,7 @@ def build_dynamic_ai_fleet_optimizer(df_raw_f, df_daily_f, util_cutoff_pct=60.0,
                 rec_txt = f"Club additional OFD/PickUp/Feeder load onto {r['Vehicle No']} ({u_v:.1f}% util, ₹{m_rate:,.0f}/mo)"
             ideas.append({
                 "Priority": pri_lbl, "Category": f"{r['Type']} · Underutilized",
-                "RO / Branch": f"{r['RO']} · {str(r['Branch'])[:25]}",
+                "RO": str(r['RO']), "Branch": str(r['Branch']),
                 "Entity / Route": f"{r['Vehicle No']} ({cap_v:,} kg)",
                 "Current Metric": f"Overall Util {u_v:.1f}% · MCD {r['MCD Util %']} · CPK {r['Overall CPK']}",
                 "AI Recommendation": rec_txt, "Est. Monthly Saving": round(est_sav, 0), "_sav": est_sav
@@ -8524,7 +8605,7 @@ def build_avp_utilization_excel_bytes(
             cols = [
                 'Route Pair', 'Capacity (kg)', 'Side', 'Origin RO', 'Dest RO', 'Route',
                 'Trips', 'Avg Wt/Trip', 'Carried Wt (kg)', 'Total Cap (kg)',
-                'Util %', 'Per Trip Cost', 'Total Cost (₹)', 'CPK (₹/kg)', 'Vendor(s)', 'Status'
+                'Util %', 'Per Trip Cost', 'Total Cost (₹)', 'CPK (₹/kg)', 'Vendor(s)', 'Underutil Status', 'Status'
             ]
             ws.merge_range(0, 0, 0, len(cols) - 1, title_txt, f_title)
             ws.merge_range(1, 0, 1, len(cols) - 1, f"{dur_label}  |  LIVE Excel 2013 Formulas: Edit Capacity/Trips/Cost -> Util%, CPK, Pair Totals & Status auto-update!", f_sub)
@@ -8536,7 +8617,7 @@ def build_avp_utilization_excel_bytes(
 
             if df_ud is None or df_ud.empty:
                 ws.write(3, 0, "No records in active filter scope.", f_txt_l)
-                _finish_ws(ws, 3, len(cols) - 1, widths=[18, 12, 10, 11, 11, 26, 9, 12, 14, 14, 10, 13, 14, 11, 24, 18])
+                _finish_ws(ws, 3, len(cols) - 1, widths=[18, 12, 10, 11, 11, 26, 9, 12, 14, 14, 10, 13, 14, 11, 24, 24, 18])
                 return None
 
             block_start_excel_row = 4  # 1-based Excel row
@@ -8565,7 +8646,8 @@ def build_avp_utilization_excel_bytes(
                     ws.write_number(r_idx, 12, cost_v, f_inr)
                     ws.write_formula(r_idx, 13, f"=IFERROR(M{er}/I{er},0)", f_cpk)
                     ws.write(r_idx, 14, str(row.get('Vendor(s)', '')), f_txt_l)
-                    ws.write_formula(r_idx, 15, f'=IF(K{er}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(K{er}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_txt)
+                    ws.write(r_idx, 15, str(row.get('Underutil Status', '')), f_txt)
+                    ws.write_formula(r_idx, 16, f'=IF(K{er}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(K{er}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_txt)
                 else:
                     bs, be = block_start_excel_row, er - 1
                     ws.write(r_idx, 0, str(row.get('Route Pair', '')), f_st_txt)
@@ -8583,7 +8665,8 @@ def build_avp_utilization_excel_bytes(
                     ws.write_formula(r_idx, 12, f"=SUM(M{bs}:M{be})", f_st_inr)
                     ws.write_formula(r_idx, 13, f"=IFERROR(M{er}/I{er},0)", f_st_cpk)
                     ws.write(r_idx, 14, str(row.get('Vendor(s)', '')), f_st_txt)
-                    ws.write_formula(r_idx, 15, f'=IF(K{er}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(K{er}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_st_txt)
+                    ws.write(r_idx, 15, str(row.get('Underutil Status', '')), f_st_txt)
+                    ws.write_formula(r_idx, 16, f'=IF(K{er}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(K{er}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_st_txt)
                     block_start_excel_row = er + 1
                 r_idx += 1
 
@@ -8607,18 +8690,23 @@ def build_avp_utilization_excel_bytes(
             ws.write_formula(gt_r, 12, f'=SUMIF(C4:C{last_data_er},"<>UP+DOWN",M4:M{last_data_er})', f_gt_inr)
             ws.write_formula(gt_r, 13, f"=IFERROR(M{gt_er}/I{gt_er},0)", f_gt_cpk)
             ws.write(gt_r, 14, "-", f_gt_txt)
-            ws.write_formula(gt_r, 15, f'=IF(K{gt_er}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(K{gt_er}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_gt_txt)
+            ws.write(gt_r, 15, "-", f_gt_txt)
+            ws.write_formula(gt_r, 16, f'=IF(K{gt_er}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(K{gt_er}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_gt_txt)
 
             # Native Excel 2013 Conditional Formatting (Failures = Red, Watch = Amber, Achievements = Green)
             ws.conditional_format(3, 10, last_data_er - 1, 10, {'type': 'cell', 'criteria': '<', 'value': u_dec, 'format': cf_fail})
             ws.conditional_format(3, 10, last_data_er - 1, 10, {'type': 'cell', 'criteria': 'between', 'minimum': u_dec, 'maximum': 0.7999, 'format': cf_watch})
             ws.conditional_format(3, 10, last_data_er - 1, 10, {'type': 'cell', 'criteria': '>=', 'value': 0.8, 'format': cf_star})
             ws.conditional_format(3, 13, last_data_er - 1, 13, {'type': 'cell', 'criteria': '>', 'value': c_lim, 'format': cf_fail})
-            ws.conditional_format(3, 15, last_data_er - 1, 15, {'type': 'text', 'criteria': 'containing', 'value': 'FAIL', 'format': cf_fail})
-            ws.conditional_format(3, 15, last_data_er - 1, 15, {'type': 'text', 'criteria': 'containing', 'value': 'WATCH', 'format': cf_watch})
-            ws.conditional_format(3, 15, last_data_er - 1, 15, {'type': 'text', 'criteria': 'containing', 'value': 'STAR', 'format': cf_star})
+            ws.conditional_format(3, 15, last_data_er - 1, 15, {'type': 'text', 'criteria': 'containing', 'value': 'Round Trip', 'format': cf_fail})
+            ws.conditional_format(3, 15, last_data_er - 1, 15, {'type': 'text', 'criteria': 'containing', 'value': 'Single Side Under', 'format': cf_fail})
+            ws.conditional_format(3, 15, last_data_er - 1, 15, {'type': 'text', 'criteria': 'containing', 'value': 'One Side', 'format': cf_watch})
+            ws.conditional_format(3, 15, last_data_er - 1, 15, {'type': 'text', 'criteria': 'containing', 'value': 'Balanced', 'format': cf_star})
+            ws.conditional_format(3, 16, last_data_er - 1, 16, {'type': 'text', 'criteria': 'containing', 'value': 'FAIL', 'format': cf_fail})
+            ws.conditional_format(3, 16, last_data_er - 1, 16, {'type': 'text', 'criteria': 'containing', 'value': 'WATCH', 'format': cf_watch})
+            ws.conditional_format(3, 16, last_data_er - 1, 16, {'type': 'text', 'criteria': 'containing', 'value': 'STAR', 'format': cf_star})
 
-            _finish_ws(ws, gt_r - 1, len(cols) - 1, widths=[20, 12, 10, 11, 11, 28, 9, 12, 14, 14, 10, 13, 15, 11, 24, 17])
+            _finish_ws(ws, gt_r - 1, len(cols) - 1, widths=[20, 12, 10, 11, 11, 28, 9, 12, 14, 14, 10, 13, 15, 11, 24, 24, 17])
             return gt_er  # return Grand Total 1-based Excel row for Dashboard cross-sheet formulas!
 
         # Reserve 0_Executive_Dashboard as FIRST tab
@@ -8629,7 +8717,7 @@ def build_avp_utilization_excel_bytes(
         # 1. AI Optimization Ideas (with live SUM of Est. Monthly Saving)
         ws_ai = wb.add_worksheet('1_AI_Optimization_Ideas')
         writer.sheets['1_AI_Optimization_Ideas'] = ws_ai
-        ai_cols = ['Priority', 'Category', 'RO / Branch', 'Entity / Route', 'Current Metric', 'AI Recommendation', 'Est. Monthly Saving (₹)']
+        ai_cols = ['Priority', 'Category', 'RO', 'Branch', 'Entity / Route', 'Current Metric', 'AI Recommendation', 'Est. Monthly Saving (₹)']
         ws_ai.merge_range(0, 0, 0, len(ai_cols) - 1, "AI Fleet Optimization, Downsizing & Savings Recommendations", f_title)
         ws_ai.merge_range(1, 0, 1, len(ai_cols) - 1, f"{scope_title}  |  {dur_label}  |  Sorted by highest monthly ₹ saving", f_sub)
         ws_ai.set_row(0, 28); ws_ai.set_row(1, 20); ws_ai.set_row(2, 26)
@@ -8640,25 +8728,26 @@ def build_avp_utilization_excel_bytes(
                 ws_ai.set_row(ri, 24)
                 ws_ai.write(ri, 0, str(r.get('Priority', '')), f_txt)
                 ws_ai.write(ri, 1, str(r.get('Category', '')), f_txt)
-                ws_ai.write(ri, 2, str(r.get('RO / Branch', '')), f_txt)
-                ws_ai.write(ri, 3, str(r.get('Entity / Route', '')), f_txt_l)
-                ws_ai.write(ri, 4, str(r.get('Current Metric', '')), f_txt_l)
-                ws_ai.write(ri, 5, str(r.get('AI Recommendation', '')), f_txt_l)
+                ws_ai.write(ri, 2, str(r.get('RO', '')), f_txt)
+                ws_ai.write(ri, 3, str(r.get('Branch', '')), f_txt_l)
+                ws_ai.write(ri, 4, str(r.get('Entity / Route', '')), f_txt_l)
+                ws_ai.write(ri, 5, str(r.get('Current Metric', '')), f_txt_l)
+                ws_ai.write(ri, 6, str(r.get('AI Recommendation', '')), f_txt_l)
                 sv = r.get('Est. Monthly Saving', 0)
                 sv_num = float(re.sub(r'[^0-9.]', '', str(sv)) or 0) if isinstance(sv, str) else float(sv or 0)
-                ws_ai.write_number(ri, 6, sv_num, f_inr)
+                ws_ai.write_number(ri, 7, sv_num, f_inr)
             gt_i = 3 + len(df_ideas)
             ai_gt_er = gt_i + 1
             ws_ai.set_row(gt_i, 24)
             ws_ai.write(gt_i, 0, "TOTAL SAVINGS", f_gt_txt)
-            for ci in range(1, 6): ws_ai.write(gt_i, ci, f"{len(df_ideas)} Ideas" if ci == 1 else "-", f_gt_txt)
-            ws_ai.write_formula(gt_i, 6, f"=SUM(G4:G{gt_i})", f_gt_inr)
+            for ci in range(1, 7): ws_ai.write(gt_i, ci, f"{len(df_ideas)} Ideas" if ci == 1 else "-", f_gt_txt)
+            ws_ai.write_formula(gt_i, 7, f"=SUM(H4:H{gt_i})", f_gt_inr)
             ws_ai.conditional_format(3, 0, gt_i - 1, 0, {'type': 'text', 'criteria': 'containing', 'value': 'P1', 'format': cf_fail})
             ws_ai.conditional_format(3, 0, gt_i - 1, 0, {'type': 'text', 'criteria': 'containing', 'value': 'P2', 'format': cf_watch})
-            _finish_ws(ws_ai, gt_i - 1, 6, widths=[18, 24, 24, 26, 36, 52, 20])
+            _finish_ws(ws_ai, gt_i - 1, 7, widths=[18, 24, 14, 24, 26, 36, 52, 20])
         else:
             ws_ai.write(3, 0, "No optimization alerts for this scope.", f_txt_l)
-            _finish_ws(ws_ai, 3, 6, widths=[18, 24, 24, 26, 36, 52, 20])
+            _finish_ws(ws_ai, 3, 7, widths=[18, 24, 14, 24, 26, 36, 52, 20])
 
         # 2 & 3. National & Zonal Live-Formula Pair UP/DOWN Sheets
         nat_gt_er = _write_pair_updown_live_sheet('2_National_UP_DOWN', 'National LH — Capacity-wise UP / DOWN Utilization & CPK (Live Formulas)', nat_updown)
@@ -8860,7 +8949,7 @@ def build_avp_utilization_excel_bytes(
         ws_dash.set_row(18, 24)
         ws_dash.merge_range(18, 0, 18, 2, "Total AI Identified Monthly Saving Potential (₹)", f_gt_txt)
         if ai_gt_er:
-            ws_dash.write_formula(18, 3, f"='1_AI_Optimization_Ideas'!G{ai_gt_er}", f_gt_inr)
+            ws_dash.write_formula(18, 3, f"='1_AI_Optimization_Ideas'!H{ai_gt_er}", f_gt_inr)
         else:
             ws_dash.write_number(18, 3, 0, f_gt_inr)
 
@@ -9091,6 +9180,12 @@ def render_network_utilization_v2(data):
         k5.metric("Weighted CPK", f"₹{nz_cpk:.2f}/kg")
         k6.metric("🤖 AI Saving Scope", f"₹{tot_ai_sav/1e5:.1f} L/mo", delta=f"{len(df_ideas)} ideas", delta_color="off")
 
+        u1, u2, u3, u4 = st.columns(4)
+        u1.metric("🔴 Round Trip Underutilized", f"{tot_rt_under:,}", delta=f"Nat: {nat_stats['both_under']} · Zon: {zon_stats['both_under']}", delta_color="off")
+        u2.metric("🟠 One Side Underutilized", f"{tot_one_side:,}", delta=f"Nat: {nat_stats['one_side_util']} · Zon: {zon_stats['one_side_util']}", delta_color="off")
+        u3.metric("🟢 Balanced (Both ≥60%)", f"{nat_stats['both_healthy'] + zon_stats['both_healthy']:,}", delta=f"Nat: {nat_stats['both_healthy']} · Zon: {zon_stats['both_healthy']}", delta_color="off")
+        u4.metric("🏆 Star Routes (≥80%)", f"{tot_stars:,}", delta=f"Nat: {nat_stats['star_achievements']} · Zon: {zon_stats['star_achievements']}", delta_color="off")
+
         # --- ⚡ INSTANT CALL-ANSWER BOX ("Koi Bhi Sawal — 2 Second Mein Jawab") ---
         with st.expander("⚡ Instant Call-Answer Engine (CEO / AVP / RO / Vendor Call par 2-Second Jawab)", expanded=True):
             qa1, qa2, qa3 = st.columns([1.0, 1.6, 1.4])
@@ -9266,8 +9361,8 @@ def render_network_utilization_v2(data):
         c1.metric("Trips", f"{int(seg_raw['Trips'].sum()):,}")
         c2.metric("Weighted Util %", f"{(tw/tcap*100 if tcap else 0):.1f}%")
         c3.metric("Weighted CPK", f"₹{(tc/tw if tw else 0):.2f}")
-        c4.metric("🔴 Both <60%", f"{seg_stats['both_under']}")
-        c5.metric("🟠 One-Side Gap", f"{seg_stats['one_side_util']}")
+        c4.metric("🔴 Round Trip Underutil", f"{seg_stats['both_under']}")
+        c5.metric("🟠 One Side Underutil", f"{seg_stats['one_side_util']}")
         c6.metric("🏆 Stars ≥80%", f"{seg_stats['star_achievements']}")
 
         st.markdown(f"### 🔄 {seg_name} — Capacity-wise UP / DOWN Breakdown (Sorted: Pair → Capacity → UP/DOWN)")
@@ -9429,7 +9524,7 @@ def render_network_utilization_v2(data):
         if not avp_ideas.empty:
             notes_lines.append("Top Priority Actions:")
             for _, ir in avp_ideas.head(6).iterrows():
-                notes_lines.append(f"  • [{ir['Priority']}] {ir['Entity / Route']} ({ir['RO / Branch']}): {ir['AI Recommendation']} [Saving: ₹{float(ir['Est. Monthly Saving']):,.0f}]")
+                notes_lines.append(f"  • [{ir['Priority']}] {ir['Entity / Route']} (RO: {ir['RO']} | Branch: {ir['Branch']}): {ir['AI Recommendation']} [Saving: ₹{float(ir['Est. Monthly Saving']):,.0f}]")
         st.text_area("📝 Ready-to-Send AVP Summary Notes:", value="\n".join(notes_lines), height=200, key="nu2_avp_notes_box")
 
         b_av1, b_av2 = st.columns([2.0, 3.0])
@@ -9612,7 +9707,15 @@ def render_all_trips_audit(data):
             'Trip Cost': c_sum
         })
         s_rows.append(rd)
-    sum_df = pd.DataFrame(s_rows).sort_values(by='Total Trips', ascending=False).reset_index(drop=True)
+    sum_df = pd.DataFrame(s_rows)
+    if not sum_df.empty:
+        def _aud_cnt(s):
+            m = re.search(r'\((\d+)\)', str(s))
+            return int(m.group(1)) if m else 0
+        sum_df['_extra_cnt'] = sum_df['Additional (2nd+)'].map(_aud_cnt) + sum_df['Non-Scheduled (Manual)'].map(_aud_cnt)
+        sum_df = sum_df.sort_values(by=['_extra_cnt', 'Total Trips'], ascending=[False, False], kind='mergesort').drop(columns=['_extra_cnt']).reset_index(drop=True)
+
+    df_f = sort_by_route_and_leg(df_f)
 
     st.markdown(f"### 📊 {grp_a} Breakdown ({sel_cls})")
     render_centered_html_table(sum_df, height=450)
@@ -9879,12 +9982,12 @@ def render_centered_html_table(
     num_set = set(num_cols or []) | {
         'Total Trips', 'Total_Trips', 'Trips', 'Count', 'Total Bills', 'Days Pending',
         'Prev 7D Trips', 'Curr 7D Trips', 'Overall Trips', 'ROs', 'Routes', 'Vendors',
-        'Overall CPK', 'Total Capacity', 'Total Carried Wt', 'Total Trip Cost', 'Unique Vendors',
+        'Total Capacity', 'Total Carried Wt', 'Total Trip Cost', 'Unique Vendors',
         'Amount', 'Base Amount', 'Cost', 'Repeat Days', 'Late Days', 'Avg Pending Days'
     }
     bold_set = set(bold_cols or []) | {
-        'Origin RO', 'Origin Branch', 'RO', 'RO Name', 'VendorRO', 'RO_Clean', 'Legwise', 'Zone',
-        'Vendor', 'VendorName', 'Vendor Name', 'Invoice Month', 'User ID', 'Route Code', 'Module Name'
+        'Origin RO', 'Dest RO', 'Origin Branch', 'Branch', 'RO', 'RO Name', 'VendorRO', 'RO_Clean', 'Legwise', 'Zone',
+        'Vendor', 'VendorName', 'Vendor Name', 'Invoice Month', 'User ID', 'Route Code', 'Module Name', 'Route Pair', 'Vehicle No'
     }
     pill_set = set(pill_cols or []) | {
         'Remark', 'Remark % (Count)', 'Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr',
@@ -9893,7 +9996,10 @@ def render_centered_html_table(
         'Ontime Arrival', 'Late Arrival', 'In-Transit',
         'Remark with 15 min waiver', 'Status', 'Status % (Count)', 'Delay Hours',
         '7D Trend', 'Prev 7D On-Time', 'Curr 7D On-Time', 'Curr 7D Late',
-        'Overall On-Time', 'Overall Late', 'Overall Util %', 'Route Utilization', 'Utilization Class',
+        'Overall On-Time', 'Overall Late',
+        'Util %', 'Overall Util %', 'MCD Util %', 'All-Work Util %', 'Route Utilization',
+        'Utilization Class', 'Underutil Status', 'Classification',
+        'CPK', 'Overall CPK', 'Priority', 'Severity', 'Issue Type', 'Trip Class',
         'Payment Group', 'Payment Pending / Paid', 'Finance Pending / Hold', 'Finance Pending',
         'Finance Hold', 'Draft', 'Draft Bills', 'Cost Control Pending', 'Other', 'Operations Outcome'
     }
@@ -9912,15 +10018,15 @@ def render_centered_html_table(
                 return 'bad'
             return 'neutral'
         if col_name in ('Remark', 'Remark with 15 min waiver', 'Status'):
-            if 'ontime dep, ontime arr' in s or 'ontime arrival' in s or 'strong' in s or 'controlled' in s:
+            if any(k in s for k in ('ontime dep, ontime arr', 'ontime arrival', 'strong', 'controlled', 'star', 'healthy', 'balanced')):
                 return 'good'
-            if 'late dep, late arr' in s or 'late arrival' in s or 'no dep' in s or 'action needed' in s or 'chronic' in s:
+            if any(k in s for k in ('late dep, late arr', 'late arrival', 'no dep', 'action needed', 'chronic', 'fail', 'round-trip', 'round trip')):
                 return 'bad'
             if 'ontime dep, late arr' in s:
                 return 'soft_bad'
             if 'late dep, ontime arr' in s:
                 return 'recover'
-            if 'in-transit' in s or 'missing' in s or 'watch' in s or 'isolated' in s:
+            if any(k in s for k in ('in-transit', 'missing', 'watch', 'isolated', 'one-side', 'one side')):
                 return 'warn'
             return 'neutral'
         if 'remark %' in c or 'status %' in c:
@@ -9953,13 +10059,39 @@ def render_centered_html_table(
             if pct is None or pct == 0:
                 return 'neutral'
             return 'warn'
-        if 'util' in c:
-            if 'efficient' in s:
+        _sla_ui = get_sla_thresholds()
+        _ui_u_cut = _sla_ui["util_red_pct"]
+        _ui_cpk_cut = _sla_ui["high_cpk"]
+        if 'underutil' in c or c == 'classification':
+            if any(k in s for k in ('round trip', 'round-trip', 'single side under', 'single-side <', 'fail')):
+                return 'bad'
+            if any(k in s for k in ('one side', 'one-side', 'watch')):
+                return 'warn'
+            if any(k in s for k in ('balanced', 'star', 'healthy', 'efficient')):
                 return 'good'
-            if 'underutilized' in s:
+            return 'neutral'
+        if 'util' in c:
+            if 'efficient' in s or 'balanced' in s or 'star' in s:
+                return 'good'
+            if 'one side' in s or 'one-side' in s:
+                return 'warn'
+            if 'underutilized' in s or 'fail' in s:
                 return 'bad'
             if pct is not None:
-                return 'bad' if pct < 60 else ('warn' if pct < 80 else 'good')
+                return 'bad' if pct < _ui_u_cut else ('warn' if pct < 80.0 else 'good')
+        if 'cpk' in c:
+            _cm = re.search(r'(\d+(?:\.\d+)?)', val_str.replace(',', ''))
+            if _cm:
+                return 'bad' if float(_cm.group(1)) > _ui_cpk_cut else 'neutral'
+            return 'neutral'
+        if c in ('priority', 'severity', 'issue type', 'trip class'):
+            if any(k in s for k in ('p1', 'critical', 'chronic', '₹0', 'non-scheduled', 'manual', 'fail')):
+                return 'bad'
+            if any(k in s for k in ('p2', 'watch', 'additional', '2nd+', 'overload', 'non-standard')):
+                return 'warn'
+            if any(k in s for k in ('p3', 'primary', 'isolated', 'controlled', 'strong')):
+                return 'good'
+            return 'neutral' 
         if 'payment pending / paid' in c or 'payment pending / paid' in s or s == 'paid':
             return 'good'
         if 'finance hold' in c or 'finance hold' in s or 'draft' in c or s == 'draft' or 'disabled' in s:
@@ -9994,6 +10126,11 @@ def render_centered_html_table(
     rows_html = []
 
     for row_dict in df_view.to_dict(orient='records'):
+        _first_c_val = str(row_dict.get(cols_list[0], '') if cols_list else '').strip().upper()
+        _side_c_val = str(row_dict.get('Side', '')).strip().upper()
+        _is_gt_row = _first_c_val in ('TOTAL', 'GRAND TOTAL', 'TOTAL SAVINGS', 'NETWORK TOTAL')
+        _is_sub_row = (not _is_gt_row) and (_first_c_val.startswith('↳') or _side_c_val == 'UP+DOWN' or _first_c_val.endswith(' TOTAL'))
+        tr_cls = ' class="gt-inline-row"' if _is_gt_row else (' class="sub-row"' if _is_sub_row else '')
         tds = []
         for col in cols_list:
             raw_v = row_dict.get(col, '')
@@ -10038,7 +10175,7 @@ def render_centered_html_table(
                 except Exception:
                     pass
             tds.append(f'<td{cls} style="{style}">{cell_content}</td>' if style else f'<td{cls}>{cell_content}</td>')
-        rows_html.append('<tr>' + ''.join(tds) + '</tr>')
+        rows_html.append(f'<tr{tr_cls}>' + ''.join(tds) + '</tr>')
 
     tfoot_html = ''
     if grand_total_dict:
@@ -10273,7 +10410,11 @@ def render_centered_html_table(
         f'tbody tr:nth-child(even) {{ background:{pal["row_odd"]}; }}'
         f'tbody tr:hover td {{ filter:brightness(0.96); }}'
         f'td.c-bold {{ font-weight:750; }}'
-        f'tfoot tr.gt-row td {{ position:sticky; bottom:0; z-index:4; background:{gt_bg} !important; color:{gt_fg} !important; font-weight:900 !important; text-align:center !important; vertical-align:middle !important; padding:10px 12px; border-top:2px solid {selected_theme["blue"]}; border-right:1px solid {pal["border"]}; white-space:nowrap; }}'
+        f'tbody tr.sub-row td {{ background:{"#e2edff" if THEME_IS_LIGHT else "#162f4d"}; color:{gt_fg}; font-weight:850 !important; border-top:1.5px solid {"#93c5fd" if THEME_IS_LIGHT else "#3b82f6"}; border-bottom:2px solid {selected_theme["blue"]}; }}'
+        f'tbody tr.sub-row td:first-child {{ background:{"#d6e6ff" if THEME_IS_LIGHT else "#1b3b61"} !important; color:{"#1e3a8a" if THEME_IS_LIGHT else "#93c5fd"} !important; font-weight:900 !important; }}'
+        f'tbody tr.gt-inline-row td {{ background:{gt_bg}; color:{gt_fg}; font-weight:900 !important; border-top:2px solid {selected_theme["blue"]}; border-bottom:2px solid {selected_theme["blue"]}; }}'
+        f'tbody tr.gt-inline-row td:first-child {{ background:{gt_bg} !important; }}'
+        f'tfoot tr.gt-row td {{ position:sticky; bottom:0; z-index:4; background:{gt_bg} !important; color:{gt_fg} !important; font-weight:900 !important; text-align:center !important; vertical-align:middle !important; padding:10px 12px; border-top:2.5px solid {selected_theme["blue"]}; border-right:1px solid {pal["border"]}; white-space:nowrap; }}'
         f'</style></head><body>'
         f'<div class="tbl-shell">'
         f'<div class="tbl-bar">'
@@ -10300,11 +10441,6 @@ def _sort_ops_window_df(df):
     sort_cols = []
     ascending_flags = []
 
-    if 'Origin RO' in out.columns:
-        out['_s_ro'] = out['Origin RO'].fillna('').astype(str).str.strip().str.upper()
-        sort_cols.append('_s_ro')
-        ascending_flags.append(True)
-
     if 'Route Path' in out.columns:
         out['_s_route'] = out['Route Path'].fillna('').astype(str).str.strip().str.upper()
         sort_cols.append('_s_route')
@@ -10316,16 +10452,22 @@ def _sort_ops_window_df(df):
         sort_cols.extend(['_s_leg_num', '_s_leg_txt'])
         ascending_flags.extend([True, True])
 
+    dt_col_w = 'MCD_StartDate' if 'MCD_StartDate' in out.columns else ('Date' if 'Date' in out.columns else None)
+    if dt_col_w:
+        out['_s_dt'] = pd.to_datetime(out[dt_col_w], dayfirst=True, errors='coerce')
+        sort_cols.append('_s_dt')
+        ascending_flags.append(False)
+
     remark_sort_col = 'Remark' if 'Remark' in out.columns else ('_OpsRemarkOutcome' if '_OpsRemarkOutcome' in out.columns else None)
     if remark_sort_col:
         out['_s_remark'] = out[remark_sort_col].fillna('').astype(str).str.strip().str.upper()
         sort_cols.append('_s_remark')
-        ascending_flags.append(False)  # Z to A
+        ascending_flags.append(False)
 
     if sort_cols:
-        out = out.sort_values(by=sort_cols, ascending=ascending_flags, kind='mergesort')
+        out = out.sort_values(by=sort_cols, ascending=ascending_flags, kind='mergesort', na_position='last')
 
-    drop_helpers = [c for c in ['_s_ro', '_s_route', '_s_leg_num', '_s_leg_txt', '_s_remark'] if c in out.columns]
+    drop_helpers = [c for c in ['_s_ro', '_s_route', '_s_leg_num', '_s_leg_txt', '_s_dt', '_s_remark'] if c in out.columns]
     if drop_helpers:
         out = out.drop(columns=drop_helpers)
     return out.reset_index(drop=True)
@@ -11321,8 +11463,14 @@ def render_vendor_perf_raw_window(data, query):
             res['Missing Schedule'] = [format_pct_cnt(m, t) for m, t in zip(res['_ms'], res['Total Trips'])]
         res['_ot_pct'] = np.where(res['Total Trips'] > 0, res['_ot'] / res['Total Trips'] * 100.0, 0.0)
         res['Status'] = np.where(res['_ot_pct'] >= 85, '🟢 Strong', np.where(res['_ot_pct'] >= 70, '🟡 Watch', '🔴 Action Needed'))
-        res = res.sort_values(by=['Total Trips', '_ot_pct'], ascending=[False, True])
-        drop_c = ['_ot', '_lt', '_it', '_ms', '_ot_pct']
+        if 'Legwise' in res.columns and 'Route Path' in res.columns:
+            res['_leg_n'] = extract_leg_num_val(res['Legwise'])
+            _gk_w = [c for c in ['VendorName', 'Route Path'] if c in res.columns]
+            res['_grp_lt'] = res.groupby(_gk_w)['_lt'].transform('sum')
+            res = res.sort_values(by=['_grp_lt'] + _gk_w + ['_leg_n'], ascending=[False] + [True] * len(_gk_w) + [True], kind='mergesort')
+        else:
+            res = res.sort_values(by=['_lt', '_ot_pct', 'Total Trips'], ascending=[False, True, False], kind='mergesort')
+        drop_c = ['_ot', '_lt', '_it', '_ms', '_ot_pct', '_leg_n', '_grp_lt']
         return res.drop(columns=drop_c, errors='ignore').reset_index(drop=True)
 
     if view_mode == "Vendor-wise":
@@ -11671,9 +11819,13 @@ elif choice == "📊 Operations Summary":
             front_o = g_keys + ['Total Trips', 'Ontime Dep, Ontime Arr'] + [c for c in shown_outcomes if c != 'Ontime Dep, Ontime Arr'] + ['Status', 'Decision Remark']
             if mode == "Route & Leg-wise":
                 res['_leg_n'] = extract_leg_num_val(res['Legwise']) if 'Legwise' in res.columns else 999
-                res = res.sort_values(by=[c for c in ['Origin RO', 'Route Path', '_leg_n'] if c in res.columns], ascending=True)
+                if 'Route Path' in res.columns:
+                    res['_grp_ld'] = res.groupby('Route Path')['_sort_ld'].transform('sum')
+                    res = res.sort_values(by=['_grp_ld', 'Route Path', '_leg_n'], ascending=[False, True, True], kind='mergesort')
+                else:
+                    res = res.sort_values(by=['_leg_n'], ascending=[True], kind='mergesort')
             else:
-                res = res.sort_values(by=['_sort_ld', '_sort_pct', 'Total Trips'], ascending=[False, False, False])
+                res = res.sort_values(by=['_sort_ld', '_sort_pct', 'Total Trips'], ascending=[False, False, False], kind='mergesort')
             return res[[c for c in front_o if c in res.columns]].reset_index(drop=True), g_keys
 
         ops_summary_df, active_ops_keys = _build_ops_grouped_view(raw_status, ops_view_mode)
@@ -11863,7 +12015,21 @@ elif choice == "🚚 Vendor Performance":
                 rows_v.append(rd)
             out_v = pd.DataFrame(rows_v)
             if not out_v.empty:
-                out_v = out_v.sort_values(by=['_sl', '_sp', 'Total Trips'], ascending=[False, False, False]).drop(columns=['_sl', '_sp']).reset_index(drop=True)
+                if 'Legwise' in out_v.columns and 'Route Path' in out_v.columns:
+                    out_v['_leg_n'] = extract_leg_num_val(out_v['Legwise'])
+                    _grp_k = [c for c in ['VendorName', 'Route Path'] if c in out_v.columns]
+                    out_v['_grp_sl'] = out_v.groupby(_grp_k)['_sl'].transform('sum')
+                    out_v['_grp_tr'] = out_v.groupby(_grp_k)['Total Trips'].transform('sum')
+                    out_v['_grp_sp'] = np.where(out_v['_grp_tr'] > 0, out_v['_grp_sl'] / out_v['_grp_tr'] * 100.0, 0.0)
+                    _s_cols = ['_grp_sl', '_grp_sp'] + _grp_k + ['_leg_n']
+                    _s_asc = [False, False] + [True] * len(_grp_k) + [True]
+                    out_v = out_v.sort_values(by=_s_cols, ascending=_s_asc, kind='mergesort').drop(
+                        columns=['_sl', '_sp', '_leg_n', '_grp_sl', '_grp_tr', '_grp_sp'], errors='ignore'
+                    ).reset_index(drop=True)
+                else:
+                    out_v = out_v.sort_values(by=['_sl', '_sp', 'Total Trips'], ascending=[False, False, False], kind='mergesort').drop(
+                        columns=['_sl', '_sp'], errors='ignore'
+                    ).reset_index(drop=True)
             return out_v, gk
 
         ven_summary_tbl, active_ven_keys = _build_ven_grouped_view(df_vperf_raw, ven_view_mode)
@@ -12374,7 +12540,15 @@ elif choice == "💳 Payment Dashboard":
                 payment_summary['_m_ord'] = payment_summary[grp_disp_label].astype(str).map(_m_order).fillna(9999)
                 payment_summary = payment_summary.sort_values(by='_m_ord', ascending=True).drop(columns=['_m_ord']).reset_index(drop=True)
             else:
-                payment_summary = payment_summary.sort_values(by='Total Bills', ascending=False).reset_index(drop=True)
+                def _extract_cnt(s):
+                    m = re.search(r'\((\d+)\)', str(s))
+                    return int(m.group(1)) if m else 0
+                _stuck_cols = [c for c in ['Draft', 'Cost Control Pending', 'Finance Pending', 'Finance Hold'] if c in payment_summary.columns]
+                if _stuck_cols:
+                    payment_summary['_stuck_ord'] = sum(payment_summary[c].map(_extract_cnt) for c in _stuck_cols)
+                    payment_summary = payment_summary.sort_values(by=['_stuck_ord', 'Total Bills'], ascending=[False, False], kind='mergesort').drop(columns=['_stuck_ord']).reset_index(drop=True)
+                else:
+                    payment_summary = payment_summary.sort_values(by='Total Bills', ascending=False, kind='mergesort').reset_index(drop=True)
 
         if payment_summary.empty:
             st.info('No payment rows match the selected filters.')
