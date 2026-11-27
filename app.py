@@ -53,6 +53,12 @@ import textwrap
 import inspect
 import zipfile
 import pickle
+import threading
+import time
+import ssl
+import smtplib
+import imaplib
+from email.message import EmailMessage
 import xml.etree.ElementTree as ET
 
 # Disable SettingWithCopyWarning for Pandas
@@ -674,6 +680,148 @@ DEFAULT_VENDOR_CATEGORY_MAP = {
 }
 
 _JSON_MEM_CACHE = {}
+_CLOUD_SYNC_LOCK = threading.Lock()
+_CLOUD_PUSH_TIMER = None
+_CLOUD_RESTORE_IN_PROGRESS = False
+_LAST_LIVE_SYNC_STATUS = {"ok": None, "at": "", "msg": ""}
+
+LIVE_STATE_JSON_FILES = [
+    "admin_tasks.json",
+    "ld_progress.json",
+    "users_master.json",
+    "custom_branch_ro_map.json",
+    "action_plans.json",
+    "vendor_category_mapping.json",
+    "user_vendor_category_mappings.json",
+    "user_tracked_vendors.json",
+    "rate_corrections.json",
+    "vendor_master.json",
+    "cpk_overrides.json",
+    "activity_log.json",
+    "data_meta.json",
+]
+
+DEFAULT_BACKUP_EMAIL_TO = "lh.fleetops@trackon.in"
+
+def _get_github_sync_config():
+    try:
+        token = st.secrets.get("GITHUB_TOKEN", "")
+        repo = st.secrets.get("GITHUB_DATA_REPO", "ar7630481/trackon-dashboard")
+        if token and repo:
+            return str(token).strip(), str(repo).strip()
+    except Exception:
+        pass
+    return "", ""
+
+def _get_backup_email_config():
+    """Read SMTP/IMAP settings from Streamlit Secrets (zero hardcoding, defaults to lh.fleetops@trackon.in)."""
+    cfg = {
+        "to_email": DEFAULT_BACKUP_EMAIL_TO,
+        "smtp_user": DEFAULT_BACKUP_EMAIL_TO,
+        "smtp_pass": "",
+        "smtp_host": "smtp.gmail.com",
+        "smtp_port": 465,
+        "imap_host": "imap.gmail.com",
+        "imap_port": 993,
+        "daily_mode": "send",  # "send" (direct mail) or "draft" (Gmail Drafts)
+    }
+    try:
+        cfg["to_email"] = str(st.secrets.get("BACKUP_EMAIL_TO", cfg["to_email"]) or cfg["to_email"]).strip()
+        cfg["smtp_user"] = str(st.secrets.get("SMTP_USER", cfg["to_email"]) or cfg["to_email"]).strip()
+        cfg["smtp_pass"] = str(st.secrets.get("SMTP_APP_PASSWORD", "") or "").strip()
+        cfg["smtp_host"] = str(st.secrets.get("SMTP_HOST", "smtp.gmail.com") or "smtp.gmail.com").strip()
+        cfg["smtp_port"] = int(st.secrets.get("SMTP_PORT", 465) or 465)
+        cfg["imap_host"] = str(st.secrets.get("IMAP_HOST", "imap.gmail.com") or "imap.gmail.com").strip()
+        cfg["imap_port"] = int(st.secrets.get("IMAP_PORT", 993) or 993)
+        mode_s = str(st.secrets.get("DAILY_BACKUP_MODE", "send") or "send").strip().lower()
+        cfg["daily_mode"] = "draft" if mode_s == "draft" else "send"
+    except Exception:
+        pass
+    return cfg
+
+def _gh_get_or_create_release(token, repo, tag="dashboard-7day-snapshot"):
+    import requests
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+    r = requests.get(f"https://api.github.com/repos/{repo}/releases/tags/{tag}", headers=headers, timeout=20)
+    if r.status_code == 404:
+        r = requests.post(
+            f"https://api.github.com/repos/{repo}/releases",
+            headers=headers,
+            json={"tag_name": tag, "name": "Trackon Permanent Cloud Backup", "prerelease": True},
+            timeout=20
+        )
+    if r.status_code not in (200, 201):
+        return None, headers, f"GitHub API {r.status_code}"
+    return r.json(), headers, ""
+
+def push_live_state_to_github_now(token_override="", repo_override=""):
+    """Upload lightweight JSON bundle (tasks, L&D, users, mappings, shifts) to GitHub Release (<50KB, <1s)."""
+    token = token_override
+    repo = repo_override
+    if not token or not repo:
+        token, repo = _get_github_sync_config()
+    if not token or not repo:
+        return False, "GITHUB_TOKEN not set"
+    with _CLOUD_SYNC_LOCK:
+        try:
+            import requests
+            bundle = {
+                "saved_at_utc": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                "files": {}
+            }
+            for fn in LIVE_STATE_JSON_FILES:
+                fp = os.path.join(DATA_DIR, fn)
+                if os.path.exists(fp):
+                    try:
+                        with open(fp, 'r', encoding='utf-8') as f:
+                            bundle["files"][fn] = json.load(f)
+                    except Exception:
+                        pass
+            if not bundle["files"]:
+                return False, "No JSON state files yet"
+            payload_bytes = json.dumps(bundle, ensure_ascii=False).encode("utf-8")
+            rel_data, headers, err = _gh_get_or_create_release(token, repo)
+            if err or not rel_data:
+                return False, err or "Release error"
+            asset_name = "trackon_live_state.json"
+            for asset in rel_data.get("assets", []):
+                if asset.get("name") == asset_name:
+                    requests.delete(asset["url"], headers=headers, timeout=20)
+            upload_url = rel_data["upload_url"].split("{")[0] + f"?name={asset_name}"
+            up_headers = dict(headers)
+            up_headers["Content-Type"] = "application/json"
+            ur = requests.post(upload_url, headers=up_headers, data=payload_bytes, timeout=30)
+            now_s = (datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)).strftime("%I:%M:%S %p IST")
+            if ur.status_code in (200, 201):
+                _LAST_LIVE_SYNC_STATUS.update({"ok": True, "at": now_s, "msg": f"Synced {len(bundle['files'])} files ({len(payload_bytes)/1024:.1f} KB)"})
+                return True, _LAST_LIVE_SYNC_STATUS["msg"]
+            _LAST_LIVE_SYNC_STATUS.update({"ok": False, "at": now_s, "msg": f"HTTP {ur.status_code}"})
+            return False, f"Upload HTTP {ur.status_code}"
+        except Exception as exc:
+            _LAST_LIVE_SYNC_STATUS.update({"ok": False, "at": "", "msg": str(exc)[:120]})
+            return False, str(exc)
+
+def _schedule_live_state_cloud_push():
+    """Debounced 1.5s background upload so clicking tasks has 0ms UI lag yet saves permanently to cloud."""
+    global _CLOUD_PUSH_TIMER
+    if _CLOUD_RESTORE_IN_PROGRESS:
+        return
+    token, repo = _get_github_sync_config()
+    if not token or not repo:
+        return
+    try:
+        if _CLOUD_PUSH_TIMER is not None:
+            _CLOUD_PUSH_TIMER.cancel()
+        t = threading.Timer(1.5, push_live_state_to_github_now, kwargs={"token_override": token, "repo_override": repo})
+        t.daemon = True
+        t.start()
+        _CLOUD_PUSH_TIMER = t
+    except Exception:
+        pass
 
 def _read_json_fast(path, default_val):
     if not path or not os.path.exists(path):
@@ -690,13 +838,149 @@ def _read_json_fast(path, default_val):
     except Exception:
         return default_val() if callable(default_val) else default_val
 
-def _write_json_fast(path, payload):
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(payload, f, indent=4)
+def _write_json_fast(path, payload, sync_cloud=True):
+    """Atomic JSON write + automatic background cloud sync for permanent zero-loss storage."""
+    tmp_p = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', dir=os.path.dirname(path) or DATA_DIR, suffix='.json.tmp', delete=False, encoding='utf-8') as tf:
+            tmp_p = tf.name
+            json.dump(payload, tf, indent=4, ensure_ascii=False)
+        os.replace(tmp_p, path)
+    finally:
+        if tmp_p and os.path.exists(tmp_p):
+            try:
+                os.remove(tmp_p)
+            except Exception:
+                pass
     try:
         _JSON_MEM_CACHE[path] = (os.stat(path).st_mtime_ns, payload)
     except Exception:
         _JSON_MEM_CACHE.pop(path, None)
+    if sync_cloud and os.path.basename(path) in LIVE_STATE_JSON_FILES:
+        _schedule_live_state_cloud_push()
+
+def restore_live_state_from_github_now():
+    """Download latest `trackon_live_state.json` from GitHub Cloud and restore all JSON state files."""
+    global _CLOUD_RESTORE_IN_PROGRESS
+    token, repo = _get_github_sync_config()
+    if not token or not repo:
+        return 0, "GITHUB_TOKEN not configured"
+    try:
+        import requests
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28"
+        }
+        r = requests.get(f"https://api.github.com/repos/{repo}/releases/tags/dashboard-7day-snapshot", headers=headers, timeout=20)
+        if r.status_code != 200:
+            return 0, f"No cloud release ({r.status_code})"
+        rel_data = r.json()
+        asset = next((a for a in rel_data.get("assets", []) if a.get("name") == "trackon_live_state.json"), None)
+        if not asset:
+            return 0, "No live state asset yet"
+        dl_headers = dict(headers)
+        dl_headers["Accept"] = "application/octet-stream"
+        dr = requests.get(asset["url"], headers=dl_headers, timeout=30)
+        if dr.status_code != 200 or not dr.content:
+            return 0, f"Download HTTP {dr.status_code}"
+        bundle = json.loads(dr.content.decode("utf-8"))
+        files_map = bundle.get("files") if isinstance(bundle, dict) else None
+        if not isinstance(files_map, dict):
+            return 0, "Invalid state bundle"
+        _CLOUD_RESTORE_IN_PROGRESS = True
+        restored = 0
+        try:
+            for fn, content in files_map.items():
+                if fn not in LIVE_STATE_JSON_FILES:
+                    continue
+                target = os.path.join(DATA_DIR, fn)
+                _write_json_fast(target, content, sync_cloud=False)
+                if fn in ("admin_tasks.json", "ld_progress.json"):
+                    _write_json_fast(target + ".bak", content, sync_cloud=False)
+                restored += 1
+        finally:
+            _CLOUD_RESTORE_IN_PROGRESS = False
+        _JSON_MEM_CACHE.clear()
+        return restored, f"Restored {restored} live state files from Cloud"
+    except Exception as exc:
+        _CLOUD_RESTORE_IN_PROGRESS = False
+        return 0, str(exc)
+
+@st.cache_resource(show_spinner=False)
+def _cold_boot_permanent_cloud_restore():
+    """
+    Runs ONCE per server container boot BEFORE USERS_DB or any module loads.
+    1) Restores full Excel + fast-cache snapshot if local disk was wiped by Streamlit sleep/reboot.
+    2) Always overlays latest `trackon_live_state.json` so tasks, shifts, L&D & mappings NEVER disappear!
+    """
+    global _CLOUD_RESTORE_IN_PROGRESS
+    token, repo = _get_github_sync_config()
+    if not token or not repo:
+        return {"ran": False, "zip_files": 0, "state_files": 0}
+    zip_cnt = 0
+    state_cnt = 0
+    try:
+        import requests
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28"
+        }
+        r = requests.get(f"https://api.github.com/repos/{repo}/releases/tags/dashboard-7day-snapshot", headers=headers, timeout=20)
+        if r.status_code == 200:
+            rel_data = r.json()
+            assets = rel_data.get("assets", [])
+            # Step 1: Restore full ZIP if processed Excel is missing on disk
+            if not os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
+                z_asset = next((a for a in assets if a.get("name") == "trackon_7day_snapshot.zip"), None)
+                if z_asset:
+                    dl_h = dict(headers)
+                    dl_h["Accept"] = "application/octet-stream"
+                    dr = requests.get(z_asset["url"], headers=dl_h, timeout=90)
+                    if dr.status_code == 200 and dr.content:
+                        _CLOUD_RESTORE_IN_PROGRESS = True
+                        try:
+                            with zipfile.ZipFile(io.BytesIO(dr.content), 'r') as zf:
+                                for info in zf.infolist():
+                                    base = os.path.basename(info.filename)
+                                    if base and not info.is_dir():
+                                        tgt = os.path.join(DATA_DIR, base)
+                                        tmp_p = tgt + ".boot_tmp"
+                                        with zf.open(info, 'r') as sf, open(tmp_p, 'wb') as df_out:
+                                            df_out.write(sf.read())
+                                        os.replace(tmp_p, tgt)
+                                        zip_cnt += 1
+                        finally:
+                            _CLOUD_RESTORE_IN_PROGRESS = False
+            # Step 2: Always overlay latest live JSON state (tasks, L&D, users, mappings)
+            s_asset = next((a for a in assets if a.get("name") == "trackon_live_state.json"), None)
+            if s_asset:
+                dl_h = dict(headers)
+                dl_h["Accept"] = "application/octet-stream"
+                sr = requests.get(s_asset["url"], headers=dl_h, timeout=30)
+                if sr.status_code == 200 and sr.content:
+                    bundle = json.loads(sr.content.decode("utf-8"))
+                    fmap = bundle.get("files") if isinstance(bundle, dict) else None
+                    if isinstance(fmap, dict):
+                        _CLOUD_RESTORE_IN_PROGRESS = True
+                        try:
+                            for fn, content in fmap.items():
+                                if fn in LIVE_STATE_JSON_FILES:
+                                    tgt = os.path.join(DATA_DIR, fn)
+                                    _write_json_fast(tgt, content, sync_cloud=False)
+                                    if fn in ("admin_tasks.json", "ld_progress.json"):
+                                        _write_json_fast(tgt + ".bak", content, sync_cloud=False)
+                                    state_cnt += 1
+                        finally:
+                            _CLOUD_RESTORE_IN_PROGRESS = False
+            _JSON_MEM_CACHE.clear()
+    except Exception as exc:
+        _CLOUD_RESTORE_IN_PROGRESS = False
+        logging.warning(f"Cold-boot cloud restore warning: {exc}")
+    return {"ran": True, "zip_files": zip_cnt, "state_files": state_cnt}
+
+_BOOT_RESTORE_RESULT = _cold_boot_permanent_cloud_restore()
 
 def load_vendor_category_mapping():
     path = FILE_MAP["VENDOR_CATEGORY_MAP"]
@@ -723,8 +1007,7 @@ def save_user_vendor_category_mapping(username, mapping_dict):
         return
     all_maps = load_all_user_vendor_category_mappings()
     all_maps[str(username)] = mapping_dict
-    with open(FILE_MAP["USER_VENDOR_CATEGORY_MAP"], 'w', encoding='utf-8') as f:
-        json.dump(all_maps, f, indent=4)
+    _write_json_fast(FILE_MAP["USER_VENDOR_CATEGORY_MAP"], all_maps)
 
 def load_all_user_tracked_vendors():
     data = _read_json_fast(FILE_MAP["USER_TRACKED_VENDORS"], dict)
@@ -2042,43 +2325,28 @@ def restore_7day_snapshot_zip_bytes(zip_bytes):
                 restored += 1
     return restored
 
-def _get_github_sync_config():
-    try:
-        token = st.secrets.get("GITHUB_TOKEN", "")
-        repo = st.secrets.get("GITHUB_DATA_REPO", "ar7630481/trackon-dashboard")
-        if token and repo:
-            return str(token).strip(), str(repo).strip()
-    except Exception:
-        pass
-    return "", ""
+def build_core_state_zip_bytes():
+    """Build lightweight ZIP (<1 MB) of all Tasks, L&D, Users, Branch Mappings & Configs."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        for fn in LIVE_STATE_JSON_FILES:
+            fp = os.path.join(DATA_DIR, fn)
+            if os.path.exists(fp):
+                zf.write(fp, arcname=fn)
+    return buf.getvalue()
 
 def push_snapshot_to_github_release():
-    """Optional free 7-day cloud backup via GitHub Release asset (requires GITHUB_TOKEN in Streamlit Secrets)."""
+    """Permanent Cloud Backup via GitHub Release (Full Excel Snapshot + Live JSON State)."""
     token, repo = _get_github_sync_config()
     if not token or not repo:
-        return False, "Not configured"
+        return False, "GITHUB_TOKEN not configured in Streamlit Secrets"
     try:
         import requests
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28"
-        }
-        tag = "dashboard-7day-snapshot"
+        push_live_state_to_github_now(token, repo)
+        rel_data, headers, err = _gh_get_or_create_release(token, repo)
+        if err or not rel_data:
+            return False, err or "Release error"
         asset_name = "trackon_7day_snapshot.zip"
-        rel_url = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
-        r = requests.get(rel_url, headers=headers, timeout=20)
-        if r.status_code == 404:
-            r = requests.post(
-                f"https://api.github.com/repos/{repo}/releases",
-                headers=headers,
-                json={"tag_name": tag, "name": "Trackon 7-Day Data Snapshot", "prerelease": True},
-                timeout=20
-            )
-        if r.status_code not in (200, 201):
-            return False, f"GitHub API {r.status_code}"
-        rel_data = r.json()
-        # Delete old asset with same name if present
         for asset in rel_data.get("assets", []):
             if asset.get("name") == asset_name:
                 requests.delete(asset["url"], headers=headers, timeout=20)
@@ -2086,48 +2354,119 @@ def push_snapshot_to_github_release():
         zip_bytes = build_7day_snapshot_zip_bytes()
         up_headers = dict(headers)
         up_headers["Content-Type"] = "application/zip"
-        ur = requests.post(upload_url, headers=up_headers, data=zip_bytes, timeout=90)
+        ur = requests.post(upload_url, headers=up_headers, data=zip_bytes, timeout=120)
         if ur.status_code in (200, 201):
-            return True, f"Synced {len(zip_bytes)/(1024*1024):.1f} MB to GitHub Cloud (Valid {DATA_RETENTION_DAYS} days)"
+            return True, f"Synced {len(zip_bytes)/(1024*1024):.1f} MB permanently to GitHub Cloud!"
         return False, f"Upload HTTP {ur.status_code}"
     except Exception as exc:
         return False, str(exc)
 
-def auto_restore_snapshot_from_github_if_needed():
-    """On cold restart, auto-restore last 7-day snapshot from GitHub Cloud if local data was wiped."""
-    if st.session_state.get("_gh_restore_checked"):
-        return
-    st.session_state["_gh_restore_checked"] = True
-    if os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
-        return
-    token, repo = _get_github_sync_config()
-    if not token or not repo:
-        return
-    try:
-        import requests
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28"
-        }
-        r = requests.get(f"https://api.github.com/repos/{repo}/releases/tags/dashboard-7day-snapshot", headers=headers, timeout=20)
-        if r.status_code != 200:
-            return
-        rel_data = r.json()
-        asset = next((a for a in rel_data.get("assets", []) if a.get("name") == "trackon_7day_snapshot.zip"), None)
-        if not asset:
-            return
-        dl_headers = dict(headers)
-        dl_headers["Accept"] = "application/octet-stream"
-        dr = requests.get(asset["url"], headers=dl_headers, timeout=90)
-        if dr.status_code == 200 and dr.content:
-            cnt = restore_7day_snapshot_zip_bytes(dr.content)
-            if cnt > 0:
-                st.session_state["_gh_restored_notice"] = f"♻️ Auto-restored {cnt} files from your 7-Day Cloud Snapshot!"
-    except Exception as exc:
-        logging.warning(f"Cloud snapshot auto-restore skipped: {exc}")
+def send_or_draft_backup_email(mode="send", recipient_override="", smtp_user_override="", smtp_pass_override=""):
+    """
+    Send full Dashboard Snapshot ZIP directly to `lh.fleetops@trackon.in` (mode='send')
+    OR save directly into Gmail Drafts (mode='draft').
+    Auto-falls back to Core State ZIP + Cloud link if full ZIP exceeds Gmail's 18 MB binary cap.
+    """
+    cfg = _get_backup_email_config()
+    to_email = (recipient_override or cfg["to_email"] or DEFAULT_BACKUP_EMAIL_TO).strip()
+    smtp_user = (smtp_user_override or cfg["smtp_user"] or to_email).strip()
+    smtp_pass = (smtp_pass_override or cfg["smtp_pass"] or "").strip()
+    if not smtp_pass:
+        return False, "SMTP_APP_PASSWORD missing in Streamlit Secrets (Google App Password required)."
 
-auto_restore_snapshot_from_github_if_needed()
+    now_ist = get_ist_now()
+    full_zip = build_7day_snapshot_zip_bytes()
+    max_attach_bytes = 18 * 1024 * 1024  # Safe under Gmail 25 MB base64 limit
+    _, gh_repo = _get_github_sync_config()
+    cloud_url = f"https://github.com/{gh_repo}/releases/tag/dashboard-7day-snapshot" if gh_repo else ""
+
+    if len(full_zip) <= max_attach_bytes and len(full_zip) > 22:
+        attach_bytes = full_zip
+        attach_name = f"Trackon_Full_Backup_{now_ist:%d_%b_%Y}.zip"
+        attach_note = f"Complete Dashboard Snapshot ZIP ({len(full_zip)/(1024*1024):.2f} MB — Excel data + Tasks + L&D + Users + Mappings) is attached."
+    else:
+        attach_bytes = build_core_state_zip_bytes()
+        attach_name = f"Trackon_Tasks_Config_Backup_{now_ist:%d_%b_%Y}.zip"
+        attach_note = (
+            f"Full Excel Snapshot ({len(full_zip)/(1024*1024):.1f} MB) exceeds Gmail's 25 MB attachment limit, "
+            f"so your Tasks, L&D, Users & Mappings ZIP ({len(attach_bytes)/1024:.1f} KB) is attached here.\n"
+            f"Full Excel Snapshot is safely synced on GitHub Cloud: {cloud_url}"
+        )
+
+    # Include quick Task Hub count in email body
+    t_store = _read_json_fast(FILE_MAP.get("ADMIN_TASKS", ""), dict)
+    t_list = t_store.get("tasks", []) if isinstance(t_store, dict) else []
+    open_cnt = sum(1 for t in t_list if t.get("status") != "Completed")
+    done_today_cnt = sum(1 for t in t_list if t.get("status") == "Completed" and str(t.get("completed_at", "")).startswith(now_ist.date().isoformat()))
+
+    msg = EmailMessage()
+    msg["From"] = smtp_user
+    msg["To"] = to_email
+    msg["Subject"] = f"Trackon Command Center Daily Backup — {now_ist:%d %b %Y (%I:%M %p IST)}"
+    body_text = (
+        f"Hi Ajay,\n\n"
+        f"Your automated Trackon Command Center backup is ready ({now_ist:%A, %d %b %Y · %I:%M %p IST}).\n\n"
+        f"• Backup Status: {attach_note}\n"
+        f"• My Task & Focus Hub: {open_cnt} Open | {done_today_cnt} Completed Today\n"
+        + (f"• Cloud Snapshot Link: {cloud_url}\n" if cloud_url else "")
+        + "\nTo restore anytime: Open Trackon Command Center -> Sidebar -> 1-Click Restore Snapshot (.zip).\n\n"
+        "— Trackon Command Center Auto-Backup"
+    )
+    msg.set_content(body_text)
+    msg.add_attachment(attach_bytes, maintype="application", subtype="zip", filename=attach_name)
+
+    try:
+        ctx = ssl.create_default_context()
+        if mode == "draft":
+            with imaplib.IMAP4_SSL(cfg["imap_host"], cfg["imap_port"], ssl_context=ctx) as imap:
+                imap.login(smtp_user, smtp_pass)
+                draft_folder = "[Gmail]/Drafts"
+                status_l, folders = imap.list()
+                if status_l == "OK" and folders:
+                    for raw_f in folders:
+                        f_str = raw_f.decode("utf-8", errors="ignore")
+                        if "\\Drafts" in f_str or "Drafts" in f_str:
+                            m_q = re.search(r'"([^"]+)"\s*$', f_str)
+                            if m_q:
+                                draft_folder = m_q.group(1)
+                                break
+                res_ap = imap.append(draft_folder, "\\Draft", imaplib.Time2Internaldate(time.time()), msg.as_bytes())
+                if res_ap[0] != "OK":
+                    return False, f"IMAP Draft error: {res_ap}"
+            return True, f"Saved `{attach_name}` directly into Gmail Drafts ({smtp_user})!"
+        else:
+            with smtplib.SMTP_SSL(cfg["smtp_host"], cfg["smtp_port"], context=ctx, timeout=45) as server:
+                server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
+            return True, f"Sent `{attach_name}` directly to {to_email}!"
+    except Exception as exc:
+        return False, f"Email Error: {exc}"
+
+def _maybe_run_daily_6pm_backup_in_app():
+    """Auto-trigger daily 6:00 PM IST backup email/draft once per day if app is open & SMTP configured."""
+    if st.session_state.get("username") != "admin":
+        return
+    now_ist = get_ist_now()
+    if now_ist.hour < 18:
+        return
+    cfg = _get_backup_email_config()
+    if not cfg.get("smtp_pass"):
+        return
+    today_iso = now_ist.date().isoformat()
+    meta = load_data_meta()
+    if meta.get("last_6pm_email_date") == today_iso:
+        return
+    # Mark immediately to prevent duplicate sends across reruns
+    meta["last_6pm_email_date"] = today_iso
+    meta["last_6pm_email_mode"] = cfg["daily_mode"]
+    _write_json_fast(FILE_MAP["DATA_META"], meta)
+    def _bg_mail():
+        try:
+            push_live_state_to_github_now()
+            send_or_draft_backup_email(mode=cfg["daily_mode"])
+        except Exception as _ex:
+            logging.warning(f"6 PM auto-backup mail error: {_ex}")
+    threading.Thread(target=_bg_mail, daemon=True).start()
 
 def _fast_excel_engine():
     try:
@@ -5123,39 +5462,59 @@ if st.session_state['role'] == 'Admin':
             f8b = st.file_uploader("8B. Vehicle Onboarding Master (Regional & Feeder)", type=['xlsx'], key="man_f8b")
             if save_file(f8b, "VEHICLE_MASTER_RF"): st.success("Saved!")
 
-    with st.sidebar.expander("🛡️ 7-Day Data Persistence & Backup", expanded=False):
+    with st.sidebar.expander("🛡️ Permanent Backup & 6 PM Mail", expanded=False):
         meta_now = load_data_meta()
         gh_tok, gh_rep = _get_github_sync_config()
-        if meta_now.get("valid_until_ist"):
-            try:
-                vu_dt = datetime.datetime.strptime(meta_now["valid_until_ist"], "%Y-%m-%d %H:%M:%S")
-                rem_td = vu_dt - get_ist_now()
-                if rem_td.total_seconds() > 0:
-                    st.success(f"🗓️ Valid for **{rem_td.days}d {rem_td.seconds // 3600}h** (until {vu_dt:%d %b %Y, %I:%M %p} IST)")
-                else:
-                    st.warning("⚠️ Data is older than 7 days — please refresh soon.")
-            except Exception:
-                pass
+        mail_cfg = _get_backup_email_config()
+        if meta_now.get("refreshed_at_ist"):
+            st.success(f"🛡️ Permanent Data Active · Last Refreshed: **{meta_now['refreshed_at_ist']} IST** (stays until new upload)")
         if gh_tok:
-            st.caption(f"☁️ Cloud Auto-Sync: **ACTIVE** (`{gh_rep}`)")
-            if st.button("☁️ Sync 7-Day Snapshot to Cloud Now", key="manual_gh_sync_btn", use_container_width=True):
-                with st.spinner("Uploading snapshot to GitHub Cloud..."):
+            _sync_txt = f" · Last live sync: `{_LAST_LIVE_SYNC_STATUS['at']}`" if _LAST_LIVE_SYNC_STATUS.get("at") else ""
+            st.caption(f"☁️ **Live Cloud Auto-Sync: ON** (`{gh_rep}`){_sync_txt} — Tasks, L&D & Settings auto-save on every edit!")
+            sc_a, sc_b = st.columns(2)
+            if sc_a.button("☁️ Sync All Now", key="manual_gh_sync_btn", use_container_width=True):
+                with st.spinner("Syncing full snapshot + tasks to Cloud..."):
                     ok_s, msg_s = push_snapshot_to_github_release()
                 if ok_s:
                     st.success(msg_s)
                 else:
                     st.error(f"Sync failed: {msg_s}")
+            if sc_b.button("♻️ Pull Cloud", key="manual_gh_pull_btn", use_container_width=True, help="Pull latest Tasks, L&D & Configs from GitHub Cloud"):
+                with st.spinner("Restoring latest state from Cloud..."):
+                    cnt_l, msg_l = restore_live_state_from_github_now()
+                if cnt_l > 0:
+                    st.success(msg_l)
+                    st.rerun()
+                else:
+                    st.warning(msg_l)
         else:
-            st.caption("💡 Free Cloud Auto-Restore (reboot ke baad bhi 7 din data safe rakhne ke liye): Streamlit **Manage app → Settings → Secrets** mein `GITHUB_TOKEN` add karo.")
+            st.warning("⚠️ `GITHUB_TOKEN` missing in Streamlit Secrets — add it for permanent cloud auto-restore.")
 
-        if os.path.exists(FILE_MAP["FINAL_OUTPUT"]):
+        st.markdown("---")
+        st.caption(f"📧 **Daily 6:00 PM IST Auto-Mail / Draft** → `{mail_cfg['to_email']}`")
+        if mail_cfg.get("smtp_pass"):
+            st.caption(f"✅ Email Connected (`{mail_cfg['smtp_user']}` · Auto mode: `{mail_cfg['daily_mode'].upper()}`)")
+            em_c1, em_c2 = st.columns(2)
+            if em_c1.button("📧 Mail ZIP Now", key="sb_send_mail_now", use_container_width=True):
+                with st.spinner(f"Mailing backup to {mail_cfg['to_email']}..."):
+                    ok_m, msg_m = send_or_draft_backup_email(mode="send")
+                (st.success(msg_m) if ok_m else st.error(msg_m))
+            if em_c2.button("📝 Draft ZIP Now", key="sb_draft_mail_now", use_container_width=True):
+                with st.spinner("Saving backup ZIP to Gmail Drafts..."):
+                    ok_d, msg_d = send_or_draft_backup_email(mode="draft")
+                (st.success(msg_d) if ok_d else st.error(msg_d))
+        else:
+            st.caption("🔑 1-Time Setup: Streamlit Secrets mein `SMTP_USER` aur `SMTP_APP_PASSWORD` (Google App Password) add karo — daily 6 PM automatically mail/draft aa jayega!")
+
+        st.markdown("---")
+        if os.path.exists(FILE_MAP["FINAL_OUTPUT"]) or os.path.exists(FILE_MAP["ADMIN_TASKS"]):
             if st.button("📦 Prepare Local Snapshot (.zip)", key="prep_snap_zip_btn", use_container_width=True):
                 st.session_state["_snap_zip_bytes"] = build_7day_snapshot_zip_bytes()
             if st.session_state.get("_snap_zip_bytes"):
                 st.download_button(
-                    "⬇️ Download 7-Day Snapshot (.zip)",
+                    "⬇️ Download Backup Snapshot (.zip)",
                     data=st.session_state["_snap_zip_bytes"],
-                    file_name=f"Trackon_7Day_Snapshot_{get_ist_now():%d_%b_%Y}.zip",
+                    file_name=f"Trackon_Backup_Snapshot_{get_ist_now():%d_%b_%Y}.zip",
                     mime="application/zip",
                     use_container_width=True,
                     key="dl_snap_zip_btn"
@@ -5166,6 +5525,7 @@ if st.session_state['role'] == 'Admin':
             if st.session_state.get("_last_restored_zip_dig") != r_dig:
                 cnt_r = restore_7day_snapshot_zip_bytes(bytes(restore_up.getbuffer()))
                 st.session_state["_last_restored_zip_dig"] = r_dig
+                push_live_state_to_github_now()
                 st.session_state.pop('_dashboard_page_cache', None)
                 st.session_state.pop('_pay_prepared_frame_cache_v5', None)
                 try:
@@ -5189,7 +5549,10 @@ if st.session_state['role'] == 'Admin':
                 if isinstance(_um_cached, tuple) and _um_cached[0] == _um_sig:
                     _unmapped_hint = _um_cached[1]
                 else:
-                    _all_s_hint = _read_all_dashboard_sheets_once(FILE_MAP["FINAL_OUTPUT"], file_version(FILE_MAP["FINAL_OUTPUT"]))
+                    _all_s_hint = _load_disk_pkl_cache(
+                        os.path.join(DATA_DIR, ".monitoring_sheets_fast_cache.pkl"),
+                        ("mon_sheets_v5", file_version(FILE_MAP["FINAL_OUTPUT"]))
+                    ) or {}
                     _um_set = set()
                     for _sh_k, _b_col, _r_col in [
                         ('All_Trips_Audit', 'Origin Branch', 'Origin RO'),
@@ -5280,8 +5643,7 @@ if st.session_state['role'] == 'Admin':
                     "new_cost": rc_cost,
                     "eff_date": rc_date.strftime('%Y-%m-%d')
                 })
-                with open(rate_file, 'w') as f:
-                    json.dump(rates, f)
+                _write_json_fast(rate_file, rates)
                 log_user_activity(st.session_state.get('username'), "Rate Correction", f"{rc_route.strip()} | Cap {rc_cap} -> ₹{rc_cost}")
                 st.success("✅ Correction Saved! Press Process & Refresh below.")
 
@@ -6016,7 +6378,7 @@ def build_daily_overall_issues_pack(ops_df, ven_df, pay_df, cpk_df, group_by_mod
     return pack
 
 
-@st.cache_resource(show_spinner=False, max_entries=1, ttl=DATA_RETENTION_TTL_SECS)
+@st.cache_resource(show_spinner=False, max_entries=1)
 def _get_normalized_payment_cached(path, payment_signature, branch_signature, processed_signature):
     """Ultra-fast payment loader: disk pickle -> streaming XML -> openpyxl fallback."""
     pkl_path = os.path.join(DATA_DIR, ".payment_norm_fast_cache.pkl")
@@ -6037,7 +6399,7 @@ def get_normalized_overall_payment(path, data=None, processed_signature=None):
     branch_signature = file_version(branch_path) if branch_path and os.path.exists(branch_path) else None
     return _get_normalized_payment_cached(path, payment_signature, branch_signature, processed_signature)
 
-@st.cache_resource(show_spinner=False, max_entries=1, ttl=DATA_RETENTION_TTL_SECS)
+@st.cache_resource(show_spinner=False, max_entries=1)
 def _read_all_dashboard_sheets_once(path, signature):
     """Read and pre-normalize the master workbook ONCE with disk pickle cache so every switch is <0.1s."""
     pkl_path = os.path.join(DATA_DIR, ".monitoring_sheets_fast_cache.pkl")
@@ -6159,8 +6521,9 @@ def load_dashboard_data(page):
             st.exception(exc)
         st.stop()
 
-if st.session_state.pop('_gh_restored_notice', None):
-    st.info("♻️ 7-Day Cloud Snapshot auto-restored after server wake-up!")
+if _BOOT_RESTORE_RESULT.get("ran") and (_BOOT_RESTORE_RESULT.get("zip_files", 0) > 0 or _BOOT_RESTORE_RESULT.get("state_files", 0) > 0) and not st.session_state.get("_boot_notice_shown"):
+    st.session_state["_boot_notice_shown"] = True
+    st.toast(f"♻️ Cloud Auto-Restore: {_BOOT_RESTORE_RESULT['zip_files']} data files + {_BOOT_RESTORE_RESULT['state_files']} live state files restored!")
 if st.session_state.pop('_processing_success', False):
     st.success("Data refreshed successfully. Your Executive Report is ready to download!")
 
@@ -6196,8 +6559,7 @@ if st.session_state.get('all_vendors', True) and os.path.exists(FILE_MAP["FINAL_
     ist = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
     dt_obj = datetime.datetime.fromtimestamp(ts, tz=ist)
     dt = dt_obj.strftime('%d %b %Y, %I:%M %p')
-    exp_dt = (dt_obj + datetime.timedelta(days=DATA_RETENTION_DAYS)).strftime('%d %b %Y')
-    st.sidebar.caption(f"📊 Refreshed: {dt} (IST) · Valid till {exp_dt} (7 Days)")
+    st.sidebar.caption(f"📊 Refreshed: {dt} (IST) · 🛡️ Permanent until next upload")
 
 data = load_dashboard_data(choice)
 if not data and choice not in ["🎯 My Task & Focus Hub", "🤖 AI Analyst & Learning Hub", "🔐 User & Access Control", "🧭 Scheduled Route Master", "⚠️ Overall Issues", "🧩 Module Code Manager"]:
@@ -6222,7 +6584,282 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
+def _default_admin_tasks_store():
+    return {"seq": 1, "active_focus_id": "", "bonus_bank": {}, "shifts": {}, "parking_lot": [], "tasks": []}
+
+SHIFT_PRESETS_MINS = {
+    "Normal Shift (8h 30m)": 510,
+    "Half Day (4h 30m)": 270,
+    "Sat/Sun Extra (4h)": 240,
+    "Sat/Sun Extra (6h)": 360,
+    "Long Day (10h)": 600,
+    "Custom": -1
+}
+
+def _get_today_shift_window(store, now_ist):
+    """Compute today's dynamic shift start, duration, and wrap-up datetime (supports late arrival & Sat/Sun)."""
+    today_iso = now_ist.date().isoformat()
+    shifts = store.get("shifts") or {}
+    rec = shifts.get(today_iso)
+    punched_in = isinstance(rec, dict) and bool(rec.get("start_hhmm"))
+    if punched_in:
+        start_hhmm = str(rec.get("start_hhmm", "10:00"))
+        dur_mins = int(rec.get("duration_mins", 510) or 510)
+        mode_lbl = str(rec.get("mode", "Normal Shift (8h 30m)"))
+    else:
+        start_hhmm = str(store.get("default_start_hhmm", "10:00"))
+        dur_mins = int(store.get("default_shift_mins", 510) or 510)
+        mode_lbl = "Sat/Sun Extra" if now_ist.weekday() >= 5 else "Normal Shift (8h 30m)"
+    try:
+        sh, sm = [int(x) for x in start_hhmm.split(":")[:2]]
+    except Exception:
+        sh, sm = 10, 0
+    start_dt = datetime.datetime(now_ist.year, now_ist.month, now_ist.day, sh, sm, 0)
+    end_dt = start_dt + datetime.timedelta(minutes=dur_mins)
+    rem_secs = int((end_dt - now_ist).total_seconds())
+    return {
+        "start_dt": start_dt,
+        "end_dt": end_dt,
+        "start_hhmm": f"{sh:02d}:{sm:02d}",
+        "dur_mins": dur_mins,
+        "rem_secs": rem_secs,
+        "punched_in": punched_in,
+        "mode": mode_lbl,
+        "is_weekend": now_ist.weekday() >= 5
+    }
+
+def _fmt_bonus_secs(total_secs):
+    s = max(0, int(total_secs or 0))
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    if h > 0:
+        return f"+{h}h {m}m"
+    if m > 0:
+        return f"+{m}m {sec}s" if m < 10 else f"+{m}m"
+    return f"+{sec}s" if sec > 0 else "0m"
+
+def _fmt_hm_secs(total_secs):
+    s = max(0, int(total_secs or 0))
+    h, rem = divmod(s, 3600)
+    m = rem // 60
+    return f"{h}h {m}m" if h > 0 else f"{m}m"
+
+def _award_early_finish_bonus(store, task_obj, now_ist, today_iso):
+    """If task completed before its active deadline (running or paused), bank saved time into Today's Bonus Bank."""
+    saved_secs = 0
+    if task_obj.get("is_paused"):
+        saved_secs = int(task_obj.get("paused_rem_secs", 0) or 0)
+    else:
+        dl_s = str(task_obj.get("focus_deadline_ist", "") or "").strip()
+        if dl_s:
+            try:
+                dl_dt = datetime.datetime.strptime(dl_s, "%Y-%m-%d %H:%M:%S")
+                saved_secs = int((dl_dt - now_ist).total_seconds())
+            except Exception:
+                saved_secs = 0
+    if saved_secs > 0:
+        bank = store.setdefault("bonus_bank", {})
+        bank[today_iso] = int(bank.get(today_iso, 0) or 0) + saved_secs
+        task_obj["bonus_earned_secs"] = int(task_obj.get("bonus_earned_secs", 0) or 0) + saved_secs
+        task_obj["is_paused"] = False
+        task_obj["paused_rem_secs"] = 0
+        return saved_secs
+    return 0
+
+def _start_task_countdown(store, task_obj, now_ist, hrs_override=None):
+    """Start (or restart) live countdown timer on a task using its deadline_hrs."""
+    hrs = float(hrs_override if hrs_override is not None else (task_obj.get("deadline_hrs", 1.0) or 1.0))
+    dl_dt = now_ist + datetime.timedelta(hours=hrs)
+    task_obj["deadline_hrs"] = hrs
+    task_obj["focus_target_hrs"] = hrs
+    task_obj["focus_deadline_ist"] = dl_dt.strftime("%Y-%m-%d %H:%M:%S")
+    task_obj["is_paused"] = False
+    task_obj["paused_rem_secs"] = 0
+    if task_obj.get("status") == "Not Started":
+        task_obj["status"] = "In Progress"
+    task_obj["updated_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
+    store["active_focus_id"] = task_obj["id"]
+
+def _pause_task_countdown(task_obj, now_ist):
+    """Pause active countdown (e.g. during an urgent RO/Vendor call) so time is not lost unfairly."""
+    dl_s = str(task_obj.get("focus_deadline_ist", "") or "").strip()
+    rem = 0
+    if dl_s:
+        try:
+            dl_dt = datetime.datetime.strptime(dl_s, "%Y-%m-%d %H:%M:%S")
+            rem = int((dl_dt - now_ist).total_seconds())
+        except Exception:
+            rem = 0
+    task_obj["is_paused"] = True
+    task_obj["paused_rem_secs"] = rem
+    task_obj["updated_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
+
+def _resume_task_countdown(task_obj, now_ist):
+    """Resume paused countdown from the exact remaining seconds."""
+    rem = int(task_obj.get("paused_rem_secs", 0) or 0)
+    new_dl = now_ist + datetime.timedelta(seconds=rem)
+    task_obj["focus_deadline_ist"] = new_dl.strftime("%Y-%m-%d %H:%M:%S")
+    task_obj["is_paused"] = False
+    task_obj["paused_rem_secs"] = 0
+    task_obj["updated_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
+
+def render_global_admin_live_focus_bar():
+    """Renders Big Live IST Clock + Active Focus Countdown + Dynamic 8:30 Shift Left + Bonus Bank + Task Count at top of EVERY tab (Admin only)."""
+    if st.session_state.get('username') != 'admin':
+        return
+    try:
+        store = load_admin_tasks_store()
+        tasks = store.get("tasks", [])
+        now_ist = get_ist_now()
+        today_d = now_ist.date()
+        today_iso = today_d.isoformat()
+
+        open_t = [t for t in tasks if t.get("status") != "Completed"]
+        done_today = [t for t in tasks if t.get("status") == "Completed" and str(t.get("completed_at", "")).startswith(today_iso)]
+        open_sorted = sorted(open_t, key=lambda t: (int(t.get("order_no", 9999) or 9999), 0 if t.get("pinned") else 1))
+        active_id = store.get("active_focus_id", "")
+        focus_t = next((t for t in open_t if t.get("id") == active_id), None) or (open_sorted[0] if open_sorted else None)
+
+        sh = _get_today_shift_window(store, now_ist)
+        end_dt = sh["end_dt"]
+        end_epoch_ms = int((end_dt - datetime.timedelta(hours=5, minutes=30)).replace(tzinfo=datetime.timezone.utc).timestamp() * 1000)
+        shift_hdr = f"🏠 SHIFT LEFT (In {sh['start_dt']:%I:%M%p} → {end_dt:%I:%M%p})"
+        bonus_today_secs = int((store.get("bonus_bank") or {}).get(today_iso, 0) or 0)
+        bonus_lbl = _fmt_bonus_secs(bonus_today_secs)
+
+        ft_title = html_module.escape(str(focus_t.get("title", ""))[:46]) if focus_t else "Koi Task Select Nahi Hai"
+        ft_ord = f"#{int(focus_t.get('order_no', 1) or 1)}" if focus_t else "—"
+        ft_paused = bool(focus_t.get("is_paused", False)) if focus_t else False
+        ft_paused_secs = int(focus_t.get("paused_rem_secs", 0) or 0) if focus_t else 0
+        ft_dl_str = str(focus_t.get("focus_deadline_ist", "") or "").strip() if focus_t else ""
+        ft_dl_epoch_ms = 0
+        ft_tgt_lbl = "⏸️ PAUSED" if ft_paused else "Timer Off"
+        if not ft_paused and ft_dl_str:
+            try:
+                _dl_p = datetime.datetime.strptime(ft_dl_str, "%Y-%m-%d %H:%M:%S")
+                ft_dl_epoch_ms = int((_dl_p - datetime.timedelta(hours=5, minutes=30)).replace(tzinfo=datetime.timezone.utc).timestamp() * 1000)
+                ft_tgt_lbl = f"Deadline {_dl_p:%I:%M %p}"
+            except Exception:
+                pass
+
+        c_bg1 = selected_theme['card1']
+        c_bg2 = selected_theme['card2']
+        c_blue = selected_theme['blue']
+        c_fg = selected_theme['text']
+        c_mu = selected_theme['muted']
+        c_ln = selected_theme['line']
+        paused_txt = f"⏸️ PAUSED ({_fmt_hm_secs(abs(ft_paused_secs))} {'left' if ft_paused_secs >= 0 else 'overdue'})" if ft_paused else ""
+
+        st.components.v1.html(
+            f"""
+            <div style="font-family:Inter,system-ui,-apple-system,sans-serif;display:grid;grid-template-columns:1.25fr 1.65fr 1.2fr 1.0fr;gap:10px;
+                        padding:10px 14px;border-radius:14px;border:1.5px solid {c_blue};
+                        background:linear-gradient(115deg,{c_bg1},{c_bg2});color:{c_fg};box-shadow:0 6px 18px rgba(15,23,42,.08);align-items:center;">
+              <div style="border-right:1px solid {c_ln};padding-right:10px;">
+                <div style="font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:{c_mu};">🕒 CURRENT TIME (IST)</div>
+                <div id="glbIstTime" style="font-size:27px;font-weight:900;line-height:1.1;letter-spacing:-.02em;color:{c_fg};">--:--:--</div>
+                <div id="glbIstDate" style="font-size:11px;font-weight:600;color:{c_mu};margin-top:2px;">--</div>
+              </div>
+              <div style="border-right:1px solid {c_ln};padding-right:10px;min-width:0;">
+                <div style="font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:{c_blue};">🎯 FOCUS {ft_ord} · {ft_tgt_lbl}</div>
+                <div style="font-size:13px;font-weight:750;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:{c_fg};margin:2px 0;" title="{ft_title}">{ft_title}</div>
+                <div id="glbFocusRem" style="font-size:19px;font-weight:900;color:#16a34a;">--</div>
+              </div>
+              <div style="border-right:1px solid {c_ln};padding-right:10px;">
+                <div style="font-size:10px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:{c_mu};">{shift_hdr}</div>
+                <div id="glbWrapRem" style="font-size:18px;font-weight:850;color:{c_blue};margin-top:3px;">--</div>
+                <div style="font-size:11px;font-weight:700;color:#15803d;margin-top:2px;">🏆 Bonus Saved: {bonus_lbl}</div>
+              </div>
+              <div style="text-align:center;">
+                <div style="font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:{c_mu};">📋 TODAY'S TASKS</div>
+                <div style="font-size:21px;font-weight:900;color:{c_fg};margin-top:2px;">{len(open_t)} <span style="font-size:12px;font-weight:700;color:{c_mu};">Left</span></div>
+                <div style="font-size:11px;font-weight:700;color:#16a34a;">✅ {len(done_today)} Done Today</div>
+              </div>
+            </div>
+            <script>
+            (function(){{
+              const focusTgt = {ft_dl_epoch_ms};
+              const shiftEnd = {end_epoch_ms};
+              const isPaused = {'true' if ft_paused else 'false'};
+              const pausedText = {json.dumps(paused_txt)};
+              function pad(n){{ return String(n).padStart(2,'0'); }}
+              function tick(){{
+                const now = new Date();
+                document.getElementById('glbIstTime').textContent = now.toLocaleTimeString('en-IN', {{timeZone:'Asia/Kolkata', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true}});
+                document.getElementById('glbIstDate').textContent = now.toLocaleDateString('en-IN', {{timeZone:'Asia/Kolkata', weekday:'short', day:'2-digit', month:'short', year:'numeric'}});
+
+                // Dynamic Shift countdown (Arrival + 8h30m / Sat-Sun custom)
+                const wRem = Math.floor((shiftEnd - Date.now()) / 1000);
+                const wEl = document.getElementById('glbWrapRem');
+                if(wRem > 0){{
+                  const wh = Math.floor(wRem/3600), wm = Math.floor((wRem%3600)/60), ws = wRem%60;
+                  wEl.textContent = '⏳ ' + wh + 'h ' + wm + 'm ' + ws + 's';
+                  wEl.style.color = wRem <= 1800 ? '#d97706' : '{c_blue}';
+                }} else {{
+                  wEl.textContent = '🏠 Ghar Jaane Ka Time!';
+                  wEl.style.color = '#dc2626';
+                }}
+
+                // Active Focus Task Ulti Ginti
+                const fEl = document.getElementById('glbFocusRem');
+                if(isPaused){{
+                  fEl.textContent = pausedText;
+                  fEl.style.fontSize = '15px';
+                  fEl.style.color = '#d97706';
+                }} else if(!focusTgt){{
+                  fEl.textContent = '⏱️ Task select karo Focus Hub mein';
+                  fEl.style.fontSize = '13px';
+                  fEl.style.color = '{c_mu}';
+                }} else {{
+                  const diff = Math.floor((focusTgt - Date.now()) / 1000);
+                  if(diff > 0){{
+                    const fh = Math.floor(diff/3600), fm = Math.floor((diff%3600)/60), fs = diff%60;
+                    fEl.textContent = '⏳ ' + pad(fh) + ':' + pad(fm) + ':' + pad(fs) + ' left';
+                    fEl.style.color = diff <= 900 ? '#d97706' : '#16a34a';
+                  }} else {{
+                    const ov = Math.abs(diff);
+                    const fh = Math.floor(ov/3600), fm = Math.floor((ov%3600)/60), fs = ov%60;
+                    fEl.textContent = '🔴 -' + pad(fh) + ':' + pad(fm) + ':' + pad(fs) + ' OVERDUE';
+                    fEl.style.color = '#dc2626';
+                  }}
+                }}
+              }}
+              tick();
+              setInterval(tick, 1000);
+            }})();
+            </script>
+            """,
+            height=96,
+            scrolling=False
+        )
+    except Exception:
+        pass
+
+
+def load_admin_tasks_store():
+    path = FILE_MAP.get("ADMIN_TASKS", "")
+    raw = _read_json_fast(path, None)
+    if not (isinstance(raw, dict) and isinstance(raw.get("tasks"), list)) and path:
+        raw = _read_json_fast(path + ".bak", None)
+    if isinstance(raw, dict) and isinstance(raw.get("tasks"), list):
+        raw.setdefault("seq", len(raw["tasks"]) + 1)
+        raw.setdefault("active_focus_id", "")
+        return raw
+    return _default_admin_tasks_store()
+
+def save_admin_tasks_store(store):
+    path = FILE_MAP.get("ADMIN_TASKS", "")
+    if not path:
+        return
+    _write_json_fast(path, store)
+    try:
+        _write_json_fast(path + ".bak", store)
+    except Exception:
+        pass
+
+
 if st.session_state.get('username') == 'admin':
+    _maybe_run_daily_6pm_backup_in_app()
     render_global_admin_live_focus_bar()
 
 try:
@@ -7431,279 +8068,6 @@ ADMIN_ROUTINE_PACKS = {
 }
 
 # === [MODULE_START: Admin Task & Focus Hub] ===
-def _default_admin_tasks_store():
-    return {"seq": 1, "active_focus_id": "", "bonus_bank": {}, "shifts": {}, "parking_lot": [], "tasks": []}
-
-SHIFT_PRESETS_MINS = {
-    "Normal Shift (8h 30m)": 510,
-    "Half Day (4h 30m)": 270,
-    "Sat/Sun Extra (4h)": 240,
-    "Sat/Sun Extra (6h)": 360,
-    "Long Day (10h)": 600,
-    "Custom": -1
-}
-
-def _get_today_shift_window(store, now_ist):
-    """Compute today's dynamic shift start, duration, and wrap-up datetime (supports late arrival & Sat/Sun)."""
-    today_iso = now_ist.date().isoformat()
-    shifts = store.get("shifts") or {}
-    rec = shifts.get(today_iso)
-    punched_in = isinstance(rec, dict) and bool(rec.get("start_hhmm"))
-    if punched_in:
-        start_hhmm = str(rec.get("start_hhmm", "10:00"))
-        dur_mins = int(rec.get("duration_mins", 510) or 510)
-        mode_lbl = str(rec.get("mode", "Normal Shift (8h 30m)"))
-    else:
-        start_hhmm = str(store.get("default_start_hhmm", "10:00"))
-        dur_mins = int(store.get("default_shift_mins", 510) or 510)
-        mode_lbl = "Sat/Sun Extra" if now_ist.weekday() >= 5 else "Normal Shift (8h 30m)"
-    try:
-        sh, sm = [int(x) for x in start_hhmm.split(":")[:2]]
-    except Exception:
-        sh, sm = 10, 0
-    start_dt = datetime.datetime(now_ist.year, now_ist.month, now_ist.day, sh, sm, 0)
-    end_dt = start_dt + datetime.timedelta(minutes=dur_mins)
-    rem_secs = int((end_dt - now_ist).total_seconds())
-    return {
-        "start_dt": start_dt,
-        "end_dt": end_dt,
-        "start_hhmm": f"{sh:02d}:{sm:02d}",
-        "dur_mins": dur_mins,
-        "rem_secs": rem_secs,
-        "punched_in": punched_in,
-        "mode": mode_lbl,
-        "is_weekend": now_ist.weekday() >= 5
-    }
-
-def _fmt_bonus_secs(total_secs):
-    s = max(0, int(total_secs or 0))
-    h, rem = divmod(s, 3600)
-    m, sec = divmod(rem, 60)
-    if h > 0:
-        return f"+{h}h {m}m"
-    if m > 0:
-        return f"+{m}m {sec}s" if m < 10 else f"+{m}m"
-    return f"+{sec}s" if sec > 0 else "0m"
-
-def _fmt_hm_secs(total_secs):
-    s = max(0, int(total_secs or 0))
-    h, rem = divmod(s, 3600)
-    m = rem // 60
-    return f"{h}h {m}m" if h > 0 else f"{m}m"
-
-def _award_early_finish_bonus(store, task_obj, now_ist, today_iso):
-    """If task completed before its active deadline (running or paused), bank saved time into Today's Bonus Bank."""
-    saved_secs = 0
-    if task_obj.get("is_paused"):
-        saved_secs = int(task_obj.get("paused_rem_secs", 0) or 0)
-    else:
-        dl_s = str(task_obj.get("focus_deadline_ist", "") or "").strip()
-        if dl_s:
-            try:
-                dl_dt = datetime.datetime.strptime(dl_s, "%Y-%m-%d %H:%M:%S")
-                saved_secs = int((dl_dt - now_ist).total_seconds())
-            except Exception:
-                saved_secs = 0
-    if saved_secs > 0:
-        bank = store.setdefault("bonus_bank", {})
-        bank[today_iso] = int(bank.get(today_iso, 0) or 0) + saved_secs
-        task_obj["bonus_earned_secs"] = int(task_obj.get("bonus_earned_secs", 0) or 0) + saved_secs
-        task_obj["is_paused"] = False
-        task_obj["paused_rem_secs"] = 0
-        return saved_secs
-    return 0
-
-def _start_task_countdown(store, task_obj, now_ist, hrs_override=None):
-    """Start (or restart) live countdown timer on a task using its deadline_hrs."""
-    hrs = float(hrs_override if hrs_override is not None else (task_obj.get("deadline_hrs", 1.0) or 1.0))
-    dl_dt = now_ist + datetime.timedelta(hours=hrs)
-    task_obj["deadline_hrs"] = hrs
-    task_obj["focus_target_hrs"] = hrs
-    task_obj["focus_deadline_ist"] = dl_dt.strftime("%Y-%m-%d %H:%M:%S")
-    task_obj["is_paused"] = False
-    task_obj["paused_rem_secs"] = 0
-    if task_obj.get("status") == "Not Started":
-        task_obj["status"] = "In Progress"
-    task_obj["updated_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
-    store["active_focus_id"] = task_obj["id"]
-
-def _pause_task_countdown(task_obj, now_ist):
-    """Pause active countdown (e.g. during an urgent RO/Vendor call) so time is not lost unfairly."""
-    dl_s = str(task_obj.get("focus_deadline_ist", "") or "").strip()
-    rem = 0
-    if dl_s:
-        try:
-            dl_dt = datetime.datetime.strptime(dl_s, "%Y-%m-%d %H:%M:%S")
-            rem = int((dl_dt - now_ist).total_seconds())
-        except Exception:
-            rem = 0
-    task_obj["is_paused"] = True
-    task_obj["paused_rem_secs"] = rem
-    task_obj["updated_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
-
-def _resume_task_countdown(task_obj, now_ist):
-    """Resume paused countdown from the exact remaining seconds."""
-    rem = int(task_obj.get("paused_rem_secs", 0) or 0)
-    new_dl = now_ist + datetime.timedelta(seconds=rem)
-    task_obj["focus_deadline_ist"] = new_dl.strftime("%Y-%m-%d %H:%M:%S")
-    task_obj["is_paused"] = False
-    task_obj["paused_rem_secs"] = 0
-    task_obj["updated_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
-
-def render_global_admin_live_focus_bar():
-    """Renders Big Live IST Clock + Active Focus Countdown + Dynamic 8:30 Shift Left + Bonus Bank + Task Count at top of EVERY tab (Admin only)."""
-    if st.session_state.get('username') != 'admin':
-        return
-    try:
-        store = load_admin_tasks_store()
-        tasks = store.get("tasks", [])
-        now_ist = get_ist_now()
-        today_d = now_ist.date()
-        today_iso = today_d.isoformat()
-
-        open_t = [t for t in tasks if t.get("status") != "Completed"]
-        done_today = [t for t in tasks if t.get("status") == "Completed" and str(t.get("completed_at", "")).startswith(today_iso)]
-        open_sorted = sorted(open_t, key=lambda t: (int(t.get("order_no", 9999) or 9999), 0 if t.get("pinned") else 1))
-        active_id = store.get("active_focus_id", "")
-        focus_t = next((t for t in open_t if t.get("id") == active_id), None) or (open_sorted[0] if open_sorted else None)
-
-        sh = _get_today_shift_window(store, now_ist)
-        end_dt = sh["end_dt"]
-        end_epoch_ms = int((end_dt - datetime.timedelta(hours=5, minutes=30)).replace(tzinfo=datetime.timezone.utc).timestamp() * 1000)
-        shift_hdr = f"🏠 SHIFT LEFT (In {sh['start_dt']:%I:%M%p} → {end_dt:%I:%M%p})"
-        bonus_today_secs = int((store.get("bonus_bank") or {}).get(today_iso, 0) or 0)
-        bonus_lbl = _fmt_bonus_secs(bonus_today_secs)
-
-        ft_title = html_module.escape(str(focus_t.get("title", ""))[:46]) if focus_t else "Koi Task Select Nahi Hai"
-        ft_ord = f"#{int(focus_t.get('order_no', 1) or 1)}" if focus_t else "—"
-        ft_paused = bool(focus_t.get("is_paused", False)) if focus_t else False
-        ft_paused_secs = int(focus_t.get("paused_rem_secs", 0) or 0) if focus_t else 0
-        ft_dl_str = str(focus_t.get("focus_deadline_ist", "") or "").strip() if focus_t else ""
-        ft_dl_epoch_ms = 0
-        ft_tgt_lbl = "⏸️ PAUSED" if ft_paused else "Timer Off"
-        if not ft_paused and ft_dl_str:
-            try:
-                _dl_p = datetime.datetime.strptime(ft_dl_str, "%Y-%m-%d %H:%M:%S")
-                ft_dl_epoch_ms = int((_dl_p - datetime.timedelta(hours=5, minutes=30)).replace(tzinfo=datetime.timezone.utc).timestamp() * 1000)
-                ft_tgt_lbl = f"Deadline {_dl_p:%I:%M %p}"
-            except Exception:
-                pass
-
-        c_bg1 = selected_theme['card1']
-        c_bg2 = selected_theme['card2']
-        c_blue = selected_theme['blue']
-        c_fg = selected_theme['text']
-        c_mu = selected_theme['muted']
-        c_ln = selected_theme['line']
-        paused_txt = f"⏸️ PAUSED ({_fmt_hm_secs(abs(ft_paused_secs))} {'left' if ft_paused_secs >= 0 else 'overdue'})" if ft_paused else ""
-
-        st.components.v1.html(
-            f"""
-            <div style="font-family:Inter,system-ui,-apple-system,sans-serif;display:grid;grid-template-columns:1.25fr 1.65fr 1.2fr 1.0fr;gap:10px;
-                        padding:10px 14px;border-radius:14px;border:1.5px solid {c_blue};
-                        background:linear-gradient(115deg,{c_bg1},{c_bg2});color:{c_fg};box-shadow:0 6px 18px rgba(15,23,42,.08);align-items:center;">
-              <div style="border-right:1px solid {c_ln};padding-right:10px;">
-                <div style="font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:{c_mu};">🕒 CURRENT TIME (IST)</div>
-                <div id="glbIstTime" style="font-size:27px;font-weight:900;line-height:1.1;letter-spacing:-.02em;color:{c_fg};">--:--:--</div>
-                <div id="glbIstDate" style="font-size:11px;font-weight:600;color:{c_mu};margin-top:2px;">--</div>
-              </div>
-              <div style="border-right:1px solid {c_ln};padding-right:10px;min-width:0;">
-                <div style="font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:{c_blue};">🎯 FOCUS {ft_ord} · {ft_tgt_lbl}</div>
-                <div style="font-size:13px;font-weight:750;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:{c_fg};margin:2px 0;" title="{ft_title}">{ft_title}</div>
-                <div id="glbFocusRem" style="font-size:19px;font-weight:900;color:#16a34a;">--</div>
-              </div>
-              <div style="border-right:1px solid {c_ln};padding-right:10px;">
-                <div style="font-size:10px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:{c_mu};">{shift_hdr}</div>
-                <div id="glbWrapRem" style="font-size:18px;font-weight:850;color:{c_blue};margin-top:3px;">--</div>
-                <div style="font-size:11px;font-weight:700;color:#15803d;margin-top:2px;">🏆 Bonus Saved: {bonus_lbl}</div>
-              </div>
-              <div style="text-align:center;">
-                <div style="font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:{c_mu};">📋 TODAY'S TASKS</div>
-                <div style="font-size:21px;font-weight:900;color:{c_fg};margin-top:2px;">{len(open_t)} <span style="font-size:12px;font-weight:700;color:{c_mu};">Left</span></div>
-                <div style="font-size:11px;font-weight:700;color:#16a34a;">✅ {len(done_today)} Done Today</div>
-              </div>
-            </div>
-            <script>
-            (function(){{
-              const focusTgt = {ft_dl_epoch_ms};
-              const shiftEnd = {end_epoch_ms};
-              const isPaused = {'true' if ft_paused else 'false'};
-              const pausedText = {json.dumps(paused_txt)};
-              function pad(n){{ return String(n).padStart(2,'0'); }}
-              function tick(){{
-                const now = new Date();
-                document.getElementById('glbIstTime').textContent = now.toLocaleTimeString('en-IN', {{timeZone:'Asia/Kolkata', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true}});
-                document.getElementById('glbIstDate').textContent = now.toLocaleDateString('en-IN', {{timeZone:'Asia/Kolkata', weekday:'short', day:'2-digit', month:'short', year:'numeric'}});
-
-                // Dynamic Shift countdown (Arrival + 8h30m / Sat-Sun custom)
-                const wRem = Math.floor((shiftEnd - Date.now()) / 1000);
-                const wEl = document.getElementById('glbWrapRem');
-                if(wRem > 0){{
-                  const wh = Math.floor(wRem/3600), wm = Math.floor((wRem%3600)/60), ws = wRem%60;
-                  wEl.textContent = '⏳ ' + wh + 'h ' + wm + 'm ' + ws + 's';
-                  wEl.style.color = wRem <= 1800 ? '#d97706' : '{c_blue}';
-                }} else {{
-                  wEl.textContent = '🏠 Ghar Jaane Ka Time!';
-                  wEl.style.color = '#dc2626';
-                }}
-
-                // Active Focus Task Ulti Ginti
-                const fEl = document.getElementById('glbFocusRem');
-                if(isPaused){{
-                  fEl.textContent = pausedText;
-                  fEl.style.fontSize = '15px';
-                  fEl.style.color = '#d97706';
-                }} else if(!focusTgt){{
-                  fEl.textContent = '⏱️ Task select karo Focus Hub mein';
-                  fEl.style.fontSize = '13px';
-                  fEl.style.color = '{c_mu}';
-                }} else {{
-                  const diff = Math.floor((focusTgt - Date.now()) / 1000);
-                  if(diff > 0){{
-                    const fh = Math.floor(diff/3600), fm = Math.floor((diff%3600)/60), fs = diff%60;
-                    fEl.textContent = '⏳ ' + pad(fh) + ':' + pad(fm) + ':' + pad(fs) + ' left';
-                    fEl.style.color = diff <= 900 ? '#d97706' : '#16a34a';
-                  }} else {{
-                    const ov = Math.abs(diff);
-                    const fh = Math.floor(ov/3600), fm = Math.floor((ov%3600)/60), fs = ov%60;
-                    fEl.textContent = '🔴 -' + pad(fh) + ':' + pad(fm) + ':' + pad(fs) + ' OVERDUE';
-                    fEl.style.color = '#dc2626';
-                  }}
-                }}
-              }}
-              tick();
-              setInterval(tick, 1000);
-            }})();
-            </script>
-            """,
-            height=96,
-            scrolling=False
-        )
-    except Exception:
-        pass
-
-
-def load_admin_tasks_store():
-    path = FILE_MAP.get("ADMIN_TASKS", "")
-    raw = _read_json_fast(path, None)
-    if not (isinstance(raw, dict) and isinstance(raw.get("tasks"), list)) and path:
-        raw = _read_json_fast(path + ".bak", None)
-    if isinstance(raw, dict) and isinstance(raw.get("tasks"), list):
-        raw.setdefault("seq", len(raw["tasks"]) + 1)
-        raw.setdefault("active_focus_id", "")
-        return raw
-    return _default_admin_tasks_store()
-
-def save_admin_tasks_store(store):
-    path = FILE_MAP.get("ADMIN_TASKS", "")
-    if not path:
-        return
-    _write_json_fast(path, store)
-    try:
-        _write_json_fast(path + ".bak", store)
-    except Exception:
-        pass
-
 def _next_recurrence_due_date(curr_due_str, recurrence_label, today_d):
     try:
         base_d = datetime.date.fromisoformat(str(curr_due_str)[:10])
