@@ -642,6 +642,8 @@ FILE_MAP = {
     "MCD_VENDOR": os.path.join(DATA_DIR, "mcd_vendor.xlsx"),
     "CPK_UTIL": os.path.join(DATA_DIR, "cpk_util.xlsx"),
     "ROUTE_LOOKUP": os.path.join(DATA_DIR, "route_lookup.xlsx"),
+    "VEHICLE_MASTER_NZ": os.path.join(DATA_DIR, "vehicle_master_nz.xlsx"),
+    "VEHICLE_MASTER_RF": os.path.join(DATA_DIR, "vehicle_master_rf.xlsx"),
     "FINAL_OUTPUT": os.path.join(DATA_DIR, "Auto_Generated_Monitoring_Data.xlsx"),
     "EXECUTIVE_REPORT": os.path.join(DATA_DIR, "Trackon_VIP_Executive_Report.xlsx"),
     "RATE_CORRECTIONS": os.path.join(DATA_DIR, "rate_corrections.json"),
@@ -655,6 +657,7 @@ FILE_MAP = {
     "CUSTOM_BRANCH_RO_MAP": os.path.join(DATA_DIR, "custom_branch_ro_map.json"),
     "ACTIVITY_LOG": os.path.join(DATA_DIR, "activity_log.json"),
     "ADMIN_TASKS": os.path.join(DATA_DIR, "admin_tasks.json"),
+    "LD_PROGRESS": os.path.join(DATA_DIR, "ld_progress.json"),
     "CPK_OVERRIDES": os.path.join(DATA_DIR, "cpk_overrides.json")
 }
 
@@ -841,6 +844,117 @@ TRACKON_FLEET_LADDER = [
     (9000, "24 ft / Taurus (9,000 kg)"),
     (13500, "32 ft MXL (13,500 kg)")
 ]
+
+
+def load_vehicle_type_lookup_maps():
+    """Load National/Zonal + Regional/Feeder Vehicle Onboarding Masters into fast lookup dicts (Active + Latest wins)."""
+    sig = []
+    for k in ("VEHICLE_MASTER_NZ", "VEHICLE_MASTER_RF"):
+        p = FILE_MAP.get(k, "")
+        if p and os.path.exists(p):
+            st_i = os.stat(p)
+            sig.append((k, st_i.st_mtime_ns, st_i.st_size))
+    sig_t = tuple(sig)
+    if not sig_t:
+        return {}, {}, {}, {}, {}
+    cache_hit = _JSON_MEM_CACHE.get("_veh_master_lookup_maps_v1")
+    if cache_hit and cache_hit[0] == sig_t:
+        return cache_hit[1]
+
+    frames = []
+    for k in ("VEHICLE_MASTER_NZ", "VEHICLE_MASTER_RF"):
+        p = FILE_MAP.get(k, "")
+        if not p or not os.path.exists(p):
+            continue
+        try:
+            df_m = _read_excel_fast(p, sheet_name="VehicleReportModel")
+        except Exception:
+            try:
+                df_m = _read_excel_fast(p, sheet_name=0)
+            except Exception:
+                continue
+        if isinstance(df_m, pd.DataFrame) and not df_m.empty:
+            df_m.columns = df_m.columns.astype(str).str.strip()
+            frames.append(df_m)
+    if not frames:
+        return {}, {}, {}, {}, {}
+
+    vm_all = pd.concat(frames, ignore_index=True)
+    c_vno = get_col(vm_all, ['Vehicle Number', 'VehicleNo', 'Vehicle No'])
+    c_rt = get_col(vm_all, ['Route Path', 'RoutePath', 'Route'])
+    c_cap = get_col(vm_all, ['Vehicle Capacity', 'Capacity', 'VehCap'])
+    c_vt = get_col(vm_all, ['Vehicle Type', 'VehicleType'])
+    c_st = get_col(vm_all, ['Status'])
+    c_upd = get_col(vm_all, ['Updated On', 'Created On'])
+
+    if not c_vt:
+        return {}, {}, {}, {}, {}
+
+    vm_all['_vno'] = vm_all[c_vno].fillna('').astype(str).str.strip().str.upper() if c_vno else ''
+    vm_all['_rt'] = vm_all[c_rt].fillna('').astype(str).str.strip().str.upper() if c_rt else ''
+    vm_all['_cap'] = pd.to_numeric(vm_all[c_cap], errors='coerce').fillna(0).round(0).astype(int) if c_cap else 0
+    vm_all['_vtype'] = vm_all[c_vt].fillna('').astype(str).str.strip().str.upper()
+    vm_all['_act'] = vm_all[c_st].fillna('').astype(str).str.strip().str.upper().eq('ACTIVE').astype(int) if c_st else 1
+    vm_all['_upd'] = pd.to_datetime(vm_all[c_upd], errors='coerce') if c_upd else pd.NaT
+
+    vm_sorted = vm_all[vm_all['_vtype'].ne('') & ~vm_all['_vtype'].isin(['NAN', 'NONE'])].sort_values(
+        by=['_act', '_upd'], ascending=[False, False], na_position='last'
+    )
+
+    def _p_key(r_txt):
+        pts = [x.strip() for x in str(r_txt).upper().replace(' TO ', '-').split('-') if x.strip()]
+        return f"{min(pts[0], pts[-1])}-{max(pts[0], pts[-1])}" if len(pts) >= 2 else str(r_txt).upper()
+
+    rt_cap_df = vm_sorted[vm_sorted['_rt'].ne('') & (vm_sorted['_cap'] > 0)].copy()
+    rt_cap_df['_pair'] = rt_cap_df['_rt'].map(_p_key)
+
+    rt_cap_map = rt_cap_df.drop_duplicates(subset=['_rt', '_cap']).set_index(['_rt', '_cap'])['_vtype'].to_dict()
+    pair_cap_map = rt_cap_df.drop_duplicates(subset=['_pair', '_cap']).set_index(['_pair', '_cap'])['_vtype'].to_dict()
+    vno_cap_map = vm_sorted[vm_sorted['_vno'].ne('') & (vm_sorted['_cap'] > 0)].drop_duplicates(subset=['_vno', '_cap']).set_index(['_vno', '_cap'])['_vtype'].to_dict()
+    vno_map = vm_sorted[vm_sorted['_vno'].ne('')].drop_duplicates(subset=['_vno']).set_index('_vno')['_vtype'].to_dict()
+    cap_mode_map = vm_sorted[vm_sorted['_cap'] > 0].groupby('_cap')['_vtype'].agg(
+        lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]
+    ).to_dict()
+
+    res_maps = (rt_cap_map, pair_cap_map, vno_cap_map, vno_map, cap_mode_map)
+    _JSON_MEM_CACHE["_veh_master_lookup_maps_v1"] = (sig_t, res_maps)
+    return res_maps
+
+def enrich_vehicle_type_column(df, route_col='Final_Route', pair_col='Route_Pair', vno_col='Vehicle No', cap_col='Cap', type_col='Final_Type'):
+    """Attach accurate `VehType` column using Onboarding Masters (National/Zonal: Route+Cap first; Regional/Feeder: VehNo+Cap first)."""
+    if df is None or df.empty:
+        return df
+    rt_cap_map, pair_cap_map, vno_cap_map, vno_map, cap_mode_map = load_vehicle_type_lookup_maps()
+    out = df.copy()
+    if not (rt_cap_map or vno_cap_map or vno_map or cap_mode_map):
+        if 'VehType' not in out.columns:
+            out['VehType'] = out.get(cap_col, pd.Series(0, index=out.index)).apply(
+                lambda c: _fleet_size_label(c).split(' (')[0] if float(pd.to_numeric(c, errors='coerce') or 0) > 0 else '-'
+            )
+        return out
+
+    rt_s = out[route_col].fillna('').astype(str).str.strip().str.upper() if route_col in out.columns else pd.Series('', index=out.index)
+    pr_s = out[pair_col].fillna('').astype(str).str.strip().str.upper() if pair_col in out.columns else rt_s
+    vn_s = out[vno_col].fillna('').astype(str).str.strip().str.upper() if vno_col in out.columns else pd.Series('', index=out.index)
+    cp_s = pd.to_numeric(out[cap_col], errors='coerce').fillna(0).round(0).astype(int) if cap_col in out.columns else pd.Series(0, index=out.index)
+
+    m_rc = pd.Series(list(zip(rt_s, cp_s)), index=out.index).map(rt_cap_map)
+    m_pc = pd.Series(list(zip(pr_s, cp_s)), index=out.index).map(pair_cap_map)
+    m_vc = pd.Series(list(zip(vn_s, cp_s)), index=out.index).map(vno_cap_map)
+    m_v = vn_s.map(vno_map)
+    m_c = cp_s.map(cap_mode_map)
+
+    if type_col in out.columns:
+        is_nz = out[type_col].fillna('').astype(str).str.contains('National|Zonal', case=False, na=False)
+    else:
+        is_nz = pd.Series(False, index=out.index)
+
+    vt_nz = m_rc.combine_first(m_pc).combine_first(m_vc).combine_first(m_v).combine_first(m_c)
+    vt_rf = m_vc.combine_first(m_v).combine_first(m_rc).combine_first(m_c)
+    resolved = pd.Series(np.where(is_nz, vt_nz.fillna(''), vt_rf.fillna('')), index=out.index)
+    fallback_lbl = cp_s.apply(lambda c: _fleet_size_label(c).split(' (')[0] if c > 0 else '-')
+    out['VehType'] = resolved.where(resolved.ne(''), fallback_lbl)
+    return out
 
 def load_cpk_overrides():
     path = FILE_MAP.get("CPK_OVERRIDES", "")
@@ -1144,11 +1258,12 @@ ALL_PORTAL_MODULES = [
     "⚠️ Overall Issues",
     "🗂️ All Trips & Additional/Manual Audit",
     "🎯 My Task & Focus Hub",
+    "🤖 AI Analyst & Learning Hub",
     "🔐 User & Access Control",
     "🧩 Module Code Manager"
 ]
 
-ADMIN_ONLY_MODULES = {"🎯 My Task & Focus Hub", "🔐 User & Access Control", "🧩 Module Code Manager"}
+ADMIN_ONLY_MODULES = {"🎯 My Task & Focus Hub", "🤖 AI Analyst & Learning Hub", "🔐 User & Access Control", "🧩 Module Code Manager"}
 STANDARD_MODULES = [m for m in ALL_PORTAL_MODULES if m not in ADMIN_ONLY_MODULES]
 
 # Pre-defined National Route Pairs for Communication Hub
@@ -1725,6 +1840,8 @@ SLOT_LABELS = {
     "MCD_VENDOR": "5. MCD Vendor Monitoring",
     "CPK_UTIL": "6. CPK & Util Raw File",
     "ROUTE_LOOKUP": "7. Route Lookup File",
+    "VEHICLE_MASTER_NZ": "8A. Vehicle Onboarding Master (National & Zonal)",
+    "VEHICLE_MASTER_RF": "8B. Vehicle Onboarding Master (Regional & Feeder)",
 }
 
 def _peek_xlsx_structure(file_bytes):
@@ -1816,6 +1933,12 @@ def detect_raw_file_slot(uploaded_file):
         return "LEGWISE"
     if 'mastercdno' in hdrs_norm and ('mcdfrombranch' in hdrs_norm or 'lhtype' in hdrs_norm) and 'legwise' not in hdrs_norm:
         return "ROUTE_LOOKUP"
+    if 'vehiclereportmodel' in {re.sub(r'[^a-z0-9]+', '', s) for s in sheets_low} or (
+        {'vehiclenumber', 'vehicletype', 'vehiclecapacity'}.issubset(hdrs_norm)
+    ):
+        if any(k in fname for k in ['regional', 'feeder', 'reg_feed', 'reg-feed', '_rf']):
+            return "VEHICLE_MASTER_RF"
+        return "VEHICLE_MASTER_NZ"
 
     # 2. Filename fallback detection
     if any(k in fname for k in ['all_data', 'payment', 'invoice', 'bill']):
@@ -1834,6 +1957,10 @@ def detect_raw_file_slot(uploaded_file):
         return "ROUTE_LOOKUP"
     if any(k in fname for k in ['mcd', 'vendor_mon', 'monitoring']):
         return "MCD_VENDOR"
+    if any(k in fname for k in ['vehicle', 'onboarding']):
+        if any(k in fname for k in ['regional', 'feeder', '_rf']):
+            return "VEHICLE_MASTER_RF"
+        return "VEHICLE_MASTER_NZ"
     return None
 
 def load_data_meta():
@@ -1872,6 +1999,8 @@ SNAPSHOT_INCLUDE_FILES = [
     "route_master.xlsx",
     "route_master_rf.xlsx",
     "branch_master.xlsx",
+    "vehicle_master_nz.xlsx",
+    "vehicle_master_rf.xlsx",
     "data_meta.json",
     "custom_branch_ro_map.json",
     "users_master.json",
@@ -1883,6 +2012,7 @@ SNAPSHOT_INCLUDE_FILES = [
     "vendor_master.json",
     "activity_log.json",
     "admin_tasks.json",
+    "ld_progress.json",
     "cpk_overrides.json",
 ]
 
@@ -2367,6 +2497,24 @@ def extract_orig_dest(route_str):
 def get_route_pair(route_str):
     o, d = extract_orig_dest(route_str)
     return f"{min(o, d)}-{max(o, d)}"
+
+def ensure_route_pair_col(df, route_col='Route Path'):
+    """Ensure a clean canonical `Route Pair` column (e.g. DELAP-INDH) exists on any Ops/Vendor/Hub DataFrame."""
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    src_col = route_col if route_col in out.columns else ('Route Path' if 'Route Path' in out.columns else ('Route' if 'Route' in out.columns else None))
+    if src_col is None:
+        return out
+    if 'Route Pair' not in out.columns or out['Route Pair'].fillna('').astype(str).str.strip().eq('').any():
+        vals = out[src_col].fillna('').astype(str)
+        mp = {v: get_route_pair(v) for v in vals.unique()}
+        if 'Route Pair' not in out.columns:
+            out['Route Pair'] = vals.map(mp)
+        else:
+            empty_m = out['Route Pair'].fillna('').astype(str).str.strip().eq('')
+            out.loc[empty_m, 'Route Pair'] = vals.loc[empty_m].map(mp)
+    return out
 
 def extract_leg_num_val(series):
     return series.astype(str).str.extract(r'(\d+)')[0].astype(float).fillna(999)
@@ -2895,6 +3043,7 @@ def build_ops_summary_from_raw(df_group):
     df_valid = df_group.copy()
     if 'E2E_Pair' not in df_valid.columns and 'Route Path' in df_valid.columns:
         df_valid['E2E_Pair'] = df_valid['Route Path'].apply(get_route_pair)
+    df_valid = ensure_route_pair_col(df_valid, 'Route Path')
     if 'Origin' not in df_valid.columns and 'Route Path' in df_valid.columns:
         df_valid[['Origin', 'Destination']] = df_valid['Route Path'].apply(lambda x: pd.Series(extract_orig_dest(x)))
     if 'Leg_Num' not in df_valid.columns and 'Legwise' in df_valid.columns:
@@ -2911,7 +3060,7 @@ def build_ops_summary_from_raw(df_group):
     df_valid['LO_Cnt'] = remark_text.str.contains('Late Dep, Ontime Arr', case=False, regex=False).astype('int8')
     df_valid['OL_Cnt'] = remark_text.str.contains('Ontime Dep, Late Arr', case=False, regex=False).astype('int8')
     
-    group_cols = ['Zone', 'LH Type', 'E2E_Pair', 'Origin RO', 'Route Path', 'Origin', 'Destination', 'Leg_Num', 'Legwise', 'Legs']
+    group_cols = ['Zone', 'LH Type', 'E2E_Pair', 'Origin RO', 'Route Pair', 'Route Path', 'Origin', 'Destination', 'Leg_Num', 'Legwise', 'Legs']
     existing_gcols = [c for c in group_cols if c in df_valid.columns]
     
     agg_dict = {
@@ -2996,7 +3145,8 @@ def build_vendor_summary_from_raw(df_vperf_raw):
         df_in['VendorName'] = df_in['VendorName'].apply(normalize_vendor_name)
     if 'Zone' not in df_in.columns:
         df_in['Zone'] = 'UNKNOWN ZONE'
-    sum_cols = ['Zone', 'Origin RO', 'Route Path', 'Legwise', 'Legs', 'VendorName']
+    df_in = ensure_route_pair_col(df_in, 'Route Path')
+    sum_cols = ['Zone', 'Origin RO', 'Route Pair', 'Route Path', 'Legwise', 'Legs', 'VendorName']
     existing_scols = [c for c in sum_cols if c in df_in.columns]
     
     perf_sum = df_in.groupby(existing_scols).agg(
@@ -3122,7 +3272,8 @@ def build_clean_email_message(recipient_title, duration_label, ops_sum_df=None, 
         lines.append("==========================================================")
         
         for route_name, grp in df_v.groupby('Route Path', sort=False):
-            lines.append(f"🚛 Route: {route_name}")
+            _rp_v = str(grp['Route Pair'].iloc[0]).strip() if 'Route Pair' in grp.columns and not grp.empty else get_route_pair(route_name)
+            lines.append(f"🚛 Route: {route_name}  [Pair: {_rp_v}]")
             for _, r in grp.iterrows():
                 lg = str(r.get('Legwise', '')).strip()
                 leg_nodes = str(r.get('Legs', '')).strip()
@@ -3144,7 +3295,8 @@ def build_clean_email_message(recipient_title, duration_label, ops_sum_df=None, 
         lines.append("==========================================================")
         
         for route_name, grp in df_o.groupby('Route Path', sort=False):
-            lines.append(f"🛣️ Route: {route_name}")
+            _rp_o = str(grp['Route Pair'].iloc[0]).strip() if 'Route Pair' in grp.columns and not grp.empty else get_route_pair(route_name)
+            lines.append(f"🛣️ Route: {route_name}  [Pair: {_rp_o}]")
             for _, r in grp.iterrows():
                 lg = str(r.get('Legwise', '')).strip()
                 leg_nodes = str(r.get('Legs', '')).strip()
@@ -3212,9 +3364,11 @@ def clean_dataframe_for_excel(df_in, sheet_type="generic", preserve_order=False)
     cols_to_remove = [c for c in JUNK_EXCEL_COLS if c in df.columns]
     df.drop(columns=cols_to_remove, inplace=True, errors='ignore')
     
+    if sheet_type in ("ops_sum", "ops_raw", "ven_sum", "ven_raw") and 'Route Path' in df.columns:
+        df = ensure_route_pair_col(df, 'Route Path')
     if sheet_type == "ops_sum":
         preferred = [
-            'Origin RO', 'Route Path', 'Legwise', 'Legs', 'Total_Trips',
+            'Origin RO', 'Route Pair', 'Route Path', 'Legwise', 'Legs', 'Total_Trips',
             'Ontime Dep, Ontime Arr %', 'Late Dep, Late Arr %',
             'Ontime Dep, Late Arr %', 'Late Dep, Ontime Arr %'
         ]
@@ -3224,7 +3378,7 @@ def clean_dataframe_for_excel(df_in, sheet_type="generic", preserve_order=False)
             df[c] = df[c].apply(format_ops_badge)
     elif sheet_type == "ops_raw":
         preferred = [
-            'MCD_StartDate', 'Remark', 'Origin RO', 'Route Path', 'Legwise', 'Legs',
+            'MCD_StartDate', 'Remark', 'Origin RO', 'Route Pair', 'Route Path', 'Legwise', 'Legs',
             'Scheduled Departure Time', 'Actual Departure Time',
             'Scheduled Arrival Time', 'Actual Arrival Time',
             'Scheduled Halting', 'Actual Halting', 'VendorName',
@@ -3232,12 +3386,12 @@ def clean_dataframe_for_excel(df_in, sheet_type="generic", preserve_order=False)
         ]
     elif sheet_type == "ven_sum":
         preferred = [
-            'Origin RO', 'Route Path', 'Legwise', 'Legs', 'VendorName',
+            'Origin RO', 'Route Pair', 'Route Path', 'Legwise', 'Legs', 'VendorName',
             'Total_Trips', 'Ontime Arrival', 'Late Arrival', 'In-Transit', 'Missing Schedule'
         ]
     elif sheet_type == "ven_raw":
         preferred = [
-            'Date', 'Remark with 15 min waiver', 'Origin RO', 'Route Path', 'Legwise', 'Legs',
+            'Date', 'Remark with 15 min waiver', 'Origin RO', 'Route Pair', 'Route Path', 'Legwise', 'Legs',
             'VendorName', 'VehicleNo', 'Actual Departure Time',
             'Actual Arrival Time', 'Given Driving Hours',
             'Actual Driving Hours', 'Delay Hours',
@@ -3742,9 +3896,11 @@ def get_selected_cell_from_event(event, displayed_df):
 def compact_detail_frame(frame, kind):
     if frame is None or frame.empty:
         return pd.DataFrame()
+    if kind in ('ven_raw', 'ops_raw') and 'Route Path' in frame.columns:
+        frame = ensure_route_pair_col(frame, 'Route Path')
     preferred_by_kind = {
-        'ven_raw': ['Date', 'Remark with 15 min waiver', 'Origin RO', 'Route Path', 'Legwise', 'VendorName', 'Actual Arrival Time', 'Delay Hours', 'MasterCDNo'],
-        'ops_raw': ['MCD_StartDate', 'Remark', 'Operations Outcome', 'Zone', 'Origin RO', 'Route Path', 'Legwise', 'Legs', 'CD_FromBranch', 'CD_ToBranch', 'MasterCDNo'],
+        'ven_raw': ['Date', 'Remark with 15 min waiver', 'Origin RO', 'Route Pair', 'Route Path', 'Legwise', 'VendorName', 'Actual Arrival Time', 'Delay Hours', 'MasterCDNo'],
+        'ops_raw': ['MCD_StartDate', 'Remark', 'Operations Outcome', 'Zone', 'Origin RO', 'Route Pair', 'Route Path', 'Legwise', 'Legs', 'CD_FromBranch', 'CD_ToBranch', 'MasterCDNo'],
         'pay_raw': ['Invoice Id', 'Bill No.', 'Invoice Month', 'Start Date', 'End Date', 'Invoice Date', 'Bill Uploader', 'RO Name', 'Zone', 'Vendor Name', 'Vendor Mapping Category', 'Category', 'Base Amount', 'Amount', 'Status', 'Payment Group', 'Pending With', 'Pending Since', 'Days Pending', 'Month Audit', 'Hold Key'],
         'cpk_raw': ['Date', 'RO_Clean', 'Final_Route', 'Final_Type', 'VendorName', 'Vehicle No', 'Cap', 'Wt', 'Trips', 'Cost']
     }
@@ -4479,8 +4635,9 @@ def get_processed_data_cached(file_timestamps):
         df_vperf['Actual Departure Time'] = df_vperf['Actual Departure Time'].dt.strftime('%d-%m-%Y %H:%M').fillna('-')
         df_vperf['Actual Arrival Time'] = df_vperf['Actual Arrival Time'].dt.strftime('%d-%m-%Y %H:%M').fillna('-')
         
+        df_vperf['Route Pair'] = df_vperf['Route Path'].apply(get_route_pair)
         perf_cols = [
-            'Route Path', 'Legwise', 'Legs', 'CD_FromBranch', 'CD_ToBranch', 'LH Type',
+            'Route Pair', 'Route Path', 'Legwise', 'Legs', 'CD_FromBranch', 'CD_ToBranch', 'LH Type',
             'Actual Departure Time', 'Actual Arrival Time',
             'Given Driving Hours', 'Actual Driving Hours', 'Delay Hours',
             'Remark with 15 min waiver', 'VendorName', 'VehicleNo', 'MasterCDNo',
@@ -4527,6 +4684,7 @@ def get_processed_data_cached(file_timestamps):
         dt_cols = ['Scheduled Departure Time', 'Actual Departure Time', 'Scheduled Arrival Time', 'Actual Arrival Time']
         for c in dt_cols:
             df_leg[c] = df_leg[c].dt.strftime('%d-%m-%Y %H:%M').fillna('')
+        df_leg['Route Pair'] = df_leg['Route Path'].apply(get_route_pair)
         df_leg['MCD_StartDate'] = pd.to_datetime(df_leg['MCD_StartDate_DT']).dt.strftime('%d-%m-%Y')
         df_leg_final = df_leg.drop(columns=['MCD_StartDate_DT'], errors='ignore')
         df_leg_final = sort_by_route_and_leg(df_leg_final)
@@ -4684,12 +4842,13 @@ def get_processed_data_cached(file_timestamps):
             except Exception:
                 pass
 
+        df_updn = enrich_vehicle_type_column(df_updn, route_col='Final_Route', pair_col='Route_Pair', vno_col='Vehicle No', cap_col='Cap', type_col='Final_Type')
         # Keep clean, zero-junk columns in CPK_Raw_Data
         raw_keep = [
             'Date', 'RefNumber', 'Final_Type', 'Zone', 'RO_Clean', 'Origin_RO', 'Dest_RO',
             'VendorBranch', 'Origin', 'Dest', 'Route_Pair', 'Direction', 'Final_Route', 'SortKey',
             'VendorName', 'Vehicle No', 'ContractType', 'VehicleUsageType',
-            'Cap', 'Wt', 'Trips', 'ContractCost_Raw', 'Cost'
+            'Cap', 'VehType', 'Wt', 'Trips', 'ContractCost_Raw', 'Cost'
         ]
         df_updn_save = df_updn[[c for c in raw_keep if c in df_updn.columns]].copy()
         data_for_export['CPK_Raw_Data'] = df_updn_save
@@ -4743,9 +4902,10 @@ def get_processed_data_cached(file_timestamps):
             dd['All_Types'] = dd['Vehicle No'].map(_veh_all_types).fillna(dd['Primary_Type'])
             dd['Routes_Covered'] = dd['Vehicle No'].map(_veh_routes).fillna('')
 
+            dd = enrich_vehicle_type_column(dd, route_col='Routes_Covered', pair_col='Routes_Covered', vno_col='Vehicle No', cap_col='Cap', type_col='Primary_Type')
             daily_keep = [
                 'Date', 'Zone', 'RO_Clean', 'VendorBranch', 'VendorName', 'Vehicle No',
-                'Primary_Type', 'All_Types', 'ContractType', 'Cap', 'ContractCost',
+                'Primary_Type', 'All_Types', 'ContractType', 'Cap', 'VehType', 'ContractCost',
                 'NoOftrips', 'MCDWt', 'OFDWt', 'PickupWt', 'ColoaderWt', 'TotalWt', 'TotalCost', 'Routes_Covered'
             ]
             data_for_export['CPK_Daily_Data'] = dd[[c for c in daily_keep if c in dd.columns]].copy()
@@ -4874,7 +5034,7 @@ if st.session_state['role'] == 'Admin':
     # -------------------------------------------------------------
     if st.sidebar.button("🗑️ Remove Data", use_container_width=True):
         # Delete only uploaded/generated Excel files, preserve json configurations
-        preserve_keys = ["USERS_DB", "ACTION_PLANS", "VENDOR_MASTER", "RATE_CORRECTIONS", "CUSTOM_BRANCH_RO_MAP", "VENDOR_CATEGORY_MAP", "USER_VENDOR_CATEGORY_MAP", "USER_TRACKED_VENDORS", "ACTIVITY_LOG", "ADMIN_TASKS", "CPK_OVERRIDES"]
+        preserve_keys = ["USERS_DB", "ACTION_PLANS", "VENDOR_MASTER", "RATE_CORRECTIONS", "CUSTOM_BRANCH_RO_MAP", "VENDOR_CATEGORY_MAP", "USER_VENDOR_CATEGORY_MAP", "USER_TRACKED_VENDORS", "ACTIVITY_LOG", "ADMIN_TASKS", "LD_PROGRESS", "CPK_OVERRIDES"]
         for k, v in FILE_MAP.items():
             if k not in preserve_keys:
                 if os.path.exists(v):
@@ -4958,6 +5118,10 @@ if st.session_state['role'] == 'Admin':
             if save_file(f6, "CPK_UTIL"): st.success("Saved!")
             f7 = st.file_uploader("7. Route Lookup File", type=['xlsx'], key="man_f7")
             if save_file(f7, "ROUTE_LOOKUP"): st.success("Saved!")
+            f8a = st.file_uploader("8A. Vehicle Onboarding Master (National & Zonal)", type=['xlsx'], key="man_f8a")
+            if save_file(f8a, "VEHICLE_MASTER_NZ"): st.success("Saved!")
+            f8b = st.file_uploader("8B. Vehicle Onboarding Master (Regional & Feeder)", type=['xlsx'], key="man_f8b")
+            if save_file(f8b, "VEHICLE_MASTER_RF"): st.success("Saved!")
 
     with st.sidebar.expander("🛡️ 7-Day Data Persistence & Backup", expanded=False):
         meta_now = load_data_meta()
@@ -5183,6 +5347,7 @@ MENU_SHEETS = {
     # Access control only needs distinct vendor names. Read those columns below
     # instead of loading both full raw sheets on every rerun.
     "🎯 My Task & Focus Hub": (),
+    "🤖 AI Analyst & Learning Hub": ('Legwise_Processed_Data', 'Vendor_Perf_Raw', 'Master_Database', 'CPK_Raw_Data', 'CPK_Daily_Data'),
     "🔐 User & Access Control": (),
     "🧩 Module Code Manager": ()
 }
@@ -5199,6 +5364,8 @@ menu = [
 if is_master_admin:
     if "🎯 My Task & Focus Hub" not in menu:
         menu.insert(1 if len(menu) > 0 else 0, "🎯 My Task & Focus Hub")
+    if "🤖 AI Analyst & Learning Hub" not in menu:
+        menu.insert(2 if len(menu) > 1 else len(menu), "🤖 AI Analyst & Learning Hub")
     if "🔐 User & Access Control" not in menu:
         menu.append("🔐 User & Access Control")
     if "🧩 Module Code Manager" not in menu:
@@ -5938,7 +6105,7 @@ def load_dashboard_data(page):
         return {'Scheduled_Route_Master': get_scheduled_route_master(get_route_lookup_signature())}
     path = FILE_MAP["FINAL_OUTPUT"]
     if not os.path.exists(path):
-        if page in ["🏠 Executive Pulse", "🎯 My Task & Focus Hub", "📝 Today's Call Action Plan", "🔐 User & Access Control", "⚠️ Overall Issues", "💳 Payment Dashboard", "📱 Communication Hub"]:
+        if page in ["🏠 Executive Pulse", "🎯 My Task & Focus Hub", "🤖 AI Analyst & Learning Hub", "📝 Today's Call Action Plan", "🔐 User & Access Control", "⚠️ Overall Issues", "💳 Payment Dashboard", "📱 Communication Hub"]:
             data = {"dummy": pd.DataFrame()}
             if page in ["🏠 Executive Pulse", "⚠️ Overall Issues", "💳 Payment Dashboard", "📱 Communication Hub"] and os.path.exists(FILE_MAP.get('PAYMENT', '')):
                 try:
@@ -6033,7 +6200,7 @@ if st.session_state.get('all_vendors', True) and os.path.exists(FILE_MAP["FINAL_
     st.sidebar.caption(f"📊 Refreshed: {dt} (IST) · Valid till {exp_dt} (7 Days)")
 
 data = load_dashboard_data(choice)
-if not data and choice not in ["🎯 My Task & Focus Hub", "🔐 User & Access Control", "🧭 Scheduled Route Master", "⚠️ Overall Issues", "🧩 Module Code Manager"]:
+if not data and choice not in ["🎯 My Task & Focus Hub", "🤖 AI Analyst & Learning Hub", "🔐 User & Access Control", "🧭 Scheduled Route Master", "⚠️ Overall Issues", "🧩 Module Code Manager"]:
     if ops_remark_raw_view or ven_perf_raw_view or overall_issue_raw_view:
         try:
             _keep_sid = _get_qp_str('sid', ''); st.query_params.clear(); (_keep_sid and st.query_params.__setitem__('sid', _keep_sid))
@@ -6054,6 +6221,9 @@ st.markdown(f"""
   <div class="app-chip">{html_module.escape(selected_theme_name)} &nbsp;·&nbsp; {html_module.escape(choice)}</div>
 </div>
 """, unsafe_allow_html=True)
+
+if st.session_state.get('username') == 'admin':
+    render_global_admin_live_focus_bar()
 
 try:
     import plotly.express as px
@@ -6079,7 +6249,7 @@ def _reset_unified_filters(key_prefix, min_d=None, max_d=None):
     if min_d is not None and max_d is not None:
         st.session_state[f"{key_prefix}_sd"] = min_d
         st.session_state[f"{key_prefix}_ed"] = max_d
-    for suffix in ("zone", "ro", "vendor", "route", "leg"):
+    for suffix in ("zone", "ro", "vendor", "route_pair", "route", "leg"):
         st.session_state[f"{key_prefix}_{suffix}"] = "ALL"
     st.session_state[f"{key_prefix}_search"] = ""
 
@@ -6133,6 +6303,7 @@ def render_unified_filter_bar(
     zone_col=None,
     ro_col=None,
     vendor_col=None,
+    route_pair_col=None,
     route_col=None,
     leg_col=None,
     search_placeholder="Search Route, Vendor, Invoice..."
@@ -6144,6 +6315,7 @@ def render_unified_filter_bar(
         "zone": "ALL",
         "ro": "ALL",
         "vendor": "ALL",
+        "route_pair": "ALL",
         "route": "ALL",
         "leg": "ALL",
         "search": ""
@@ -6151,7 +6323,7 @@ def render_unified_filter_bar(
     if df_raw is None or df_raw.empty:
         return df_raw, state
 
-    for suffix in ("zone", "ro", "vendor", "route", "leg"):
+    for suffix in ("zone", "ro", "vendor", "route_pair", "route", "leg"):
         pending_key = f"_pending_{key_prefix}_{suffix}"
         if pending_key in st.session_state:
             st.session_state[f"{key_prefix}_{suffix}"] = st.session_state.pop(pending_key)
@@ -6212,6 +6384,8 @@ def render_unified_filter_bar(
             active_controls.append(("ro", "RO", ro_col))
         if vendor_col and vendor_col in df_work.columns:
             active_controls.append(("vendor", "Vendor", vendor_col))
+        if route_pair_col and route_pair_col in df_work.columns:
+            active_controls.append(("route_pair", "Route Pair", route_pair_col))
         if route_col and route_col in df_work.columns:
             active_controls.append(("route", "Route", route_col))
         if leg_col and leg_col in df_work.columns:
@@ -6247,7 +6421,7 @@ def render_unified_filter_bar(
             df_work = df_work[mask].copy()
 
         chips = [f'<span class="pbi-chip">📅 {html_module.escape(state["dur_label"])}</span>']
-        for label_name, key_name in [("Zone", "zone"), ("RO", "ro"), ("Vendor", "vendor"), ("Route", "route"), ("Legwise", "leg")]:
+        for label_name, key_name in [("Zone", "zone"), ("RO", "ro"), ("Vendor", "vendor"), ("Route Pair", "route_pair"), ("Route", "route"), ("Legwise", "leg")]:
             if state[key_name] != "ALL":
                 chips.append(f'<span class="pbi-chip">{label_name}: {html_module.escape(str(state[key_name]))}</span>')
         if state["search"]:
@@ -7258,11 +7432,262 @@ ADMIN_ROUTINE_PACKS = {
 
 # === [MODULE_START: Admin Task & Focus Hub] ===
 def _default_admin_tasks_store():
-    return {"seq": 1, "active_focus_id": "", "tasks": []}
+    return {"seq": 1, "active_focus_id": "", "bonus_bank": {}, "shifts": {}, "parking_lot": [], "tasks": []}
+
+SHIFT_PRESETS_MINS = {
+    "Normal Shift (8h 30m)": 510,
+    "Half Day (4h 30m)": 270,
+    "Sat/Sun Extra (4h)": 240,
+    "Sat/Sun Extra (6h)": 360,
+    "Long Day (10h)": 600,
+    "Custom": -1
+}
+
+def _get_today_shift_window(store, now_ist):
+    """Compute today's dynamic shift start, duration, and wrap-up datetime (supports late arrival & Sat/Sun)."""
+    today_iso = now_ist.date().isoformat()
+    shifts = store.get("shifts") or {}
+    rec = shifts.get(today_iso)
+    punched_in = isinstance(rec, dict) and bool(rec.get("start_hhmm"))
+    if punched_in:
+        start_hhmm = str(rec.get("start_hhmm", "10:00"))
+        dur_mins = int(rec.get("duration_mins", 510) or 510)
+        mode_lbl = str(rec.get("mode", "Normal Shift (8h 30m)"))
+    else:
+        start_hhmm = str(store.get("default_start_hhmm", "10:00"))
+        dur_mins = int(store.get("default_shift_mins", 510) or 510)
+        mode_lbl = "Sat/Sun Extra" if now_ist.weekday() >= 5 else "Normal Shift (8h 30m)"
+    try:
+        sh, sm = [int(x) for x in start_hhmm.split(":")[:2]]
+    except Exception:
+        sh, sm = 10, 0
+    start_dt = datetime.datetime(now_ist.year, now_ist.month, now_ist.day, sh, sm, 0)
+    end_dt = start_dt + datetime.timedelta(minutes=dur_mins)
+    rem_secs = int((end_dt - now_ist).total_seconds())
+    return {
+        "start_dt": start_dt,
+        "end_dt": end_dt,
+        "start_hhmm": f"{sh:02d}:{sm:02d}",
+        "dur_mins": dur_mins,
+        "rem_secs": rem_secs,
+        "punched_in": punched_in,
+        "mode": mode_lbl,
+        "is_weekend": now_ist.weekday() >= 5
+    }
+
+def _fmt_bonus_secs(total_secs):
+    s = max(0, int(total_secs or 0))
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    if h > 0:
+        return f"+{h}h {m}m"
+    if m > 0:
+        return f"+{m}m {sec}s" if m < 10 else f"+{m}m"
+    return f"+{sec}s" if sec > 0 else "0m"
+
+def _fmt_hm_secs(total_secs):
+    s = max(0, int(total_secs or 0))
+    h, rem = divmod(s, 3600)
+    m = rem // 60
+    return f"{h}h {m}m" if h > 0 else f"{m}m"
+
+def _award_early_finish_bonus(store, task_obj, now_ist, today_iso):
+    """If task completed before its active deadline (running or paused), bank saved time into Today's Bonus Bank."""
+    saved_secs = 0
+    if task_obj.get("is_paused"):
+        saved_secs = int(task_obj.get("paused_rem_secs", 0) or 0)
+    else:
+        dl_s = str(task_obj.get("focus_deadline_ist", "") or "").strip()
+        if dl_s:
+            try:
+                dl_dt = datetime.datetime.strptime(dl_s, "%Y-%m-%d %H:%M:%S")
+                saved_secs = int((dl_dt - now_ist).total_seconds())
+            except Exception:
+                saved_secs = 0
+    if saved_secs > 0:
+        bank = store.setdefault("bonus_bank", {})
+        bank[today_iso] = int(bank.get(today_iso, 0) or 0) + saved_secs
+        task_obj["bonus_earned_secs"] = int(task_obj.get("bonus_earned_secs", 0) or 0) + saved_secs
+        task_obj["is_paused"] = False
+        task_obj["paused_rem_secs"] = 0
+        return saved_secs
+    return 0
+
+def _start_task_countdown(store, task_obj, now_ist, hrs_override=None):
+    """Start (or restart) live countdown timer on a task using its deadline_hrs."""
+    hrs = float(hrs_override if hrs_override is not None else (task_obj.get("deadline_hrs", 1.0) or 1.0))
+    dl_dt = now_ist + datetime.timedelta(hours=hrs)
+    task_obj["deadline_hrs"] = hrs
+    task_obj["focus_target_hrs"] = hrs
+    task_obj["focus_deadline_ist"] = dl_dt.strftime("%Y-%m-%d %H:%M:%S")
+    task_obj["is_paused"] = False
+    task_obj["paused_rem_secs"] = 0
+    if task_obj.get("status") == "Not Started":
+        task_obj["status"] = "In Progress"
+    task_obj["updated_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
+    store["active_focus_id"] = task_obj["id"]
+
+def _pause_task_countdown(task_obj, now_ist):
+    """Pause active countdown (e.g. during an urgent RO/Vendor call) so time is not lost unfairly."""
+    dl_s = str(task_obj.get("focus_deadline_ist", "") or "").strip()
+    rem = 0
+    if dl_s:
+        try:
+            dl_dt = datetime.datetime.strptime(dl_s, "%Y-%m-%d %H:%M:%S")
+            rem = int((dl_dt - now_ist).total_seconds())
+        except Exception:
+            rem = 0
+    task_obj["is_paused"] = True
+    task_obj["paused_rem_secs"] = rem
+    task_obj["updated_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
+
+def _resume_task_countdown(task_obj, now_ist):
+    """Resume paused countdown from the exact remaining seconds."""
+    rem = int(task_obj.get("paused_rem_secs", 0) or 0)
+    new_dl = now_ist + datetime.timedelta(seconds=rem)
+    task_obj["focus_deadline_ist"] = new_dl.strftime("%Y-%m-%d %H:%M:%S")
+    task_obj["is_paused"] = False
+    task_obj["paused_rem_secs"] = 0
+    task_obj["updated_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
+
+def render_global_admin_live_focus_bar():
+    """Renders Big Live IST Clock + Active Focus Countdown + Dynamic 8:30 Shift Left + Bonus Bank + Task Count at top of EVERY tab (Admin only)."""
+    if st.session_state.get('username') != 'admin':
+        return
+    try:
+        store = load_admin_tasks_store()
+        tasks = store.get("tasks", [])
+        now_ist = get_ist_now()
+        today_d = now_ist.date()
+        today_iso = today_d.isoformat()
+
+        open_t = [t for t in tasks if t.get("status") != "Completed"]
+        done_today = [t for t in tasks if t.get("status") == "Completed" and str(t.get("completed_at", "")).startswith(today_iso)]
+        open_sorted = sorted(open_t, key=lambda t: (int(t.get("order_no", 9999) or 9999), 0 if t.get("pinned") else 1))
+        active_id = store.get("active_focus_id", "")
+        focus_t = next((t for t in open_t if t.get("id") == active_id), None) or (open_sorted[0] if open_sorted else None)
+
+        sh = _get_today_shift_window(store, now_ist)
+        end_dt = sh["end_dt"]
+        end_epoch_ms = int((end_dt - datetime.timedelta(hours=5, minutes=30)).replace(tzinfo=datetime.timezone.utc).timestamp() * 1000)
+        shift_hdr = f"🏠 SHIFT LEFT (In {sh['start_dt']:%I:%M%p} → {end_dt:%I:%M%p})"
+        bonus_today_secs = int((store.get("bonus_bank") or {}).get(today_iso, 0) or 0)
+        bonus_lbl = _fmt_bonus_secs(bonus_today_secs)
+
+        ft_title = html_module.escape(str(focus_t.get("title", ""))[:46]) if focus_t else "Koi Task Select Nahi Hai"
+        ft_ord = f"#{int(focus_t.get('order_no', 1) or 1)}" if focus_t else "—"
+        ft_paused = bool(focus_t.get("is_paused", False)) if focus_t else False
+        ft_paused_secs = int(focus_t.get("paused_rem_secs", 0) or 0) if focus_t else 0
+        ft_dl_str = str(focus_t.get("focus_deadline_ist", "") or "").strip() if focus_t else ""
+        ft_dl_epoch_ms = 0
+        ft_tgt_lbl = "⏸️ PAUSED" if ft_paused else "Timer Off"
+        if not ft_paused and ft_dl_str:
+            try:
+                _dl_p = datetime.datetime.strptime(ft_dl_str, "%Y-%m-%d %H:%M:%S")
+                ft_dl_epoch_ms = int((_dl_p - datetime.timedelta(hours=5, minutes=30)).replace(tzinfo=datetime.timezone.utc).timestamp() * 1000)
+                ft_tgt_lbl = f"Deadline {_dl_p:%I:%M %p}"
+            except Exception:
+                pass
+
+        c_bg1 = selected_theme['card1']
+        c_bg2 = selected_theme['card2']
+        c_blue = selected_theme['blue']
+        c_fg = selected_theme['text']
+        c_mu = selected_theme['muted']
+        c_ln = selected_theme['line']
+        paused_txt = f"⏸️ PAUSED ({_fmt_hm_secs(abs(ft_paused_secs))} {'left' if ft_paused_secs >= 0 else 'overdue'})" if ft_paused else ""
+
+        st.components.v1.html(
+            f"""
+            <div style="font-family:Inter,system-ui,-apple-system,sans-serif;display:grid;grid-template-columns:1.25fr 1.65fr 1.2fr 1.0fr;gap:10px;
+                        padding:10px 14px;border-radius:14px;border:1.5px solid {c_blue};
+                        background:linear-gradient(115deg,{c_bg1},{c_bg2});color:{c_fg};box-shadow:0 6px 18px rgba(15,23,42,.08);align-items:center;">
+              <div style="border-right:1px solid {c_ln};padding-right:10px;">
+                <div style="font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:{c_mu};">🕒 CURRENT TIME (IST)</div>
+                <div id="glbIstTime" style="font-size:27px;font-weight:900;line-height:1.1;letter-spacing:-.02em;color:{c_fg};">--:--:--</div>
+                <div id="glbIstDate" style="font-size:11px;font-weight:600;color:{c_mu};margin-top:2px;">--</div>
+              </div>
+              <div style="border-right:1px solid {c_ln};padding-right:10px;min-width:0;">
+                <div style="font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:{c_blue};">🎯 FOCUS {ft_ord} · {ft_tgt_lbl}</div>
+                <div style="font-size:13px;font-weight:750;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:{c_fg};margin:2px 0;" title="{ft_title}">{ft_title}</div>
+                <div id="glbFocusRem" style="font-size:19px;font-weight:900;color:#16a34a;">--</div>
+              </div>
+              <div style="border-right:1px solid {c_ln};padding-right:10px;">
+                <div style="font-size:10px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:{c_mu};">{shift_hdr}</div>
+                <div id="glbWrapRem" style="font-size:18px;font-weight:850;color:{c_blue};margin-top:3px;">--</div>
+                <div style="font-size:11px;font-weight:700;color:#15803d;margin-top:2px;">🏆 Bonus Saved: {bonus_lbl}</div>
+              </div>
+              <div style="text-align:center;">
+                <div style="font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:{c_mu};">📋 TODAY'S TASKS</div>
+                <div style="font-size:21px;font-weight:900;color:{c_fg};margin-top:2px;">{len(open_t)} <span style="font-size:12px;font-weight:700;color:{c_mu};">Left</span></div>
+                <div style="font-size:11px;font-weight:700;color:#16a34a;">✅ {len(done_today)} Done Today</div>
+              </div>
+            </div>
+            <script>
+            (function(){{
+              const focusTgt = {ft_dl_epoch_ms};
+              const shiftEnd = {end_epoch_ms};
+              const isPaused = {'true' if ft_paused else 'false'};
+              const pausedText = {json.dumps(paused_txt)};
+              function pad(n){{ return String(n).padStart(2,'0'); }}
+              function tick(){{
+                const now = new Date();
+                document.getElementById('glbIstTime').textContent = now.toLocaleTimeString('en-IN', {{timeZone:'Asia/Kolkata', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true}});
+                document.getElementById('glbIstDate').textContent = now.toLocaleDateString('en-IN', {{timeZone:'Asia/Kolkata', weekday:'short', day:'2-digit', month:'short', year:'numeric'}});
+
+                // Dynamic Shift countdown (Arrival + 8h30m / Sat-Sun custom)
+                const wRem = Math.floor((shiftEnd - Date.now()) / 1000);
+                const wEl = document.getElementById('glbWrapRem');
+                if(wRem > 0){{
+                  const wh = Math.floor(wRem/3600), wm = Math.floor((wRem%3600)/60), ws = wRem%60;
+                  wEl.textContent = '⏳ ' + wh + 'h ' + wm + 'm ' + ws + 's';
+                  wEl.style.color = wRem <= 1800 ? '#d97706' : '{c_blue}';
+                }} else {{
+                  wEl.textContent = '🏠 Ghar Jaane Ka Time!';
+                  wEl.style.color = '#dc2626';
+                }}
+
+                // Active Focus Task Ulti Ginti
+                const fEl = document.getElementById('glbFocusRem');
+                if(isPaused){{
+                  fEl.textContent = pausedText;
+                  fEl.style.fontSize = '15px';
+                  fEl.style.color = '#d97706';
+                }} else if(!focusTgt){{
+                  fEl.textContent = '⏱️ Task select karo Focus Hub mein';
+                  fEl.style.fontSize = '13px';
+                  fEl.style.color = '{c_mu}';
+                }} else {{
+                  const diff = Math.floor((focusTgt - Date.now()) / 1000);
+                  if(diff > 0){{
+                    const fh = Math.floor(diff/3600), fm = Math.floor((diff%3600)/60), fs = diff%60;
+                    fEl.textContent = '⏳ ' + pad(fh) + ':' + pad(fm) + ':' + pad(fs) + ' left';
+                    fEl.style.color = diff <= 900 ? '#d97706' : '#16a34a';
+                  }} else {{
+                    const ov = Math.abs(diff);
+                    const fh = Math.floor(ov/3600), fm = Math.floor((ov%3600)/60), fs = ov%60;
+                    fEl.textContent = '🔴 -' + pad(fh) + ':' + pad(fm) + ':' + pad(fs) + ' OVERDUE';
+                    fEl.style.color = '#dc2626';
+                  }}
+                }}
+              }}
+              tick();
+              setInterval(tick, 1000);
+            }})();
+            </script>
+            """,
+            height=96,
+            scrolling=False
+        )
+    except Exception:
+        pass
+
 
 def load_admin_tasks_store():
     path = FILE_MAP.get("ADMIN_TASKS", "")
     raw = _read_json_fast(path, None)
+    if not (isinstance(raw, dict) and isinstance(raw.get("tasks"), list)) and path:
+        raw = _read_json_fast(path + ".bak", None)
     if isinstance(raw, dict) and isinstance(raw.get("tasks"), list):
         raw.setdefault("seq", len(raw["tasks"]) + 1)
         raw.setdefault("active_focus_id", "")
@@ -7274,6 +7699,10 @@ def save_admin_tasks_store(store):
     if not path:
         return
     _write_json_fast(path, store)
+    try:
+        _write_json_fast(path + ".bak", store)
+    except Exception:
+        pass
 
 def _next_recurrence_due_date(curr_due_str, recurrence_label, today_d):
     try:
@@ -7529,9 +7958,21 @@ def render_admin_task_hub(data):
     in_prog_tasks = [t for t in open_tasks if t.get("status") == "In Progress"]
     streak_days = _compute_admin_task_streak(tasks, today_d)
 
+    # Ensure every open task has a clean numeric `order_no` (1, 2, 3...)
+    _max_ord = max([int(t.get("order_no", 0) or 0) for t in tasks] + [0])
+    _ord_changed = False
+    for t in open_tasks:
+        if not t.get("order_no") or int(t.get("order_no", 0) or 0) <= 0:
+            _max_ord += 1
+            t["order_no"] = _max_ord
+            _ord_changed = True
+    if _ord_changed:
+        save_admin_tasks_store(store)
+
     open_sorted = sorted(
         open_tasks,
         key=lambda t: (
+            int(t.get("order_no", 9999) or 9999),
             0 if t.get("pinned") else 1,
             0 if _task_due(t) < today_d else (1 if _task_due(t) == today_d else 2),
             pri_rank.get(t.get("priority", ""), 9),
@@ -7540,22 +7981,146 @@ def render_admin_task_hub(data):
     )
 
     hdr_c1, hdr_c2 = st.columns([3.8, 1.4])
-    hdr_c1.markdown("## 🎯 My Task & Focus Hub (Admin Private)")
-    hdr_c1.caption(f"Zero-distraction daily cockpit for Transport, GPS, Billing & Automation · 📅 {now_ist:%A, %d %b %Y} · 🔥 {streak_days}-Day Completion Streak")
-    focus_shield = hdr_c2.toggle("🧘 Focus Shield (Hide Noise)", value=st.session_state.get("adm_focus_shield", False), key="adm_focus_shield")
+    hdr_c1.markdown("## 🎯 My Task & Focus Hub")
+    hdr_c1.caption(f"Daily kaam, priority order aur live timer · 📅 {now_ist:%A, %d %b %Y} · 🔥 {streak_days}-Day Streak")
+    focus_shield = hdr_c2.toggle("🎯 Sirf Focus Dikhao", value=st.session_state.get("adm_focus_shield", False), key="adm_focus_shield")
+
+    # =========================================================
+    # 0A. DYNAMIC SHIFT & LATE ARRIVAL PUNCH-IN STRIP (8h 30m / Sat-Sun)
+    # =========================================================
+    sh = _get_today_shift_window(store, now_ist)
+    is_eod_time = sh["rem_secs"] <= 0
+    pending_today_list = [t for t in open_sorted if _task_due(t) <= today_d]
+    queued_hrs_today = sum(float(t.get("deadline_hrs", t.get("focus_target_hrs", 1.0)) or 1.0) for t in pending_today_list)
+    shift_rem_hrs = max(0.0, sh["rem_secs"] / 3600.0)
+
+    with st.expander(
+        f"🕒 Aaj Ki Shift: In {sh['start_dt']:%I:%M %p} → Out {sh['end_dt']:%I:%M %p} "
+        f"({sh['dur_mins']//60}h {sh['dur_mins']%60:02d}m · {'Punched In ✅' if sh['punched_in'] else 'Default — Late aaye ho toh Punch In karo'})",
+        expanded=(not sh["punched_in"] and now_ist.hour >= 9 and now_ist.hour <= 13)
+    ):
+        sc1, sc2, sc3, sc4 = st.columns([1.2, 1.25, 1.35, 1.1])
+        sc1.markdown("<div style='height:1.68rem'></div>", unsafe_allow_html=True)
+        if sc1.button("🟢 Punch In Now", key="adm_punch_in_now_btn", type="primary", use_container_width=True, help="Late aaye ho ya abhi office pahunche ho — 1 click mein abhi ka time set karo"):
+            store.setdefault("shifts", {})[today_iso] = {
+                "start_hhmm": now_ist.strftime("%H:%M"),
+                "duration_mins": sh["dur_mins"],
+                "mode": sh["mode"]
+            }
+            save_admin_tasks_store(store)
+            st.success(f"✅ Punch-in saved: {now_ist:%I:%M %p} IST → Ghar jaane ka time: {(now_ist + datetime.timedelta(minutes=sh['dur_mins'])):%I:%M %p} IST")
+            st.rerun()
+
+        _def_t_obj = datetime.time(sh["start_dt"].hour, sh["start_dt"].minute)
+        picked_in_t = sc2.time_input("Aaj Office Aane Ka Time:", value=_def_t_obj, step=300, key="adm_shift_in_time")
+        preset_keys = list(SHIFT_PRESETS_MINS.keys())
+        cur_p_idx = preset_keys.index(sh["mode"]) if sh["mode"] in preset_keys else (2 if sh["is_weekend"] else 0)
+        picked_mode = sc3.selectbox("Shift Duration (8:30 / Sat-Sun):", preset_keys, index=cur_p_idx, key="adm_shift_mode_sel")
+        if picked_mode == "Custom":
+            custom_hrs = st.number_input("Custom Shift Hours:", min_value=1.0, max_value=16.0, value=round(sh["dur_mins"]/60.0, 2), step=0.5, key="adm_shift_custom_hrs")
+            final_dur_mins = int(round(custom_hrs * 60))
+        else:
+            final_dur_mins = SHIFT_PRESETS_MINS[picked_mode]
+
+        sc4.markdown("<div style='height:1.68rem'></div>", unsafe_allow_html=True)
+        if sc4.button("💾 Save Shift", key="adm_save_shift_btn", use_container_width=True):
+            store.setdefault("shifts", {})[today_iso] = {
+                "start_hhmm": picked_in_t.strftime("%H:%M"),
+                "duration_mins": final_dur_mins,
+                "mode": picked_mode
+            }
+            save_admin_tasks_store(store)
+            st.rerun()
+
+    # Psychological & Logical Workload Reality Check
+    if pending_today_list and not is_eod_time:
+        if queued_hrs_today > shift_rem_hrs + 0.25:
+            st.warning(
+                f"⚖️ **Time Check:** Office mein **{_fmt_hm_secs(sh['rem_secs'])}** bache hain, par aaj ke **{len(pending_today_list)}** tasks ka total time **{queued_hrs_today:.1f}h** hai. "
+                f"Low-priority tasks abhi kal par shift kar le — bina pressure ke kaam niklega."
+            )
+        else:
+            st.caption(
+                f"✅ **Time Check:** Shift mein **{_fmt_hm_secs(sh['rem_secs'])}** bache hain aur aaj ke **{len(pending_today_list)}** tasks **{queued_hrs_today:.1f}h** ke hain — aaram se complete ho jayega!"
+            )
 
     today_scope_total = len(overdue_tasks) + len(today_tasks) + len(done_today)
     today_done_pct = (len(done_today) / today_scope_total * 100.0) if today_scope_total else (100.0 if done_today else 0.0)
 
     k1, k2, k3, k4, k5, k6 = st.columns(6)
     k1.metric("📌 Open Tasks", f"{len(open_tasks):,}")
-    k2.metric("🔴 Overdue", f"{len(overdue_tasks):,}", delta="Action first!" if overdue_tasks else "Clean ✓", delta_color="inverse" if overdue_tasks else "off")
+    k2.metric("🔴 Overdue", f"{len(overdue_tasks):,}", delta="Pehle karo!" if overdue_tasks else "Clean ✓", delta_color="inverse" if overdue_tasks else "off")
     k3.metric("📅 Due Today", f"{len(today_tasks):,}")
-    k4.metric("⚡ In Progress", f"{len(in_prog_tasks):,}")
-    k5.metric("⏳ Waiting RO/Ven", f"{len(waiting_tasks):,}")
-    k6.metric("✅ Done Today", f"{len(done_today):,}", delta=f"{today_done_pct:.0f}% today's goal", delta_color="off")
+    k4.metric("⚡ Chal Raha Hai", f"{len(in_prog_tasks):,}")
+    k5.metric("⏳ RO/Ven Wait", f"{len(waiting_tasks):,}")
+    k6.metric("✅ Done Today", f"{len(done_today):,}", delta=f"{today_done_pct:.0f}% done", delta_color="off")
 
-    st.progress(min(1.0, max(0.0, today_done_pct / 100.0)), text=f"Today's Execution Progress: {len(done_today)}/{today_scope_total} tasks done ({today_done_pct:.0f}%) · 🔥 {streak_days}-Day Streak")
+    st.progress(min(1.0, max(0.0, today_done_pct / 100.0)), text=f"Aaj Ki Progress: {len(done_today)}/{today_scope_total} tasks done ({today_done_pct:.0f}%) · 🔥 {streak_days}-Day Streak")
+
+    # =========================================================
+    # 0B. EOD "GHAR JAANE KA TIME!" WRAP-UP & KAL KE LIYE MOVE
+    # =========================================================
+    if is_eod_time:
+        st.warning(
+            f"🏠 **Ghar jaane ka time ho gaya bhai!** ({now_ist:%I:%M %p} IST · Shift complete) — "
+            f"Aaj tune **{len(done_today)}/{today_scope_total}** tasks complete kar diye! "
+            f"Ab **{len(pending_today_list)}** pending task(s) kal ke liye move karke unko 1, 2, 3 priority number de dete hain."
+        )
+
+    with st.expander(
+        f"🏠 Din Khatam / Pending Tasks Kal Par Shift Karo ({len(pending_today_list)} pending today · Shift Out: {sh['end_dt']:%I:%M %p} IST)",
+        expanded=is_eod_time and bool(pending_today_list)
+    ):
+
+        st.info(
+            f"📊 **Aaj Ka Report Card:** ✅ **{len(done_today)}** Done Today · "
+            f"⏳ **{len(pending_today_list)}** Pending/Overdue · 🔥 **{streak_days}-Day Streak**"
+        )
+        if not pending_today_list:
+            st.success("🎉 Saare aaj ke tasks complete! Mast ghar jaa bhai!")
+        else:
+            tmrw_d = today_d + datetime.timedelta(days=1)
+            st.caption(f"Neeche har pending task ko **Tomorrow Serial # (1, 2, 3...)** de do aur 1 click mein **{tmrw_d:%d %b %Y}** par shift kar do:")
+            wrap_rows = []
+            for idx_w, tw in enumerate(pending_today_list, start=1):
+                wrap_rows.append({
+                    "Move to Tomorrow": True,
+                    "Tomorrow Serial #": idx_w,
+                    "ID": tw["id"],
+                    "Task Title": tw.get("title", ""),
+                    "Priority": tw.get("priority", "🟡 P3 - Medium"),
+                    "Current Due": tw.get("due_date", today_iso),
+                    "Next Action": tw.get("next_action", "")
+                })
+            wrap_ed = st.data_editor(
+                pd.DataFrame(wrap_rows),
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                disabled=["ID", "Task Title", "Current Due"],
+                column_config={
+                    "Move to Tomorrow": st.column_config.CheckboxColumn("Move? 📅", width="small"),
+                    "Tomorrow Serial #": st.column_config.NumberColumn("Tomorrow # (1,2,3)", min_value=1, max_value=999, step=1, width="small"),
+                    "Priority": st.column_config.SelectboxColumn("Priority", options=ADMIN_TASK_PRIORITIES, required=True),
+                },
+                key=f"adm_wrap_editor_{len(pending_today_list)}"
+            )
+            if st.button(f"📅 Move Checked Tasks to Tomorrow ({tmrw_d:%d %b}) with New Serial #", key="adm_move_tmrw_btn", type="primary", use_container_width=True):
+                t_map_w = {t["id"]: t for t in store["tasks"]}
+                moved_n = 0
+                for _, wr in wrap_ed.iterrows():
+                    if bool(wr["Move to Tomorrow"]):
+                        tobj = t_map_w.get(str(wr["ID"]))
+                        if tobj:
+                            tobj["due_date"] = tmrw_d.isoformat()
+                            tobj["order_no"] = int(wr["Tomorrow Serial #"] or 1)
+                            tobj["priority"] = str(wr["Priority"])
+                            tobj["next_action"] = str(wr["Next Action"] or "").strip()
+                            tobj["updated_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
+                            moved_n += 1
+                save_admin_tasks_store(store)
+                st.success(f"✅ {moved_n} pending task(s) kal ({tmrw_d:%d %b}) ke liye shift ho gaye with your exact 1, 2, 3 serial order! Good night bhai 🏠")
+                st.rerun()
 
     # =========================================================
     # 1. ANTI-DISTRACTION "RIGHT NOW" FOCUS LOCK CARD
@@ -7571,7 +8136,7 @@ def render_admin_task_hub(data):
         ft_prog = int(focus_task.get("progress", 0))
         st.markdown(
             f"""<div style="border:2px solid {selected_theme['blue']};border-radius:14px;padding:14px 18px;margin:8px 0 12px;background:linear-gradient(120deg,{selected_theme['card1']},{selected_theme['card2']});">
-            <div style="font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:{selected_theme['blue']};">🎯 CURRENT FOCUS — DO ONLY THIS RIGHT NOW</div>
+            <div style="font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:{selected_theme['blue']};">🎯 ABHI SIRF YE EK KAAM KARNA HAI (PRIORITY #{int(focus_task.get('order_no', 1) or 1)})</div>
             <div style="font-size:19px;font-weight:800;margin:4px 0;color:{selected_theme['text']};">{html_module.escape(str(focus_task.get('title','')))}</div>
             <div style="font-size:12.5px;color:{selected_theme['muted']};">
               <b>{html_module.escape(str(focus_task.get('id','')))}</b> &nbsp;·&nbsp; {html_module.escape(str(focus_task.get('priority','')))} &nbsp;·&nbsp; {html_module.escape(str(focus_task.get('category','')))} &nbsp;·&nbsp; {ft_due_tag} &nbsp;·&nbsp; {html_module.escape(str(focus_task.get('time_slot','')))}
@@ -7582,6 +8147,78 @@ def render_admin_task_hub(data):
             </div>""",
             unsafe_allow_html=True
         )
+        # --- FOCUS DEADLINE HOURS SELECTOR, ULTI GINTI & BONUS TIME CONTROLS ---
+        _dl_choices = [0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
+        _cur_hrs = float(focus_task.get("deadline_hrs", focus_task.get("focus_target_hrs", 1.0)) or 1.0)
+        _cur_dl_idx = _dl_choices.index(_cur_hrs) if _cur_hrs in _dl_choices else 2
+        dl_c1, dl_c2, dl_c2p, dl_c3, dl_c4 = st.columns([1.15, 1.15, 1.0, 0.85, 0.85])
+        _dl_hrs_opt = dl_c1.selectbox(
+            "⏱️ Deadline Hours:",
+            _dl_choices,
+            index=_cur_dl_idx,
+            format_func=lambda x: f"{int(x*60)} mins" if x < 1 else f"{x:g} Hr(s)",
+            key=f"focus_dl_hrs_{focus_task['id']}"
+        )
+        dl_c2.markdown("<div style='height:1.72rem'></div>", unsafe_allow_html=True)
+        if dl_c2.button("⏱️ Start / Reset", key=f"focus_set_dl_btn_{focus_task['id']}", use_container_width=True):
+            _start_task_countdown(store, focus_task, now_ist, hrs_override=float(_dl_hrs_opt))
+            save_admin_tasks_store(store)
+            st.rerun()
+
+        dl_c2p.markdown("<div style='height:1.72rem'></div>", unsafe_allow_html=True)
+        _is_p = bool(focus_task.get("is_paused", False))
+        if _is_p:
+            if dl_c2p.button("▶️ Resume", key=f"focus_resume_{focus_task['id']}", type="primary", use_container_width=True):
+                _resume_task_countdown(focus_task, now_ist)
+                save_admin_tasks_store(store)
+                st.rerun()
+        else:
+            if dl_c2p.button("⏸️ Pause (Call)", key=f"focus_pause_{focus_task['id']}", use_container_width=True, help="Urgent RO/Vendor call aa jaye toh timer rok do"):
+                _pause_task_countdown(focus_task, now_ist)
+                save_admin_tasks_store(store)
+                st.rerun()
+
+        dl_c3.markdown("<div style='height:1.72rem'></div>", unsafe_allow_html=True)
+        if dl_c3.button("➕ +15m", key=f"focus_bonus15_{focus_task['id']}", use_container_width=True, help="15 min bonus buffer add karo"):
+            if focus_task.get("is_paused"):
+                focus_task["paused_rem_secs"] = int(focus_task.get("paused_rem_secs", 0) or 0) + 900
+            else:
+                _base_dl = now_ist
+                try:
+                    _p_dl = datetime.datetime.strptime(str(focus_task.get("focus_deadline_ist", "")), "%Y-%m-%d %H:%M:%S")
+                    _base_dl = max(_p_dl, now_ist)
+                except Exception:
+                    pass
+                focus_task["focus_deadline_ist"] = (_base_dl + datetime.timedelta(minutes=15)).strftime("%Y-%m-%d %H:%M:%S")
+            focus_task["bonus_added_mins"] = int(focus_task.get("bonus_added_mins", 0) or 0) + 15
+            focus_task["updated_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
+            save_admin_tasks_store(store)
+            st.rerun()
+
+        dl_c4.markdown("<div style='height:1.72rem'></div>", unsafe_allow_html=True)
+        if dl_c4.button("➕ +30m", key=f"focus_bonus30_{focus_task['id']}", use_container_width=True, help="30 min bonus buffer add karo"):
+            if focus_task.get("is_paused"):
+                focus_task["paused_rem_secs"] = int(focus_task.get("paused_rem_secs", 0) or 0) + 1800
+            else:
+                _base_dl = now_ist
+                try:
+                    _p_dl = datetime.datetime.strptime(str(focus_task.get("focus_deadline_ist", "")), "%Y-%m-%d %H:%M:%S")
+                    _base_dl = max(_p_dl, now_ist)
+                except Exception:
+                    pass
+                focus_task["focus_deadline_ist"] = (_base_dl + datetime.timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+            focus_task["bonus_added_mins"] = int(focus_task.get("bonus_added_mins", 0) or 0) + 30
+            focus_task["updated_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
+            save_admin_tasks_store(store)
+            st.rerun()
+
+        _bonus_bank_today = int((store.get("bonus_bank") or {}).get(today_iso, 0) or 0)
+        _added_b = int(focus_task.get("bonus_added_mins", 0) or 0)
+        st.caption(
+            f"🏆 **Today's Bonus Time Earned (Early Finish):** `{_fmt_bonus_secs(_bonus_bank_today)}`"
+            + (f"  ·  ⏱️ Bonus Buffer Added on this task: `+{_added_b}m`" if _added_b > 0 else "  ·  Deadline se pehle `✅ Mark Done` karoge toh bacha hua time Bonus Bank mein jud jayega!")
+        )
+
         fc1, fc2, fc3, fc4, fc5 = st.columns([1.0, 1.0, 1.1, 1.1, 1.6])
         if fc1.button("⚡ +25% Progress", key="focus_plus25_btn", use_container_width=True):
             new_p = min(100, ft_prog + 25)
@@ -7589,12 +8226,14 @@ def render_admin_task_hub(data):
             focus_task["status"] = "Completed" if new_p >= 100 else "In Progress"
             focus_task["updated_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
             if new_p >= 100:
+                _award_early_finish_bonus(store, focus_task, now_ist, today_iso)
                 focus_task["completed_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
                 _spawn_recurring_task_if_needed(store, focus_task, today_d)
                 store["active_focus_id"] = ""
             save_admin_tasks_store(store)
             st.rerun()
         if fc2.button("✅ Mark Done", key="focus_done_btn", type="primary", use_container_width=True):
+            _earned_b = _award_early_finish_bonus(store, focus_task, now_ist, today_iso)
             focus_task["progress"] = 100
             focus_task["status"] = "Completed"
             focus_task["completed_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
@@ -7602,7 +8241,7 @@ def render_admin_task_hub(data):
             _spawn_recurring_task_if_needed(store, focus_task, today_d)
             store["active_focus_id"] = ""
             save_admin_tasks_store(store)
-            log_user_activity("admin", "Task Completed", f"{focus_task['id']} · {focus_task['title']}")
+            log_user_activity("admin", "Task Completed", f"{focus_task['id']} · {focus_task['title']}" + (f" (Bonus {_fmt_bonus_secs(_earned_b)})" if _earned_b > 0 else ""))
             st.rerun()
         if fc3.button("⏳ Waiting RO/Ven", key="focus_wait_btn", use_container_width=True):
             focus_task["status"] = "Waiting on RO/Vendor"
@@ -7621,7 +8260,11 @@ def render_admin_task_hub(data):
         picked_sw = fc5.selectbox("Switch Focus:", switch_opts, index=cur_sw_idx, key="focus_switcher_sel", label_visibility="collapsed")
         picked_id = picked_sw.split(" | ")[0]
         if picked_id != store.get("active_focus_id", "") and picked_id != focus_task["id"]:
-            store["active_focus_id"] = picked_id
+            _sw_obj = next((t for t in store["tasks"] if t["id"] == picked_id), None)
+            if _sw_obj is not None:
+                _start_task_countdown(store, _sw_obj, now_ist)
+            else:
+                store["active_focus_id"] = picked_id
             save_admin_tasks_store(store)
             st.rerun()
 
@@ -7636,8 +8279,58 @@ def render_admin_task_hub(data):
     else:
         st.success("🎉 Zero pending tasks! Use **➕ Add Task** or **⚡ Load Routine Pack** below to plan your day.")
 
+    # --- QUICK PARKING LOT (Beech mein call/kaam yaad aaye toh focus mat tod, 2 sec mein note kar de) ---
+    park_list = store.setdefault("parking_lot", [])
+    with st.expander(f"📝 Beech Mein Yaad Aaye Kaam / Call Notes ({len(park_list)} saved) — Focus mat tod, yahan likh de", expanded=bool(park_list) and not focus_shield):
+        pk1, pk2 = st.columns([4.0, 1.0])
+        pk_in = pk1.text_input("Quick Note:", placeholder="e.g., Indore RO ko call karna hai / Tejas bill check...", key="adm_park_inp", label_visibility="collapsed")
+        if pk2.button("➕ Note Karo", key="adm_park_add_btn", use_container_width=True) and pk_in.strip():
+            park_list.insert(0, {"txt": pk_in.strip(), "at": now_ist.strftime("%I:%M %p")})
+            save_admin_tasks_store(store)
+            st.rerun()
+        for pi, p_item in enumerate(list(park_list)[:8]):
+            pc1, pc2, pc3 = st.columns([3.5, 1.1, 0.6])
+            pc1.markdown(f"• **{html_module.escape(str(p_item.get('txt','')))}** `{p_item.get('at','')}`")
+            if pc2.button("➡️ Task Banao", key=f"adm_pk_to_t_{pi}", use_container_width=True):
+                seq = int(store.get("seq", len(store["tasks"]) + 1))
+                store["tasks"].insert(0, {
+                    "id": f"T-{seq:04d}",
+                    "order_no": len(open_tasks) + 1,
+                    "deadline_hrs": 0.5,
+                    "title": str(p_item.get("txt", "")).strip(),
+                    "category": ADMIN_TASK_CATEGORIES[0],
+                    "priority": "🟠 P2 - High",
+                    "status": "Not Started",
+                    "progress": 0,
+                    "due_date": today_iso,
+                    "time_slot": ADMIN_TASK_SLOTS[0],
+                    "entity": "",
+                    "follow_up_with": "",
+                    "recurrence": "One-Time",
+                    "pinned": False,
+                    "next_action": "",
+                    "remarks": "From Quick Note",
+                    "created_at": now_ist.strftime("%Y-%m-%d %H:%M"),
+                    "updated_at": now_ist.strftime("%Y-%m-%d %H:%M"),
+                    "completed_at": ""
+                })
+                store["seq"] = seq + 1
+                park_list.pop(pi)
+                save_admin_tasks_store(store)
+                st.rerun()
+            if pc3.button("🗑️", key=f"adm_pk_del_{pi}", use_container_width=True):
+                park_list.pop(pi)
+                save_admin_tasks_store(store)
+                st.rerun()
+
+    # Quick Wins strip (chote 15-30 min wale tasks — momentum banane ke liye)
+    quick_wins = [t for t in open_sorted if float(t.get("deadline_hrs", 1.0) or 1.0) <= 0.5]
+    if quick_wins and not focus_shield:
+        qw_names = " · ".join(f"#{int(t.get('order_no',1) or 1)} {t['title'][:32]}" for t in quick_wins[:3])
+        st.caption(f"⚡ **Chote Quick Tasks (≤30 min — fatak se nipta ke momentum bana):** {qw_names}")
+
     if focus_shield:
-        st.caption("🧘 **Focus Shield ON** — baaki saare tables hidden hain taaki tu sirf upar wale Focus task par 100% dhyan de sake. Toggle off karte hi poora workspace dikh jayega.")
+        st.caption("🎯 **Sirf Focus Mode ON hai** — baaki saari tables chhupi hain taaki abhi sirf upar wale kaam par dhyan rahe. Toggle off karte hi sab wapas aa jayega.")
         return
 
     # =========================================================
@@ -7692,6 +8385,7 @@ def render_admin_task_hub(data):
             filtered,
             key=lambda t: (
                 1 if t.get("status") == "Completed" else 0,
+                int(t.get("order_no", 9999) or 9999),
                 0 if t.get("pinned") else 1,
                 0 if _task_due(t) < today_d else (1 if _task_due(t) == today_d else 2),
                 pri_rank.get(t.get("priority", ""), 9),
@@ -7708,6 +8402,7 @@ def render_admin_task_hub(data):
                 d_val = _task_due(t)
                 due_obj = d_val if d_val.year < 2099 else today_d
                 edit_rows.append({
+                    "Serial #": int(t.get("order_no", 99) or 99),
                     "ID": t["id"],
                     "Done ✅": t.get("status") == "Completed",
                     "Pin 🎯": bool(t.get("pinned", False)),
@@ -7716,6 +8411,7 @@ def render_admin_task_hub(data):
                     "Task Title": t.get("title", ""),
                     "Status": t.get("status", "Not Started"),
                     "Progress %": int(t.get("progress", 0)),
+                    "Deadline (Hrs)": float(t.get("deadline_hrs", t.get("focus_target_hrs", 1.0)) or 1.0),
                     "Due Date": due_obj,
                     "RO / Vendor / Veh": t.get("entity", ""),
                     "Follow-Up With": t.get("follow_up_with", ""),
@@ -7733,6 +8429,7 @@ def render_admin_task_hub(data):
                 height=min(560, 95 + len(df_edit_in) * 36),
                 disabled=["ID"],
                 column_config={
+                    "Serial #": st.column_config.NumberColumn("Serial #", min_value=1, max_value=999, step=1, width="small", help="Set 1, 2, 3... to reorder tasks anytime!"),
                     "ID": st.column_config.TextColumn("ID", width="small"),
                     "Done ✅": st.column_config.CheckboxColumn("Done ✅", width="small"),
                     "Pin 🎯": st.column_config.CheckboxColumn("Pin 🎯", width="small"),
@@ -7741,6 +8438,7 @@ def render_admin_task_hub(data):
                     "Task Title": st.column_config.TextColumn("Task Title", width="large", required=True),
                     "Status": st.column_config.SelectboxColumn("Status", options=ADMIN_TASK_STATUSES, required=True),
                     "Progress %": st.column_config.NumberColumn("Progress %", min_value=0, max_value=100, step=5, format="%d%%"),
+                    "Deadline (Hrs)": st.column_config.NumberColumn("Deadline (Hrs)", min_value=0.25, max_value=12.0, step=0.25, format="%.2fh"),
                     "Due Date": st.column_config.DateColumn("Due Date", format="DD-MM-YYYY"),
                     "RO / Vendor / Veh": st.column_config.TextColumn("RO / Vendor / Veh", width="medium"),
                     "Follow-Up With": st.column_config.TextColumn("Follow-Up With", width="medium"),
@@ -7763,6 +8461,8 @@ def render_admin_task_hub(data):
                         continue
                     was_done = t_obj.get("status") == "Completed"
                     now_done = bool(er["Done ✅"]) or str(er["Status"]) == "Completed" or int(er["Progress %"]) >= 100
+                    t_obj["order_no"] = int(er["Serial #"] or 99)
+                    t_obj["deadline_hrs"] = float(er.get("Deadline (Hrs)", 1.0) or 1.0)
                     t_obj["pinned"] = bool(er["Pin 🎯"])
                     t_obj["priority"] = str(er["Priority"])
                     t_obj["category"] = str(er["Category"])
@@ -7799,9 +8499,20 @@ def render_admin_task_hub(data):
             sel_id_opts = [f"{t['id']} | {t['title'][:50]}" for t in filtered]
             picked_manage = sv_c2.selectbox("Quick Action on Task:", sel_id_opts, key="adm_quick_manage_sel", label_visibility="collapsed")
             m_tid = picked_manage.split(" | ")[0]
-            qa1, qa2 = sv_c3.columns(2)
-            if qa1.button("🎯 Lock as Focus", key="adm_lock_focus_btn", use_container_width=True):
-                store["active_focus_id"] = m_tid
+            qa0, qa1, qa2 = sv_c3.columns(3)
+            if qa0.button("🔢 1,2,3 Auto", key="adm_renum_serial_btn", use_container_width=True, help="Cleanly re-number all open tasks 1, 2, 3..."):
+                _open_now = sorted([t for t in store["tasks"] if t.get("status") != "Completed"], key=lambda x: (int(x.get("order_no", 9999) or 9999), _task_due(x)))
+                for _ni, _nt in enumerate(_open_now, start=1):
+                    _nt["order_no"] = _ni
+                save_admin_tasks_store(store)
+                st.success("✅ Open tasks cleanly numbered 1, 2, 3...!")
+                st.rerun()
+            if qa1.button("🎯 Start Focus", key="adm_lock_focus_btn", use_container_width=True):
+                _lk_obj = next((t for t in store["tasks"] if t["id"] == m_tid), None)
+                if _lk_obj is not None:
+                    _start_task_countdown(store, _lk_obj, now_ist)
+                else:
+                    store["active_focus_id"] = m_tid
                 save_admin_tasks_store(store)
                 st.rerun()
             if qa2.button("🗑️ Delete Task", key="adm_del_task_btn", use_container_width=True):
@@ -7865,11 +8576,13 @@ def render_admin_task_hub(data):
             nt_cat = r1_2.selectbox("Category", ADMIN_TASK_CATEGORIES)
             nt_pri = r1_3.selectbox("Priority", ADMIN_TASK_PRIORITIES, index=1)
 
-            r2_1, r2_2, r2_3, r2_4 = st.columns([1.0, 1.1, 1.1, 1.0])
+            r2_0, r2_dl, r2_1, r2_2, r2_3 = st.columns([0.85, 0.95, 1.0, 1.1, 1.0])
+            nt_order = r2_0.number_input("Serial # (1,2,3)", min_value=1, max_value=999, value=len(open_tasks) + 1, step=1)
+            nt_dl_hrs = r2_dl.selectbox("Deadline Hours", [0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], index=2, format_func=lambda x: f"{int(x*60)} mins" if x < 1 else f"{x:g} Hr(s)")
             nt_due = r2_1.date_input("Due Date", value=today_d)
             nt_slot = r2_2.selectbox("Time Slot", ADMIN_TASK_SLOTS)
             nt_rec = r2_3.selectbox("Recurrence", ADMIN_TASK_RECURRENCES)
-            nt_prog = r2_4.number_input("Initial Progress %", min_value=0, max_value=95, value=0, step=5)
+            nt_prog = 0
 
             r3_1, r3_2, r3_3 = st.columns([1.3, 1.3, 1.6])
             nt_entity = r3_1.text_input("RO / Branch / Route / Vehicle / Vendor", placeholder="e.g., DELRO / BWNDLH-DELAP / E Wheels")
@@ -7887,8 +8600,10 @@ def render_admin_task_hub(data):
                 else:
                     seq = int(store.get("seq", len(store["tasks"]) + 1))
                     tid = f"T-{seq:04d}"
-                    store["tasks"].insert(0, {
+                    new_t_obj = {
                         "id": tid,
+                        "order_no": int(nt_order),
+                        "deadline_hrs": float(nt_dl_hrs),
                         "title": nt_title.strip(),
                         "category": nt_cat,
                         "priority": nt_pri,
@@ -7905,10 +8620,11 @@ def render_admin_task_hub(data):
                         "created_at": now_ist.strftime("%Y-%m-%d %H:%M"),
                         "updated_at": now_ist.strftime("%Y-%m-%d %H:%M"),
                         "completed_at": ""
-                    })
+                    }
+                    store["tasks"].insert(0, new_t_obj)
                     store["seq"] = seq + 1
                     if nt_pin:
-                        store["active_focus_id"] = tid
+                        _start_task_countdown(store, new_t_obj, now_ist, hrs_override=float(nt_dl_hrs))
                     save_admin_tasks_store(store)
                     log_user_activity("admin", "Task Added", f"{tid} · {nt_title.strip()}")
                     st.success(f"✅ Task `{tid}` added!")
@@ -8007,6 +8723,302 @@ def render_admin_task_hub(data):
 # 7D. NETWORK UTILIZATION v3 — DYNAMIC ENGINE, INSTANT CALL-ANSWER, FAILURES/ACHIEVEMENTS & EXCEL 2013 LIVE WORKBOOK
 # ==========================================
 
+
+
+
+# === [MODULE_START: AI Analyst & Learning Hub (Admin Only)] ===
+DEFAULT_LD_TRACKS = {
+    "🗣️ Spoken English (Leadership & CEO Calls)": [
+        "Practice 5 concise status-update sentences (No filler words, direct numbers first)",
+        "Rehearse 2-minute National Linehaul cost & utilization review pitch for CEO/AVP",
+        "Learn 10 polite escalation phrases for RO & Vendor calls (e.g. 'Could you please expedite...')",
+        "Record a 60-second voice summary of today's Fleet Exceptions & review clarity",
+        "Master crisp email replies (Acknowledge -> Verify -> Action -> Timeline)"
+    ],
+    "📊 Excel 2013, Power Query & VBA": [
+        "Build 1 in-memory Scripting.Dictionary VBA lookup macro (zero VLOOKUP lag)",
+        "Use Power Query to clean & append 3 monthly CSV/Excel exports in 1 click",
+        "Master SUMIFS / IFERROR / dynamic Named Ranges compatible with Excel 2013",
+        "Practice Conditional Formatting rules (<60% Red, 60-80% Amber, >=80% Green)"
+    ],
+    "🐍 Python, Pandas & Streamlit Automation": [
+        "Write a clean Pandas groupby + agg pipeline with weighted utilization & CPK",
+        "Automate a repetitive Excel report using XlsxWriter with native formulas",
+        "Understand GitHub Actions cron jobs & Streamlit Secrets management",
+        "Practice Playwright / PDFPlumber scraping error handling & retries"
+    ],
+    "📈 Power BI & Fleet Cost Optimization": [
+        "Design a 1-page executive scorecard (Trips, MT, Cost, Util %, CPK)",
+        "Analyze Round-Trip vs One-Side underutilization & backhaul load clubbing",
+        "Audit Fixed-Per-Month (/26 vs /30) vs Fixed-Per-Trip cost parity across branches"
+    ]
+}
+
+def load_ld_progress():
+    path = FILE_MAP.get("LD_PROGRESS", "")
+    raw = _read_json_fast(path, None)
+    if not isinstance(raw, dict) and path:
+        raw = _read_json_fast(path + ".bak", None)
+    if isinstance(raw, dict):
+        raw.setdefault("completed", [])
+        raw.setdefault("notes", "")
+        raw.setdefault("custom_items", [])
+        return raw
+    return {"completed": [], "notes": "", "custom_items": []}
+
+def save_ld_progress(obj):
+    path = FILE_MAP.get("LD_PROGRESS", "")
+    if path:
+        _write_json_fast(path, obj)
+        try:
+            _write_json_fast(path + ".bak", obj)
+        except Exception:
+            pass
+
+def _call_gemini_rest_api(api_key, prompt_text, system_instruction="", use_google_search=True, model_name="gemini-2.5-flash"):
+    """Zero-dependency direct REST call to Gemini API with optional Live Google Search grounding."""
+    import requests
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
+        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 4096}
+    }
+    if system_instruction:
+        payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+    if use_google_search:
+        payload["tools"] = [{"google_search": {}}]
+
+    resp = requests.post(url, json=payload, timeout=60)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Gemini API Error {resp.status_code}: {resp.text[:350]}")
+    res_json = resp.json()
+    cands = res_json.get("candidates", [])
+    if not cands:
+        raise RuntimeError("No response returned by Gemini API.")
+    parts = cands[0].get("content", {}).get("parts", [])
+    answer_text = "\n".join(str(p.get("text", "")) for p in parts if p.get("text")).strip()
+    sources = []
+    gm = cands[0].get("groundingMetadata", {})
+    for ch in gm.get("groundingChunks", []):
+        web = ch.get("web", {})
+        if web.get("uri"):
+            sources.append((web.get("title") or web.get("uri"), web.get("uri")))
+    return answer_text, sources
+
+def _build_db_context_snapshot(data):
+    """Build a compact, accurate live schema + KPI summary of Trackon's loaded datasets for the AI."""
+    lines = ["LIVE TRACKON DATABASE SNAPSHOT:"]
+    ds_map = {
+        "df_ops": ("Operations Scheduled Trips", data.get('Legwise_Processed_Data', pd.DataFrame())),
+        "df_ven": ("Vendor Performance Scheduled Trips", data.get('Vendor_Perf_Raw', pd.DataFrame())),
+        "df_pay": ("Payment Bills", prepare_payment_dashboard_frame(data.get('Payment_Raw', data.get('Master_Database', pd.DataFrame())))),
+        "df_cpk": ("Network Utilization Trip-wise (CPK_Raw_Data)", data.get('CPK_Raw_Data', pd.DataFrame())),
+        "df_daily": ("Network Utilization Day-wise (CPK_Daily_Data)", data.get('CPK_Daily_Data', pd.DataFrame())),
+    }
+    for var_n, (lbl, df_x) in ds_map.items():
+        if isinstance(df_x, pd.DataFrame) and not df_x.empty:
+            cols_preview = ", ".join(list(df_x.columns)[:24])
+            lines.append(f"- `{var_n}` ({lbl}): {len(df_x):,} rows | Columns: {cols_preview}")
+        else:
+            lines.append(f"- `{var_n}` ({lbl}): EMPTY")
+    return "\n".join(lines), {k: v[1] for k, v in ds_map.items()}
+
+def render_ai_and_learning_hub(data):
+    """Master Admin-only Super AI Analyst (Gemini + Google Search + 2-Min DB Report Builder) & Learning Hub."""
+    if st.session_state.get('username') != 'admin':
+        st.error("🚫 Access Denied. AI Analyst & Learning Hub is strictly restricted to Master Admin.")
+        st.stop()
+
+    st.markdown("## 🤖 AI Analyst & Learning Hub (Admin Private)")
+    st.caption("🌐 Live Google Search + 📊 2-Min Trackon Database Report Builder (with Styled Excel Export) + 🎓 Personal Learning & Development Tracker")
+
+    tab_ai, tab_ld = st.tabs([
+        "🧠 1. Super AI Analyst & 2-Min Report Builder",
+        "🎓 2. Learning & Development (L&D) Hub"
+    ])
+
+    # =========================================================
+    # TAB 1: SUPER AI ANALYST + LIVE GOOGLE SEARCH + DB REPORT BUILDER
+    # =========================================================
+    with tab_ai:
+        secret_key = ""
+        try:
+            secret_key = str(st.secrets.get("GEMINI_API_KEY", "")).strip()
+        except Exception:
+            secret_key = ""
+
+        if not secret_key:
+            with st.expander("🔑 Connect Free Gemini API Key (1-Time Setup)", expanded=not bool(st.session_state.get("_admin_gemini_key"))):
+                st.caption("Free key **aistudio.google.com/apikey** se 30 second mein milti hai. Permanent rakhne ke liye Streamlit **Manage app → Settings → Secrets** mein `GEMINI_API_KEY = \"AIza...\"` daal do.")
+                k_in = st.text_input("Paste Gemini API Key (Session):", type="password", value=st.session_state.get("_admin_gemini_key", ""), key="adm_gem_key_inp")
+                if k_in.strip():
+                    st.session_state["_admin_gemini_key"] = k_in.strip()
+        api_key = secret_key or st.session_state.get("_admin_gemini_key", "")
+
+        db_ctx_text, db_frames = _build_db_context_snapshot(data)
+        with st.expander("📦 Connected Live Trackon Database Tables", expanded=False):
+            st.markdown(db_ctx_text)
+
+        m_c1, m_c2, m_c3 = st.columns([1.6, 1.4, 1.2])
+        ai_mode = m_c1.selectbox(
+            "AI Mode:",
+            [
+                "📊 Trackon Database Report Builder (Auto Table + Excel)",
+                "🌐 Smart Assistant + Live Google Search",
+                "✍️ Corporate Email / English / VBA / Python Coach"
+            ],
+            key="adm_ai_mode_sel"
+        )
+        use_search = m_c2.toggle("🌐 Live Google Search", value=("Google Search" in ai_mode), key="adm_ai_google_toggle")
+        model_pick = m_c3.selectbox("Model:", ["gemini-2.5-flash", "gemini-2.0-flash"], key="adm_ai_model_sel")
+
+        st.caption("⚡ **1-Click Quick Prompts:**")
+        qp1, qp2, qp3, qp4 = st.columns(4)
+        if qp1.button("🔴 DELRO Top Late Vendors", key="ai_qp1", use_container_width=True):
+            st.session_state["adm_ai_prompt_box"] = "DELRO ke sabse kharab vendors aur routes ki summary table banao (Total Trips, Late Arrival count & %, Avg Delay) — worst first sort karke."
+        if qp2.button("🚛 National LH <60% Util", key="ai_qp2", use_container_width=True):
+            st.session_state["adm_ai_prompt_box"] = "National LH mein jin Route Pairs ka utilization 60% se kam hai unki Route Pair + Capacity wise summary table banao (Trips, Weight, Cap, Util %, Cost, CPK)."
+        if qp3.button("💳 Pending Bills >10 Days", key="ai_qp3", use_container_width=True):
+            st.session_state["adm_ai_prompt_box"] = "Un sabhi stuck payment bills (Draft, Cost Control, Finance Pending/Hold) ki RO-wise summary banao jo 10 din se zyada pending hain (Bill Count & Total Amount)."
+        if qp4.button("🌐 Latest Diesel/CNG Rate", key="ai_qp4", use_container_width=True):
+            st.session_state["adm_ai_prompt_box"] = "Delhi mein aaj CNG aur Diesel ka latest price kya hai? Short mein batao."
+
+        user_prompt = st.text_area(
+            "Ask Anything (Hindi / Hinglish / English):",
+            key="adm_ai_prompt_box",
+            height=95,
+            placeholder="e.g., 'DELRO aur MUMRO ke sabse zyada late departure branches ki report banao' ya 'Excel 2013 VBA macro likho...'"
+        )
+
+        if st.button("🚀 Ask Super AI", key="adm_ai_run_btn", type="primary", use_container_width=True):
+            if not api_key:
+                st.error("🔑 Pehle Gemini API Key daalo (upar expander mein ya Streamlit Secrets mein `GEMINI_API_KEY`).")
+            elif not user_prompt.strip():
+                st.warning("Kuch sawal ya report request likho!")
+            else:
+                with st.spinner("🤖 AI soch raha hai aur live data / Google check kar raha hai..."):
+                    try:
+                        if "Database Report Builder" in ai_mode:
+                            sys_inst = (
+                                "You are Ajay's expert Trackon Fleet Operations Data Analyst. "
+                                "You have access to 5 pandas DataFrames already loaded in memory: "
+                                "`df_ops`, `df_ven`, `df_pay`, `df_cpk`, `df_daily`.\n"
+                                + db_ctx_text + "\n\n"
+                                "When the user asks for a report or analysis from the database:\n"
+                                "1. Provide a crisp 3-5 line explanation in the user's language (Hinglish/English).\n"
+                                "2. Return a single ```python ... ``` code block that computes the exact answer into a pandas DataFrame variable named `result_df` (never modify original DataFrames, never import os/sys/subprocess, use only pd and np).\n"
+                                "3. Sort `result_df` worst-first or most relevant first and keep columns clean and executive-ready."
+                            )
+                            ans_txt, srcs = _call_gemini_rest_api(api_key, user_prompt.strip(), sys_inst, use_google_search=False, model_name=model_pick)
+                            st.session_state["_adm_ai_last_ans"] = ans_txt
+                            st.session_state["_adm_ai_last_srcs"] = srcs
+                            st.session_state["_adm_ai_last_df"] = None
+
+                            # Safely execute generated Pandas report code to produce instant table + Excel!
+                            code_m = re.search(r"```python\s*(.*?)```", ans_txt, re.DOTALL | re.IGNORECASE)
+                            if code_m:
+                                gen_code = code_m.group(1).strip()
+                                banned = ("import os", "import sys", "subprocess", "open(", "__import__", "eval(", "exec(", "shutil", "rmdir", "remove(")
+                                if not any(b in gen_code for b in banned):
+                                    safe_ns = {
+                                        "pd": pd, "np": np,
+                                        "df_ops": db_frames["df_ops"].copy(),
+                                        "df_ven": db_frames["df_ven"].copy(),
+                                        "df_pay": db_frames["df_pay"].copy(),
+                                        "df_cpk": db_frames["df_cpk"].copy(),
+                                        "df_daily": db_frames["df_daily"].copy(),
+                                    }
+                                    exec(gen_code, {"__builtins__": {"len": len, "int": int, "float": float, "str": str, "round": round, "sum": sum, "min": min, "max": max, "sorted": sorted, "list": list, "dict": dict, "set": set, "tuple": tuple, "range": range, "zip": zip, "enumerate": enumerate, "abs": abs, "bool": bool}}, safe_ns)
+                                    res_df = safe_ns.get("result_df")
+                                    if isinstance(res_df, pd.DataFrame):
+                                        st.session_state["_adm_ai_last_df"] = res_df.reset_index(drop=True)
+                        else:
+                            sys_inst = (
+                                "You are Ajay's sharp, warm, practical AI peer & executive coach for Trackon Fleet Operations in India. "
+                                "Answer directly in the user's language (Hinglish/English), zero fluff. "
+                                "Use ₹/INR, Lakhs/Crores, metric units, and Excel 2013 compatibility when giving Excel/VBA help."
+                            )
+                            ans_txt, srcs = _call_gemini_rest_api(api_key, user_prompt.strip(), sys_inst, use_google_search=use_search, model_name=model_pick)
+                            st.session_state["_adm_ai_last_ans"] = ans_txt
+                            st.session_state["_adm_ai_last_srcs"] = srcs
+                            st.session_state["_adm_ai_last_df"] = None
+                    except Exception as exc:
+                        st.error(f"AI Error: {exc}")
+
+        if st.session_state.get("_adm_ai_last_ans"):
+            st.markdown("---")
+            st.markdown("### 💡 AI Response")
+            st.markdown(st.session_state["_adm_ai_last_ans"])
+            if st.session_state.get("_adm_ai_last_srcs"):
+                st.caption("🌐 **Google Search Sources:** " + " · ".join(f"[{t}]({u})" for t, u in st.session_state["_adm_ai_last_srcs"][:5]))
+
+        ai_df = st.session_state.get("_adm_ai_last_df")
+        if isinstance(ai_df, pd.DataFrame) and not ai_df.empty:
+            st.markdown(f"### 📊 Live AI-Generated Report ({len(ai_df):,} rows)")
+            render_centered_html_table(ai_df, height=440, show_grand_total=True, csv_filename="AI_Generated_Report.csv")
+            _ai_buf = io.BytesIO()
+            with pd.ExcelWriter(_ai_buf, engine='xlsxwriter') as _aw:
+                write_styled_sheet_to_excel(_aw, ai_df, "AI_Report", sheet_type="generic", preserve_order=True)
+            st.download_button(
+                "⬇️ Download AI Report (Styled Excel .xlsx)",
+                data=_ai_buf.getvalue(),
+                file_name=f"Trackon_AI_Report_{get_ist_now():%d_%b_%Y_%H%M}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                key="adm_ai_dl_excel_btn"
+            )
+
+    # =========================================================
+    # TAB 2: LEARNING & DEVELOPMENT (L&D) HUB
+    # =========================================================
+    with tab_ld:
+        ld_store = load_ld_progress()
+        comp_set = set(ld_store.get("completed", []))
+
+        all_items = []
+        for trk, items in DEFAULT_LD_TRACKS.items():
+            for it in items:
+                all_items.append((trk, it))
+        for ci in ld_store.get("custom_items", []):
+            all_items.append((ci.get("track", "⭐ Custom Goal"), ci.get("title", "")))
+
+        done_cnt = sum(1 for _, it in all_items if it in comp_set)
+        tot_cnt = max(1, len(all_items))
+        st.progress(done_cnt / tot_cnt, text=f"🎓 Overall L&D Progress: {done_cnt}/{len(all_items)} skills completed ({done_cnt/tot_cnt*100:.0f}%)")
+
+        for trk_name, trk_items in DEFAULT_LD_TRACKS.items():
+            t_done = sum(1 for x in trk_items if x in comp_set)
+            with st.expander(f"{trk_name} — {t_done}/{len(trk_items)} Done", expanded=(t_done < len(trk_items))):
+                for idx_i, item_txt in enumerate(trk_items):
+                    ck_key = f"ld_ck_{hashlib.md5((trk_name + item_txt).encode()).hexdigest()[:10]}"
+                    is_ck = st.checkbox(item_txt, value=(item_txt in comp_set), key=ck_key)
+                    if is_ck and item_txt not in comp_set:
+                        comp_set.add(item_txt)
+                        ld_store["completed"] = sorted(comp_set)
+                        save_ld_progress(ld_store)
+                        st.rerun()
+                    elif (not is_ck) and item_txt in comp_set:
+                        comp_set.discard(item_txt)
+                        ld_store["completed"] = sorted(comp_set)
+                        save_ld_progress(ld_store)
+                        st.rerun()
+
+        st.markdown("#### ➕ Add Custom Learning Goal")
+        lc1, lc2, lc3 = st.columns([1.4, 2.6, 0.9])
+        new_ld_trk = lc1.selectbox("Track:", list(DEFAULT_LD_TRACKS.keys()) + ["⭐ Custom Goal"], key="ld_new_trk")
+        new_ld_txt = lc2.text_input("Learning Topic:", placeholder="e.g., Practice 10 spoken English phrases for vendor negotiation", key="ld_new_txt")
+        if lc3.button("➕ Add", key="ld_add_btn", use_container_width=True, type="primary") and new_ld_txt.strip():
+            ld_store.setdefault("custom_items", []).append({"track": new_ld_trk, "title": new_ld_txt.strip()})
+            save_ld_progress(ld_store)
+            st.success("Added to your L&D tracker!")
+            st.rerun()
+
+        notes_val = st.text_area("📝 Daily Learning Notes / New English Phrases / Formulas:", value=ld_store.get("notes", ""), height=130, key="ld_notes_area")
+        if st.button("💾 Save Learning Notes", key="ld_save_notes_btn"):
+            ld_store["notes"] = notes_val
+            save_ld_progress(ld_store)
+            st.success("✅ Learning notes saved!")
+# === [MODULE_END: AI Analyst & Learning Hub (Admin Only)] ===
 
 # === [MODULE_START: Network Utilization] ===
 def _fleet_size_label(cap_kg):
@@ -8152,10 +9164,13 @@ def build_pair_updown_display_table(df_seg, util_cutoff_pct=60.0):
 
     for (pair, cap_val), p_grp in d.groupby(['Route_Pair', '_cap_int'], sort=True):
         stats["total_pair_caps"] += 1
+        if 'VehType' not in p_grp.columns:
+            p_grp = p_grp.assign(VehType='')
         dir_agg = p_grp.groupby(['Direction', 'Final_Route', 'Origin', 'Dest', 'Origin_RO', 'Dest_RO'], dropna=False).agg(
             Trips=('Trips', 'sum'),
             Total_Wt=('Wt', 'sum'),
             Total_Cost=('Cost', 'sum'),
+            VehType=('VehType', lambda s: ', '.join(sorted(set(x for x in s.dropna().astype(str).str.strip() if x and x != '-'))[:2]) or '-'),
             Vendors=('VendorName', lambda s: ', '.join(sorted(set(x for x in s.dropna().astype(str) if x))[:3]))
         ).reset_index()
         dir_agg['Total_Cap'] = dir_agg['Trips'] * cap_val
@@ -8177,6 +9192,7 @@ def build_pair_updown_display_table(df_seg, util_cutoff_pct=60.0):
         p_cpk = (p_cost / p_wt) if p_wt > 0 else 0.0
         p_ros = ", ".join(sorted(set(p_grp['Origin_RO'].dropna().astype(str))))
         p_vens = ", ".join(sorted(set(x for x in p_grp['VendorName'].dropna().astype(str) if x))[:3])
+        p_vtypes = ", ".join(sorted(set(x for x in p_grp['VehType'].dropna().astype(str).str.strip() if x and x != '-'))[:2]) or '-' 
 
         if len(side_agg) >= 2:
             u1, u2 = float(side_agg['Util'].iloc[0]), float(side_agg['Util'].iloc[1])
@@ -8248,7 +9264,7 @@ def build_pair_updown_display_table(df_seg, util_cutoff_pct=60.0):
             u_v = float(r['Util_Pct'])
             st_lbl = f"🔴 FAIL (<{int(util_cutoff_pct)}%)" if u_v < util_cutoff_pct else ("🏆 STAR (≥80%)" if u_v >= 80.0 else "🟡 WATCH (60-80%)")
             updown_rows.append({
-                "Route Pair": pair, "Capacity": cap_val, "Side": leg_tag,
+                "Route Pair": pair, "Capacity": cap_val, "Vehicle Type": r['VehType'], "Side": leg_tag,
                 "Origin RO": r['Origin_RO'], "Dest RO": r['Dest_RO'], "Route": r['Final_Route'],
                 "Trips": int(r['Trips']), "Avg Wt/Trip": int(round(r['Avg_Wt'])),
                 "Carried Wt": int(round(r['Total_Wt'])), "Total Cap": int(round(r['Total_Cap'])),
@@ -8261,7 +9277,7 @@ def build_pair_updown_display_table(df_seg, util_cutoff_pct=60.0):
         p_avg_wt = (p_wt / p_trips) if p_trips > 0 else 0.0
         p_ptc = (p_cost / p_trips) if p_trips > 0 else 0.0
         updown_rows.append({
-            "Route Pair": f"↳ {pair} TOTAL", "Capacity": cap_val, "Side": "UP+DOWN",
+            "Route Pair": f"↳ {pair} TOTAL", "Capacity": cap_val, "Vehicle Type": p_vtypes, "Side": "UP+DOWN",
             "Origin RO": p_ros, "Dest RO": "-", "Route": f"{len(dir_agg)} Route(s) Combined",
             "Trips": p_trips, "Avg Wt/Trip": int(round(p_avg_wt)),
             "Carried Wt": int(round(p_wt)), "Total Cap": int(round(p_cap)),
@@ -8272,7 +9288,7 @@ def build_pair_updown_display_table(df_seg, util_cutoff_pct=60.0):
         })
 
         pair_rows.append({
-            "Route Pair": pair, "Capacity": cap_val, "Origin RO(s)": p_ros,
+            "Route Pair": pair, "Capacity": cap_val, "Vehicle Type": p_vtypes, "Origin RO(s)": p_ros,
             "Routes": len(dir_agg), "Trips": p_trips, "Carried Wt": int(round(p_wt)),
             "Total Cap": int(round(p_cap)), "Overall Util %": f"{p_util:.1f}%",
             "Total Cost": f"₹{p_cost:,.0f}", "Overall CPK": f"₹{p_cpk:.2f}",
@@ -8303,10 +9319,13 @@ def build_regional_feeder_daywise_table(df_daily_sub, df_raw_sub, util_cutoff_pc
     if sub.empty:
         return pd.DataFrame()
 
+    if 'VehType' not in sub.columns:
+        sub['VehType'] = '-'
     g = sub.groupby(['Zone', 'RO_Clean', 'VendorBranch', 'Vehicle No', 'Primary_Type', 'ContractType'], dropna=False).agg(
         Vendor=('VendorName', 'first'),
         Divisor=('Divisor_Days', 'max'),
         Cap=('Cap', 'median'),
+        VehType=('VehType', lambda s: next((str(x).strip() for x in s.dropna() if str(x).strip() and str(x).strip() != '-'), '-')),
         Contract_Rate=('ContractCost', 'median'),
         Active_Days=('Date', 'nunique'),
         MCD_Wt=('MCDWt', 'sum'),
@@ -8333,7 +9352,7 @@ def build_regional_feeder_daywise_table(df_daily_sub, df_raw_sub, util_cutoff_pc
         'Type': g['Primary_Type'], 'Vendor': g['Vendor'], 'Contract': g['ContractType'],
         'Divisor': np.where(g['Divisor'] > 1, g['Divisor'].astype(int).astype(str) + 'd', 'Per Day'),
         'Rate': g['Contract_Rate'].apply(lambda x: f"₹{x:,.0f}"),
-        'Cap': g['Cap'].round(0).astype(int), 'Days': g['Active_Days'].astype(int),
+        'Cap': g['Cap'].round(0).astype(int), 'Vehicle Type': g['VehType'], 'Days': g['Active_Days'].astype(int),
         'MCD Wt': g['MCD_Wt'].round(0).astype(int), 'OFD Wt': g['OFD_Wt'].round(0).astype(int),
         'PickUp Wt': g['Pickup_Wt'].round(0).astype(int), 'Co-Load Wt': g['Coloader_Wt'].round(0).astype(int),
         'Total Wt': g['Total_Wt'].round(0).astype(int), 'Day Cap': g['Day_Cap'].round(0).astype(int),
@@ -8603,10 +9622,12 @@ def build_avp_utilization_excel_bytes(
             ws = wb.add_worksheet(sh_name)
             writer.sheets[sh_name] = ws
             cols = [
-                'Route Pair', 'Capacity (kg)', 'Side', 'Origin RO', 'Dest RO', 'Route',
+                'Route Pair', 'Capacity (kg)', 'Vehicle Type', 'Side', 'Origin RO', 'Dest RO', 'Route',
                 'Trips', 'Avg Wt/Trip', 'Carried Wt (kg)', 'Total Cap (kg)',
                 'Util %', 'Per Trip Cost', 'Total Cost (₹)', 'CPK (₹/kg)', 'Vendor(s)', 'Underutil Status', 'Status'
             ]
+            # Col letters: A=Pair, B=Cap, C=VehType, D=Side, E=OriginRO, F=DestRO, G=Route,
+            # H=Trips, I=AvgWt, J=CarriedWt, K=TotalCap, L=Util%, M=PerTripCost, N=TotalCost, O=CPK, P=Vendors, Q=Underutil, R=Status
             ws.merge_range(0, 0, 0, len(cols) - 1, title_txt, f_title)
             ws.merge_range(1, 0, 1, len(cols) - 1, f"{dur_label}  |  LIVE Excel 2013 Formulas: Edit Capacity/Trips/Cost -> Util%, CPK, Pair Totals & Status auto-update!", f_sub)
             ws.set_row(0, 28)
@@ -8617,7 +9638,7 @@ def build_avp_utilization_excel_bytes(
 
             if df_ud is None or df_ud.empty:
                 ws.write(3, 0, "No records in active filter scope.", f_txt_l)
-                _finish_ws(ws, 3, len(cols) - 1, widths=[18, 12, 10, 11, 11, 26, 9, 12, 14, 14, 10, 13, 14, 11, 24, 24, 18])
+                _finish_ws(ws, 3, len(cols) - 1, widths=[18, 12, 16, 10, 11, 11, 26, 9, 12, 14, 14, 10, 13, 14, 11, 24, 24, 18])
                 return None
 
             block_start_excel_row = 4  # 1-based Excel row
@@ -8633,40 +9654,42 @@ def build_avp_utilization_excel_bytes(
                     cost_v = float(row.get('_num_cost', 0) or 0)
                     ws.write(r_idx, 0, str(row.get('Route Pair', '')), f_txt)
                     ws.write_number(r_idx, 1, cap_v, f_int)
-                    ws.write(r_idx, 2, str(row.get('Side', '')), f_txt)
-                    ws.write(r_idx, 3, str(row.get('Origin RO', '')), f_txt)
-                    ws.write(r_idx, 4, str(row.get('Dest RO', '')), f_txt)
-                    ws.write(r_idx, 5, str(row.get('Route', '')), f_txt_l)
-                    ws.write_number(r_idx, 6, trp_v, f_int)
-                    ws.write_formula(r_idx, 7, f"=IFERROR(I{er}/G{er},0)", f_int)
-                    ws.write_number(r_idx, 8, wt_v, f_int)
-                    ws.write_formula(r_idx, 9, f"=B{er}*G{er}", f_int)
-                    ws.write_formula(r_idx, 10, f"=IFERROR(I{er}/J{er},0)", f_pct)
-                    ws.write_formula(r_idx, 11, f"=IFERROR(M{er}/G{er},0)", f_inr)
-                    ws.write_number(r_idx, 12, cost_v, f_inr)
-                    ws.write_formula(r_idx, 13, f"=IFERROR(M{er}/I{er},0)", f_cpk)
-                    ws.write(r_idx, 14, str(row.get('Vendor(s)', '')), f_txt_l)
-                    ws.write(r_idx, 15, str(row.get('Underutil Status', '')), f_txt)
-                    ws.write_formula(r_idx, 16, f'=IF(K{er}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(K{er}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_txt)
+                    ws.write(r_idx, 2, str(row.get('Vehicle Type', '-')), f_txt)
+                    ws.write(r_idx, 3, str(row.get('Side', '')), f_txt)
+                    ws.write(r_idx, 4, str(row.get('Origin RO', '')), f_txt)
+                    ws.write(r_idx, 5, str(row.get('Dest RO', '')), f_txt)
+                    ws.write(r_idx, 6, str(row.get('Route', '')), f_txt_l)
+                    ws.write_number(r_idx, 7, trp_v, f_int)
+                    ws.write_formula(r_idx, 8, f"=IFERROR(J{er}/H{er},0)", f_int)
+                    ws.write_number(r_idx, 9, wt_v, f_int)
+                    ws.write_formula(r_idx, 10, f"=B{er}*H{er}", f_int)
+                    ws.write_formula(r_idx, 11, f"=IFERROR(J{er}/K{er},0)", f_pct)
+                    ws.write_formula(r_idx, 12, f"=IFERROR(N{er}/H{er},0)", f_inr)
+                    ws.write_number(r_idx, 13, cost_v, f_inr)
+                    ws.write_formula(r_idx, 14, f"=IFERROR(N{er}/J{er},0)", f_cpk)
+                    ws.write(r_idx, 15, str(row.get('Vendor(s)', '')), f_txt_l)
+                    ws.write(r_idx, 16, str(row.get('Underutil Status', '')), f_txt)
+                    ws.write_formula(r_idx, 17, f'=IF(L{er}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(L{er}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_txt)
                 else:
                     bs, be = block_start_excel_row, er - 1
                     ws.write(r_idx, 0, str(row.get('Route Pair', '')), f_st_txt)
                     ws.write_number(r_idx, 1, float(row.get('Capacity', 0) or 0), f_st_int)
-                    ws.write(r_idx, 2, "UP+DOWN", f_st_txt)
-                    ws.write(r_idx, 3, str(row.get('Origin RO', '')), f_st_txt)
-                    ws.write(r_idx, 4, "-", f_st_txt)
-                    ws.write(r_idx, 5, str(row.get('Route', '')), f_st_txt)
-                    ws.write_formula(r_idx, 6, f"=SUM(G{bs}:G{be})", f_st_int)
-                    ws.write_formula(r_idx, 7, f"=IFERROR(I{er}/G{er},0)", f_st_int)
-                    ws.write_formula(r_idx, 8, f"=SUM(I{bs}:I{be})", f_st_int)
+                    ws.write(r_idx, 2, str(row.get('Vehicle Type', '-')), f_st_txt)
+                    ws.write(r_idx, 3, "UP+DOWN", f_st_txt)
+                    ws.write(r_idx, 4, str(row.get('Origin RO', '')), f_st_txt)
+                    ws.write(r_idx, 5, "-", f_st_txt)
+                    ws.write(r_idx, 6, str(row.get('Route', '')), f_st_txt)
+                    ws.write_formula(r_idx, 7, f"=SUM(H{bs}:H{be})", f_st_int)
+                    ws.write_formula(r_idx, 8, f"=IFERROR(J{er}/H{er},0)", f_st_int)
                     ws.write_formula(r_idx, 9, f"=SUM(J{bs}:J{be})", f_st_int)
-                    ws.write_formula(r_idx, 10, f"=IFERROR(I{er}/J{er},0)", f_st_pct)
-                    ws.write_formula(r_idx, 11, f"=IFERROR(M{er}/G{er},0)", f_st_inr)
-                    ws.write_formula(r_idx, 12, f"=SUM(M{bs}:M{be})", f_st_inr)
-                    ws.write_formula(r_idx, 13, f"=IFERROR(M{er}/I{er},0)", f_st_cpk)
-                    ws.write(r_idx, 14, str(row.get('Vendor(s)', '')), f_st_txt)
-                    ws.write(r_idx, 15, str(row.get('Underutil Status', '')), f_st_txt)
-                    ws.write_formula(r_idx, 16, f'=IF(K{er}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(K{er}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_st_txt)
+                    ws.write_formula(r_idx, 10, f"=SUM(K{bs}:K{be})", f_st_int)
+                    ws.write_formula(r_idx, 11, f"=IFERROR(J{er}/K{er},0)", f_st_pct)
+                    ws.write_formula(r_idx, 12, f"=IFERROR(N{er}/H{er},0)", f_st_inr)
+                    ws.write_formula(r_idx, 13, f"=SUM(N{bs}:N{be})", f_st_inr)
+                    ws.write_formula(r_idx, 14, f"=IFERROR(N{er}/J{er},0)", f_st_cpk)
+                    ws.write(r_idx, 15, str(row.get('Vendor(s)', '')), f_st_txt)
+                    ws.write(r_idx, 16, str(row.get('Underutil Status', '')), f_st_txt)
+                    ws.write_formula(r_idx, 17, f'=IF(L{er}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(L{er}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_st_txt)
                     block_start_excel_row = er + 1
                 r_idx += 1
 
@@ -8677,36 +9700,37 @@ def build_avp_utilization_excel_bytes(
             ws.set_row(gt_r, 24)
             ws.write(gt_r, 0, "GRAND TOTAL", f_gt_txt)
             ws.write(gt_r, 1, "-", f_gt_txt)
-            ws.write(gt_r, 2, "ALL", f_gt_txt)
-            ws.write(gt_r, 3, "-", f_gt_txt)
+            ws.write(gt_r, 2, "-", f_gt_txt)
+            ws.write(gt_r, 3, "ALL", f_gt_txt)
             ws.write(gt_r, 4, "-", f_gt_txt)
-            ws.write(gt_r, 5, "All Active Routes", f_gt_txt)
-            ws.write_formula(gt_r, 6, f'=SUMIF(C4:C{last_data_er},"<>UP+DOWN",G4:G{last_data_er})', f_gt_int)
-            ws.write_formula(gt_r, 7, f"=IFERROR(I{gt_er}/G{gt_er},0)", f_gt_int)
-            ws.write_formula(gt_r, 8, f'=SUMIF(C4:C{last_data_er},"<>UP+DOWN",I4:I{last_data_er})', f_gt_int)
-            ws.write_formula(gt_r, 9, f'=SUMIF(C4:C{last_data_er},"<>UP+DOWN",J4:J{last_data_er})', f_gt_int)
-            ws.write_formula(gt_r, 10, f"=IFERROR(I{gt_er}/J{gt_er},0)", f_gt_pct)
-            ws.write_formula(gt_r, 11, f"=IFERROR(M{gt_er}/G{gt_er},0)", f_gt_inr)
-            ws.write_formula(gt_r, 12, f'=SUMIF(C4:C{last_data_er},"<>UP+DOWN",M4:M{last_data_er})', f_gt_inr)
-            ws.write_formula(gt_r, 13, f"=IFERROR(M{gt_er}/I{gt_er},0)", f_gt_cpk)
-            ws.write(gt_r, 14, "-", f_gt_txt)
+            ws.write(gt_r, 5, "-", f_gt_txt)
+            ws.write(gt_r, 6, "All Active Routes", f_gt_txt)
+            ws.write_formula(gt_r, 7, f'=SUMIF(D4:D{last_data_er},"<>UP+DOWN",H4:H{last_data_er})', f_gt_int)
+            ws.write_formula(gt_r, 8, f"=IFERROR(J{gt_er}/H{gt_er},0)", f_gt_int)
+            ws.write_formula(gt_r, 9, f'=SUMIF(D4:D{last_data_er},"<>UP+DOWN",J4:J{last_data_er})', f_gt_int)
+            ws.write_formula(gt_r, 10, f'=SUMIF(D4:D{last_data_er},"<>UP+DOWN",K4:K{last_data_er})', f_gt_int)
+            ws.write_formula(gt_r, 11, f"=IFERROR(J{gt_er}/K{gt_er},0)", f_gt_pct)
+            ws.write_formula(gt_r, 12, f"=IFERROR(N{gt_er}/H{gt_er},0)", f_gt_inr)
+            ws.write_formula(gt_r, 13, f'=SUMIF(D4:D{last_data_er},"<>UP+DOWN",N4:N{last_data_er})', f_gt_inr)
+            ws.write_formula(gt_r, 14, f"=IFERROR(N{gt_er}/J{gt_er},0)", f_gt_cpk)
             ws.write(gt_r, 15, "-", f_gt_txt)
-            ws.write_formula(gt_r, 16, f'=IF(K{gt_er}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(K{gt_er}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_gt_txt)
+            ws.write(gt_r, 16, "-", f_gt_txt)
+            ws.write_formula(gt_r, 17, f'=IF(L{gt_er}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(L{gt_er}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_gt_txt)
 
             # Native Excel 2013 Conditional Formatting (Failures = Red, Watch = Amber, Achievements = Green)
-            ws.conditional_format(3, 10, last_data_er - 1, 10, {'type': 'cell', 'criteria': '<', 'value': u_dec, 'format': cf_fail})
-            ws.conditional_format(3, 10, last_data_er - 1, 10, {'type': 'cell', 'criteria': 'between', 'minimum': u_dec, 'maximum': 0.7999, 'format': cf_watch})
-            ws.conditional_format(3, 10, last_data_er - 1, 10, {'type': 'cell', 'criteria': '>=', 'value': 0.8, 'format': cf_star})
-            ws.conditional_format(3, 13, last_data_er - 1, 13, {'type': 'cell', 'criteria': '>', 'value': c_lim, 'format': cf_fail})
-            ws.conditional_format(3, 15, last_data_er - 1, 15, {'type': 'text', 'criteria': 'containing', 'value': 'Round Trip', 'format': cf_fail})
-            ws.conditional_format(3, 15, last_data_er - 1, 15, {'type': 'text', 'criteria': 'containing', 'value': 'Single Side Under', 'format': cf_fail})
-            ws.conditional_format(3, 15, last_data_er - 1, 15, {'type': 'text', 'criteria': 'containing', 'value': 'One Side', 'format': cf_watch})
-            ws.conditional_format(3, 15, last_data_er - 1, 15, {'type': 'text', 'criteria': 'containing', 'value': 'Balanced', 'format': cf_star})
-            ws.conditional_format(3, 16, last_data_er - 1, 16, {'type': 'text', 'criteria': 'containing', 'value': 'FAIL', 'format': cf_fail})
-            ws.conditional_format(3, 16, last_data_er - 1, 16, {'type': 'text', 'criteria': 'containing', 'value': 'WATCH', 'format': cf_watch})
-            ws.conditional_format(3, 16, last_data_er - 1, 16, {'type': 'text', 'criteria': 'containing', 'value': 'STAR', 'format': cf_star})
+            ws.conditional_format(3, 11, last_data_er - 1, 11, {'type': 'cell', 'criteria': '<', 'value': u_dec, 'format': cf_fail})
+            ws.conditional_format(3, 11, last_data_er - 1, 11, {'type': 'cell', 'criteria': 'between', 'minimum': u_dec, 'maximum': 0.7999, 'format': cf_watch})
+            ws.conditional_format(3, 11, last_data_er - 1, 11, {'type': 'cell', 'criteria': '>=', 'value': 0.8, 'format': cf_star})
+            ws.conditional_format(3, 14, last_data_er - 1, 14, {'type': 'cell', 'criteria': '>', 'value': c_lim, 'format': cf_fail})
+            ws.conditional_format(3, 16, last_data_er - 1, 16, {'type': 'text', 'criteria': 'containing', 'value': 'Round Trip', 'format': cf_fail})
+            ws.conditional_format(3, 16, last_data_er - 1, 16, {'type': 'text', 'criteria': 'containing', 'value': 'Single Side Under', 'format': cf_fail})
+            ws.conditional_format(3, 16, last_data_er - 1, 16, {'type': 'text', 'criteria': 'containing', 'value': 'One Side', 'format': cf_watch})
+            ws.conditional_format(3, 16, last_data_er - 1, 16, {'type': 'text', 'criteria': 'containing', 'value': 'Balanced', 'format': cf_star})
+            ws.conditional_format(3, 17, last_data_er - 1, 17, {'type': 'text', 'criteria': 'containing', 'value': 'FAIL', 'format': cf_fail})
+            ws.conditional_format(3, 17, last_data_er - 1, 17, {'type': 'text', 'criteria': 'containing', 'value': 'WATCH', 'format': cf_watch})
+            ws.conditional_format(3, 17, last_data_er - 1, 17, {'type': 'text', 'criteria': 'containing', 'value': 'STAR', 'format': cf_star})
 
-            _finish_ws(ws, gt_r - 1, len(cols) - 1, widths=[20, 12, 10, 11, 11, 28, 9, 12, 14, 14, 10, 13, 15, 11, 24, 24, 17])
+            _finish_ws(ws, gt_r - 1, len(cols) - 1, widths=[20, 12, 16, 10, 11, 11, 28, 9, 12, 14, 14, 10, 13, 15, 11, 24, 24, 17])
             return gt_er  # return Grand Total 1-based Excel row for Dashboard cross-sheet formulas!
 
         # Reserve 0_Executive_Dashboard as FIRST tab
@@ -8758,9 +9782,11 @@ def build_avp_utilization_excel_bytes(
         writer.sheets['4_Reg_Feeder_Daywise'] = ws_rf
         rf_cols = [
             'RO', 'Branch', 'Vehicle No', 'Type', 'Vendor', 'Contract', 'Divisor',
-            'Rate (₹)', 'Cap (kg)', 'Days', 'MCD Wt', 'OFD Wt', 'PickUp Wt', 'Co-Load Wt',
+            'Rate (₹)', 'Cap (kg)', 'Vehicle Type', 'Days', 'MCD Wt', 'OFD Wt', 'PickUp Wt', 'Co-Load Wt',
             'Total Wt', 'Day Cap', 'MCD Util %', 'Overall Util %', 'Total Cost (₹)', 'CPK (₹/kg)', 'Status', 'Routes'
         ]
+        # I=Cap(8), J=VehType(9), K=Days(10), L=MCD(11), M=OFD(12), N=PickUp(13), O=CoLoad(14),
+        # P=TotalWt(15), Q=DayCap(16), R=MCDUtil(17), S=OverallUtil(18), T=TotalCost(19), U=CPK(20), V=Status(21), W=Routes(22)
         ws_rf.merge_range(0, 0, 0, len(rf_cols) - 1, "Regional LH & Feeder — Day-wise Vehicle Utilization & CPK (Live Excel 2013 Formulas)", f_title)
         ws_rf.merge_range(1, 0, 1, len(rf_cols) - 1, f"{dur_label}  |  Day Cap = Cap*Days · Total Wt = SUM(MCD:Co-Load) · Util% & CPK live", f_sub)
         ws_rf.set_row(0, 28); ws_rf.set_row(1, 20); ws_rf.set_row(2, 28)
@@ -8779,41 +9805,42 @@ def build_avp_utilization_excel_bytes(
                 ws_rf.write(ri, 6, str(r.get('Divisor', '')), f_txt)
                 ws_rf.write_number(ri, 7, float(r.get('_num_rate', 0) or 0), f_inr)
                 ws_rf.write_number(ri, 8, float(r.get('Cap', 0) or 0), f_int)
-                ws_rf.write_number(ri, 9, float(r.get('Days', 0) or 0), f_int)
-                ws_rf.write_number(ri, 10, float(r.get('MCD Wt', 0) or 0), f_int)
-                ws_rf.write_number(ri, 11, float(r.get('OFD Wt', 0) or 0), f_int)
-                ws_rf.write_number(ri, 12, float(r.get('PickUp Wt', 0) or 0), f_int)
-                ws_rf.write_number(ri, 13, float(r.get('Co-Load Wt', 0) or 0), f_int)
-                ws_rf.write_formula(ri, 14, f"=SUM(K{er}:N{er})", f_int)
-                ws_rf.write_formula(ri, 15, f"=I{er}*J{er}", f_int)
-                ws_rf.write_formula(ri, 16, f"=IFERROR(K{er}/P{er},0)", f_pct)
-                ws_rf.write_formula(ri, 17, f"=IFERROR(O{er}/P{er},0)", f_pct)
-                ws_rf.write_number(ri, 18, float(r.get('_num_cost', 0) or 0), f_inr)
-                ws_rf.write_formula(ri, 19, f"=IFERROR(S{er}/O{er},0)", f_cpk)
-                ws_rf.write_formula(ri, 20, f'=IF(R{er}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(R{er}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_txt)
-                ws_rf.write(ri, 21, str(r.get('Routes', '')), f_txt_l)
+                ws_rf.write(ri, 9, str(r.get('Vehicle Type', '-')), f_txt)
+                ws_rf.write_number(ri, 10, float(r.get('Days', 0) or 0), f_int)
+                ws_rf.write_number(ri, 11, float(r.get('MCD Wt', 0) or 0), f_int)
+                ws_rf.write_number(ri, 12, float(r.get('OFD Wt', 0) or 0), f_int)
+                ws_rf.write_number(ri, 13, float(r.get('PickUp Wt', 0) or 0), f_int)
+                ws_rf.write_number(ri, 14, float(r.get('Co-Load Wt', 0) or 0), f_int)
+                ws_rf.write_formula(ri, 15, f"=SUM(L{er}:O{er})", f_int)
+                ws_rf.write_formula(ri, 16, f"=I{er}*K{er}", f_int)
+                ws_rf.write_formula(ri, 17, f"=IFERROR(L{er}/Q{er},0)", f_pct)
+                ws_rf.write_formula(ri, 18, f"=IFERROR(P{er}/Q{er},0)", f_pct)
+                ws_rf.write_number(ri, 19, float(r.get('_num_cost', 0) or 0), f_inr)
+                ws_rf.write_formula(ri, 20, f"=IFERROR(T{er}/P{er},0)", f_cpk)
+                ws_rf.write_formula(ri, 21, f'=IF(S{er}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(S{er}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_txt)
+                ws_rf.write(ri, 22, str(r.get('Routes', '')), f_txt_l)
             gt_rf = 3 + len(rf_daywise)
             rf_gt_er = gt_rf + 1
             ws_rf.set_row(gt_rf, 24)
             ws_rf.write(gt_rf, 0, "GRAND TOTAL", f_gt_txt)
-            for ci in range(1, 9): ws_rf.write(gt_rf, ci, f"{len(rf_daywise)} Vehs" if ci == 2 else "-", f_gt_txt)
-            for ci, col_l in [(9,'J'), (10,'K'), (11,'L'), (12,'M'), (13,'N'), (14,'O'), (15,'P')]:
+            for ci in range(1, 10): ws_rf.write(gt_rf, ci, f"{len(rf_daywise)} Vehs" if ci == 2 else "-", f_gt_txt)
+            for ci, col_l in [(10,'K'), (11,'L'), (12,'M'), (13,'N'), (14,'O'), (15,'P'), (16,'Q')]:
                 ws_rf.write_formula(gt_rf, ci, f"=SUM({col_l}4:{col_l}{gt_rf})", f_gt_int)
-            ws_rf.write_formula(gt_rf, 16, f"=IFERROR(K{rf_gt_er}/P{rf_gt_er},0)", f_gt_pct)
-            ws_rf.write_formula(gt_rf, 17, f"=IFERROR(O{rf_gt_er}/P{rf_gt_er},0)", f_gt_pct)
-            ws_rf.write_formula(gt_rf, 18, f"=SUM(S4:S{gt_rf})", f_gt_inr)
-            ws_rf.write_formula(gt_rf, 19, f"=IFERROR(S{rf_gt_er}/O{rf_gt_er},0)", f_gt_cpk)
-            ws_rf.write_formula(gt_rf, 20, f'=IF(R{rf_gt_er}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(R{rf_gt_er}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_gt_txt)
-            ws_rf.write(gt_rf, 21, "-", f_gt_txt)
+            ws_rf.write_formula(gt_rf, 17, f"=IFERROR(L{rf_gt_er}/Q{rf_gt_er},0)", f_gt_pct)
+            ws_rf.write_formula(gt_rf, 18, f"=IFERROR(P{rf_gt_er}/Q{rf_gt_er},0)", f_gt_pct)
+            ws_rf.write_formula(gt_rf, 19, f"=SUM(T4:T{gt_rf})", f_gt_inr)
+            ws_rf.write_formula(gt_rf, 20, f"=IFERROR(T{rf_gt_er}/P{rf_gt_er},0)", f_gt_cpk)
+            ws_rf.write_formula(gt_rf, 21, f'=IF(S{rf_gt_er}<{u_dec},"FAIL (<{int(util_cutoff_pct)}%)",IF(S{rf_gt_er}>=0.8,"STAR (>=80%)","WATCH (60-80%)"))', f_gt_txt)
+            ws_rf.write(gt_rf, 22, "-", f_gt_txt)
 
-            ws_rf.conditional_format(3, 17, gt_rf - 1, 17, {'type': 'cell', 'criteria': '<', 'value': u_dec, 'format': cf_fail})
-            ws_rf.conditional_format(3, 17, gt_rf - 1, 17, {'type': 'cell', 'criteria': 'between', 'minimum': u_dec, 'maximum': 0.7999, 'format': cf_watch})
-            ws_rf.conditional_format(3, 17, gt_rf - 1, 17, {'type': 'cell', 'criteria': '>=', 'value': 0.8, 'format': cf_star})
-            ws_rf.conditional_format(3, 19, gt_rf - 1, 19, {'type': 'cell', 'criteria': '>', 'value': c_lim, 'format': cf_fail})
-            ws_rf.conditional_format(3, 20, gt_rf - 1, 20, {'type': 'text', 'criteria': 'containing', 'value': 'FAIL', 'format': cf_fail})
-            ws_rf.conditional_format(3, 20, gt_rf - 1, 20, {'type': 'text', 'criteria': 'containing', 'value': 'WATCH', 'format': cf_watch})
-            ws_rf.conditional_format(3, 20, gt_rf - 1, 20, {'type': 'text', 'criteria': 'containing', 'value': 'STAR', 'format': cf_star})
-            _finish_ws(ws_rf, gt_rf - 1, len(rf_cols) - 1, widths=[10, 24, 15, 13, 22, 16, 9, 12, 10, 8, 11, 11, 11, 11, 12, 12, 11, 12, 14, 11, 16, 30])
+            ws_rf.conditional_format(3, 18, gt_rf - 1, 18, {'type': 'cell', 'criteria': '<', 'value': u_dec, 'format': cf_fail})
+            ws_rf.conditional_format(3, 18, gt_rf - 1, 18, {'type': 'cell', 'criteria': 'between', 'minimum': u_dec, 'maximum': 0.7999, 'format': cf_watch})
+            ws_rf.conditional_format(3, 18, gt_rf - 1, 18, {'type': 'cell', 'criteria': '>=', 'value': 0.8, 'format': cf_star})
+            ws_rf.conditional_format(3, 20, gt_rf - 1, 20, {'type': 'cell', 'criteria': '>', 'value': c_lim, 'format': cf_fail})
+            ws_rf.conditional_format(3, 21, gt_rf - 1, 21, {'type': 'text', 'criteria': 'containing', 'value': 'FAIL', 'format': cf_fail})
+            ws_rf.conditional_format(3, 21, gt_rf - 1, 21, {'type': 'text', 'criteria': 'containing', 'value': 'WATCH', 'format': cf_watch})
+            ws_rf.conditional_format(3, 21, gt_rf - 1, 21, {'type': 'text', 'criteria': 'containing', 'value': 'STAR', 'format': cf_star})
+            _finish_ws(ws_rf, gt_rf - 1, len(rf_cols) - 1, widths=[10, 24, 15, 13, 22, 16, 9, 12, 10, 16, 8, 11, 11, 11, 11, 12, 12, 11, 12, 14, 11, 16, 30])
         else:
             ws_rf.write(3, 0, "No Day-wise Regional/Feeder records in scope.", f_txt_l)
             _finish_ws(ws_rf, 3, len(rf_cols) - 1, widths=[12]*len(rf_cols))
@@ -8832,7 +9859,7 @@ def build_avp_utilization_excel_bytes(
         # 6. RO All-Vehicles Master (Covers ALL categories for AVP RO inquiries!)
         if isinstance(df_daily_scope, pd.DataFrame) and not df_daily_scope.empty:
             vm = df_daily_scope.groupby(['Zone', 'RO_Clean', 'VendorBranch', 'Vehicle No', 'Primary_Type', 'ContractType'], dropna=False).agg(
-                Vendor=('VendorName', 'first'), Cap=('Cap', 'median'), Contract_Rate=('ContractCost', 'median'),
+                Vendor=('VendorName', 'first'), Cap=('Cap', 'median'), VehType=('VehType', 'first'), Contract_Rate=('ContractCost', 'median'),
                 Active_Days=('Date', 'nunique'), MCD_Wt=('MCDWt', 'sum'), OFD_Wt=('OFDWt', 'sum'),
                 PickUp_Wt=('PickupWt', 'sum'), Coloader_Wt=('ColoaderWt', 'sum'),
                 Total_Wt=('TotalWt', 'sum'), Total_Cost=('TotalCost', 'sum'),
@@ -8846,7 +9873,7 @@ def build_avp_utilization_excel_bytes(
                 'RO': vm['RO_Clean'], 'Branch': vm['VendorBranch'], 'Vehicle No': vm['Vehicle No'],
                 'Category': vm['Primary_Type'], 'All Duties': vm['All_Types'], 'Vendor': vm['Vendor'],
                 'Contract': vm['ContractType'], 'Rate': vm['Contract_Rate'].round(0),
-                'Cap': vm['Cap'].round(0).astype(int), 'Active Days': vm['Active_Days'].astype(int),
+                'Cap': vm['Cap'].round(0).astype(int), 'Vehicle Type': vm.get('VehType', '-'), 'Active Days': vm['Active_Days'].astype(int),
                 'MCD Wt': vm['MCD_Wt'].round(0).astype(int), 'OFD Wt': vm['OFD_Wt'].round(0).astype(int),
                 'PickUp Wt': vm['PickUp_Wt'].round(0).astype(int), 'Co-Load Wt': vm['Coloader_Wt'].round(0).astype(int),
                 'Total Wt': vm['Total_Wt'].round(0).astype(int),
@@ -8861,12 +9888,12 @@ def build_avp_utilization_excel_bytes(
         raw_clean_cols = [
             'Date', 'RefNumber', 'Final_Type', 'Origin_RO', 'Dest_RO', 'Origin', 'Dest',
             'Route_Pair', 'Direction', 'Final_Route', 'VendorName', 'Vehicle No',
-            'ContractType', 'VehicleUsageType', 'Cap', 'Wt', 'Cost'
+            'ContractType', 'VehicleUsageType', 'Cap', 'VehType', 'Wt', 'Cost'
         ]
         if isinstance(df_raw_scope, pd.DataFrame) and not df_raw_scope.empty:
             df_raw_clean = df_raw_scope[[c for c in raw_clean_cols if c in df_raw_scope.columns]].rename(columns={
                 'Final_Type': 'Category', 'Origin_RO': 'Origin RO', 'Dest_RO': 'Dest RO',
-                'Route_Pair': 'Route Pair', 'Final_Route': 'Route', 'Cap': 'Capacity', 'Wt': 'Weight', 'Cost': 'Trip Cost'
+                'Route_Pair': 'Route Pair', 'Final_Route': 'Route', 'Cap': 'Capacity', 'VehType': 'Vehicle Type', 'Wt': 'Weight', 'Cost': 'Trip Cost'
             }).reset_index(drop=True)
             write_styled_sheet_to_excel(writer, df_raw_clean, '7_Matched_Raw_Data', sheet_type="generic", preserve_order=True)
 
@@ -8885,10 +9912,10 @@ def build_avp_utilization_excel_bytes(
         for ci, h in enumerate(d_hdrs): ws_dash.write(4, ci, h, f_hdr)
 
         seg_links = [
-            ('National LH (Trip-wise)', '2_National_UP_DOWN', nat_gt_er, 'G', 'I', 'J', 'M'),
-            ('Zonal LH (Trip-wise)', '3_Zonal_UP_DOWN', zon_gt_er, 'G', 'I', 'J', 'M'),
-            ('Regional & Feeder (Day-wise)', '4_Reg_Feeder_Daywise', rf_gt_er, 'J', 'O', 'P', 'S'),
-            ('Regional & Feeder (Trip-wise)', '4B_RegFeed_Tripwise', rft_gt_er, 'G', 'I', 'J', 'M'),
+            ('National LH (Trip-wise)', '2_National_UP_DOWN', nat_gt_er, 'H', 'J', 'K', 'N'),
+            ('Zonal LH (Trip-wise)', '3_Zonal_UP_DOWN', zon_gt_er, 'H', 'J', 'K', 'N'),
+            ('Regional & Feeder (Day-wise)', '4_Reg_Feeder_Daywise', rf_gt_er, 'K', 'P', 'Q', 'T'),
+            ('Regional & Feeder (Trip-wise)', '4B_RegFeed_Tripwise', rft_gt_er, 'H', 'J', 'K', 'N'),
         ]
         r_d = 5
         for s_lbl, sh_n, gt_r_num, c_trp, c_wt, c_cap, c_cost in seg_links:
@@ -9022,6 +10049,9 @@ def render_network_utilization_v2(data):
 
     cpk_ovr = load_cpk_overrides()
     df_raw_all, df_daily_all = apply_live_cpk_overrides(df_raw_orig, df_daily_orig, cpk_ovr)
+    df_raw_all = enrich_vehicle_type_column(df_raw_all, route_col='Final_Route', pair_col='Route_Pair', vno_col='Vehicle No', cap_col='Cap', type_col='Final_Type')
+    if not df_daily_all.empty:
+        df_daily_all = enrich_vehicle_type_column(df_daily_all, route_col='Routes_Covered', pair_col='Routes_Covered', vno_col='Vehicle No', cap_col='Cap', type_col='Primary_Type')
 
     sla = get_sla_thresholds()
     util_cut = float(sla.get("util_red_pct", 60.0))
@@ -9185,6 +10215,30 @@ def render_network_utilization_v2(data):
         u2.metric("🟠 One Side Underutilized", f"{tot_one_side:,}", delta=f"Nat: {nat_stats['one_side_util']} · Zon: {zon_stats['one_side_util']}", delta_color="off")
         u3.metric("🟢 Balanced (Both ≥60%)", f"{nat_stats['both_healthy'] + zon_stats['both_healthy']:,}", delta=f"Nat: {nat_stats['both_healthy']} · Zon: {zon_stats['both_healthy']}", delta_color="off")
         u4.metric("🏆 Star Routes (≥80%)", f"{tot_stars:,}", delta=f"Nat: {nat_stats['star_achievements']} · Zon: {zon_stats['star_achievements']}", delta_color="off")
+
+        _ov_xl1, _ov_xl2 = st.columns([2.1, 2.9])
+        _ov_sig = ("nu_ov_xl_v1", dur_lbl, len(df_rf), len(df_df), len(df_ideas), util_cut)
+        if _ov_xl1.button("📥 Prepare Full Network Utilization Excel (Live Formulas)", key="nu_ov_prep_xl_btn", type="primary", use_container_width=True):
+            with st.spinner("Building Styled Excel 2013 Workbook with Vehicle Type & Live Formulas..."):
+                st.session_state["_nu_ov_xl_cache"] = (
+                    _ov_sig,
+                    build_avp_utilization_excel_bytes(
+                        f"Network Utilization Report ({sel_oro if sel_oro != 'ALL' else 'Filtered Scope'})",
+                        dur_lbl, df_rf, df_df,
+                        nat_updown, zon_updown, rf_daywise, rf_trip_updown,
+                        df_ideas, df_rdb, df_rdr, df_aud,
+                        nat_stats, zon_stats, util_cut, cpk_cut
+                    )
+                )
+        if isinstance(st.session_state.get("_nu_ov_xl_cache"), tuple) and st.session_state["_nu_ov_xl_cache"][0] == _ov_sig:
+            _ov_xl2.download_button(
+                "⬇️ Download Full Network Utilization Excel (.xlsx)",
+                data=st.session_state["_nu_ov_xl_cache"][1],
+                file_name=f"Trackon_Network_Utilization_{get_ist_now():%d_%b_%Y}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="nu_ov_dl_xl_btn"
+            )
 
         # --- ⚡ INSTANT CALL-ANSWER BOX ("Koi Bhi Sawal — 2 Second Mein Jawab") ---
         with st.expander("⚡ Instant Call-Answer Engine (CEO / AVP / RO / Vendor Call par 2-Second Jawab)", expanded=True):
@@ -9368,6 +10422,28 @@ def render_network_utilization_v2(data):
         st.markdown(f"### 🔄 {seg_name} — Capacity-wise UP / DOWN Breakdown (Sorted: Pair → Capacity → UP/DOWN)")
         render_centered_html_table(_clean_ui_ud(seg_updown), height=480, show_grand_total=False, csv_filename=f"{seg_name.replace(' ', '_')}_Pair_UP_DOWN.csv")
 
+        _lx1, _lx2 = st.columns([1.9, 3.1])
+        _lx_sig = (t_key, dur_lbl, len(seg_updown), len(seg_raw), util_cut)
+        if _lx1.button(f"📥 Prepare {seg_name} Styled Excel (Summary + Raw)", key=f"{t_key}_prep_xl", type="primary", use_container_width=True):
+            with st.spinner(f"Building {seg_name} Styled Excel..."):
+                _lbuf = io.BytesIO()
+                with pd.ExcelWriter(_lbuf, engine='xlsxwriter') as _lw:
+                    write_styled_sheet_to_excel(_lw, _clean_ui_ud(seg_updown), f"{seg_name[:20]}_UP_DOWN", sheet_type="generic", preserve_order=True)
+                    write_styled_sheet_to_excel(_lw, seg_pair_sum.drop(columns=['_sort_u', '_num_cpk', '_num_cost'], errors='ignore'), "Pair_Summary", sheet_type="generic", preserve_order=True)
+                    _r_c = ['Date', 'RefNumber', 'Origin_RO', 'Dest_RO', 'Final_Route', 'VendorName', 'Vehicle No', 'ContractType', 'Cap', 'VehType', 'Wt', 'Cost']
+                    _r_df = seg_raw[[c for c in _r_c if c in seg_raw.columns]].rename(columns={'Origin_RO': 'Origin RO', 'Dest_RO': 'Dest RO', 'Final_Route': 'Route', 'Cap': 'Capacity', 'VehType': 'Vehicle Type', 'Wt': 'Weight', 'Cost': 'Trip Cost'})
+                    write_styled_sheet_to_excel(_lw, _r_df, "Raw_Trips", sheet_type="generic", preserve_order=True)
+                st.session_state[f"_{t_key}_xl_cache"] = (_lx_sig, _lbuf.getvalue())
+        if isinstance(st.session_state.get(f"_{t_key}_xl_cache"), tuple) and st.session_state[f"_{t_key}_xl_cache"][0] == _lx_sig:
+            _lx2.download_button(
+                f"⬇️ Download {seg_name} Excel (.xlsx)",
+                data=st.session_state[f"_{t_key}_xl_cache"][1],
+                file_name=f"Trackon_{seg_name.replace(' ', '_')}_{get_ist_now():%d_%b_%Y}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key=f"{t_key}_dl_xl"
+            )
+
         with st.expander(f"📋 Compact Pair Summary ({len(seg_pair_sum)} Pair+Capacity Combos)", expanded=False):
             render_centered_html_table(seg_pair_sum.drop(columns=['_sort_u', '_num_cpk', '_num_cost'], errors='ignore'), height=340, show_grand_total=False)
 
@@ -9380,8 +10456,8 @@ def render_network_utilization_v2(data):
             if pick_r != "ALL ROUTES IN PAIR": sub_p = sub_p[sub_p['Final_Route'].eq(pick_r)]
             sub_p['Util %'] = np.where(sub_p['Cap'] > 0, (sub_p['Wt'] / sub_p['Cap'] * 100.0).round(1).astype(str) + '%', '0.0%')
             sub_p['CPK'] = np.where(sub_p['Wt'] > 0, (sub_p['Cost'] / sub_p['Wt']).apply(lambda x: f"₹{x:.2f}"), '₹0.00')
-            clean_cols = ['Date', 'RefNumber', 'Origin_RO', 'Dest_RO', 'Final_Route', 'VendorName', 'Vehicle No', 'ContractType', 'VehicleUsageType', 'Cap', 'Wt', 'Util %', 'Cost', 'CPK']
-            raw_disp = sub_p[[c for c in clean_cols if c in sub_p.columns]].rename(columns={'Origin_RO': 'Origin RO', 'Dest_RO': 'Dest RO', 'Final_Route': 'Route', 'Cap': 'Capacity', 'Wt': 'Weight', 'Cost': 'Trip Cost'})
+            clean_cols = ['Date', 'RefNumber', 'Origin_RO', 'Dest_RO', 'Final_Route', 'VendorName', 'Vehicle No', 'ContractType', 'VehicleUsageType', 'Cap', 'VehType', 'Wt', 'Util %', 'Cost', 'CPK']
+            raw_disp = sub_p[[c for c in clean_cols if c in sub_p.columns]].rename(columns={'Origin_RO': 'Origin RO', 'Dest_RO': 'Dest RO', 'Final_Route': 'Route', 'Cap': 'Capacity', 'VehType': 'Vehicle Type', 'Wt': 'Weight', 'Cost': 'Trip Cost'})
             if 'Trip Cost' in raw_disp.columns: raw_disp['Trip Cost'] = raw_disp['Trip Cost'].apply(lambda x: f"₹{float(x):,.0f}")
             render_centered_html_table(raw_disp.reset_index(drop=True), height=380, show_grand_total=False, csv_filename=f"Raw_{pick_p}.csv")
 
@@ -9438,6 +10514,27 @@ def render_network_utilization_v2(data):
         else:
             render_centered_html_table(_clean_ui_ud(rf_trip_updown), height=400, show_grand_total=False, csv_filename="Regional_Feeder_Tripwise.csv")
 
+        _rfx1, _rfx2 = st.columns([2.0, 3.0])
+        _rfx_sig = ("rf_xl_v1", dur_lbl, len(rf_daywise), len(rf_trip_updown), util_cut)
+        if _rfx1.button("📥 Prepare Regional & Feeder Styled Excel", key="nu_rf_prep_xl", type="primary", use_container_width=True):
+            with st.spinner("Building Regional & Feeder Styled Excel..."):
+                _rfbuf = io.BytesIO()
+                with pd.ExcelWriter(_rfbuf, engine='xlsxwriter') as _rfw:
+                    if not rf_daywise.empty:
+                        write_styled_sheet_to_excel(_rfw, rf_daywise.drop(columns=['_num_util', '_num_mcd_util', '_num_cost', '_num_rate', '_num_wt', '_num_cpk'], errors='ignore'), "Daywise_Fixed_Month_Day", sheet_type="generic", preserve_order=True)
+                    if not rf_trip_updown.empty:
+                        write_styled_sheet_to_excel(_rfw, _clean_ui_ud(rf_trip_updown), "Tripwise_UP_DOWN", sheet_type="generic", preserve_order=True)
+                st.session_state["_nu_rf_xl_cache"] = (_rfx_sig, _rfbuf.getvalue())
+        if isinstance(st.session_state.get("_nu_rf_xl_cache"), tuple) and st.session_state["_nu_rf_xl_cache"][0] == _rfx_sig:
+            _rfx2.download_button(
+                "⬇️ Download Regional & Feeder Excel (.xlsx)",
+                data=st.session_state["_nu_rf_xl_cache"][1],
+                file_name=f"Trackon_Regional_Feeder_{get_ist_now():%d_%b_%Y}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="nu_rf_dl_xl"
+            )
+
     # =========================================================
     # TAB 5: RATE DISPARITY & DATA QUALITY AUDIT FLAGS
     # =========================================================
@@ -9465,6 +10562,27 @@ def render_network_utilization_v2(data):
             st.success("✅ Clean dataset — zero ₹0 cost or weird capacity anomalies!")
         else:
             render_centered_html_table(df_aud, height=300, show_grand_total=False, csv_filename="Data_Quality_Audit.csv")
+
+        if not (df_rdb.empty and df_rdr.empty and df_aud.empty):
+            _flx1, _flx2 = st.columns([2.0, 3.0])
+            _flx_sig = ("flg_xl_v1", dur_lbl, len(df_rdb), len(df_rdr), len(df_aud))
+            if _flx1.button("📥 Prepare Rate Disparity & Audit Excel", key="nu_flg_prep_xl", type="primary", use_container_width=True):
+                with st.spinner("Building Rate Disparity & Audit Excel..."):
+                    _fbuf = io.BytesIO()
+                    with pd.ExcelWriter(_fbuf, engine='xlsxwriter') as _fw:
+                        if not df_rdb.empty: write_styled_sheet_to_excel(_fw, df_rdb, "Branch_Rate_Disparity", sheet_type="generic", preserve_order=True)
+                        if not df_rdr.empty: write_styled_sheet_to_excel(_fw, df_rdr, "Route_Rate_Disparity", sheet_type="generic", preserve_order=True)
+                        if not df_aud.empty: write_styled_sheet_to_excel(_fw, df_aud, "Data_Quality_Audit", sheet_type="generic", preserve_order=True)
+                    st.session_state["_nu_flg_xl_cache"] = (_flx_sig, _fbuf.getvalue())
+            if isinstance(st.session_state.get("_nu_flg_xl_cache"), tuple) and st.session_state["_nu_flg_xl_cache"][0] == _flx_sig:
+                _flx2.download_button(
+                    "⬇️ Download Rate Disparity & Audit Excel (.xlsx)",
+                    data=st.session_state["_nu_flg_xl_cache"][1],
+                    file_name=f"Trackon_Rate_Audit_{get_ist_now():%d_%b_%Y}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="nu_flg_dl_xl"
+                )
 
     # =========================================================
     # TAB 6: AVP / RO EXCEL 2013 LIVE-FORMULA REPORT PACK + LIVE OVERRIDES
@@ -10957,7 +12075,9 @@ def render_ops_remark_raw_window(data, query):
     # 1. ROUTE & LEG BREAKDOWN (Total Trips + Ontime Dep, Ontime Arr + Remark + Remark % (Count))
     # Sorted: Origin RO (A->Z), Route Path (A->Z), Legwise (A->Z), Remark (Z->A)
     # =========================================================
-    leg_keys = [c for c in ['Origin RO', 'Route Path', 'Legwise', 'Legs'] if c in view_df.columns]
+    view_df = ensure_route_pair_col(view_df, 'Route Path')
+    base_scope_df = ensure_route_pair_col(base_scope_df, 'Route Path')
+    leg_keys = [c for c in ['Origin RO', 'Route Pair', 'Route Path', 'Legwise', 'Legs'] if c in view_df.columns]
     pivot_cols = leg_keys + (['Remark'] if 'Remark' in view_df.columns else [])
     narrowed_df = view_df.copy()
 
@@ -11010,7 +12130,7 @@ def render_ops_remark_raw_window(data, query):
         preserve_order=True
     )
     excel_lead_cols = [
-        'Origin RO', 'Route Path', 'Legwise', 'Legs', 'Remark',
+        'Origin RO', 'Route Pair', 'Route Path', 'Legwise', 'Legs', 'Remark',
         'MCD_StartDate', 'Scheduled Departure Time', 'Actual Departure Time',
         'Scheduled Arrival Time', 'Actual Arrival Time',
         'Scheduled Halting', 'Actual Halting',
@@ -11495,10 +12615,11 @@ def render_vendor_perf_raw_window(data, query):
         lead = ['Zone', 'ROs', 'Vendors', 'Total Trips', 'Ontime Arrival', 'Late Arrival', 'In-Transit', 'Missing Schedule', 'Status']
         breakdown_df = breakdown_df[[c for c in lead if c in breakdown_df.columns]]
     else:
+        base_scope_df = ensure_route_pair_col(base_scope_df, 'Route Path')
         breakdown_df = _agg_vendor_group(
-            base_scope_df, ['Origin RO', 'Route Path', 'Legwise', 'Legs', 'VendorName']
+            base_scope_df, ['Origin RO', 'Route Pair', 'Route Path', 'Legwise', 'Legs', 'VendorName']
         ).rename(columns={'VendorName': 'Vendor'})
-        lead = ['Origin RO', 'Route Path', 'Legwise', 'Legs', 'Vendor', 'Total Trips', 'Ontime Arrival', 'Late Arrival', 'In-Transit', 'Missing Schedule', 'Status']
+        lead = ['Origin RO', 'Route Pair', 'Route Path', 'Legwise', 'Legs', 'Vendor', 'Total Trips', 'Ontime Arrival', 'Late Arrival', 'In-Transit', 'Missing Schedule', 'Status']
         breakdown_df = breakdown_df[[c for c in lead if c in breakdown_df.columns]]
 
     render_centered_html_table(breakdown_df, height=500)
@@ -11641,6 +12762,8 @@ if choice == "🏠 Executive Pulse":
     render_executive_pulse(data)
 elif choice == "🎯 My Task & Focus Hub":
     render_admin_task_hub(data)
+elif choice == "🤖 AI Analyst & Learning Hub":
+    render_ai_and_learning_hub(data)
 elif choice == "🧭 Scheduled Route Master":
     render_scheduled_route_master(data)
 elif choice == "⚠️ Overall Issues":
@@ -11659,7 +12782,7 @@ elif choice == "📊 Operations Summary":
         if '_OpsRemarkOutcome' not in df_raw_leg_source.columns:
             # This frame is held in the page cache, so the buckets survive RO selector reruns.
             df_raw_leg_source['_OpsRemarkOutcome'] = ops_remark_outcome_series(df_raw_leg_source)
-        df_raw_leg_full = df_raw_leg_source.copy()
+        df_raw_leg_full = ensure_route_pair_col(df_raw_leg_source.copy(), 'Route Path')
         if not st.session_state.get('all_vendors', True):
             df_raw_leg_full = filter_df_by_user_vendors(df_raw_leg_full, 'VendorName')
             
@@ -11670,9 +12793,10 @@ elif choice == "📊 Operations Summary":
             zone_col="Zone" if "Zone" in df_raw_leg_full.columns else None,
             ro_col="Origin RO" if "Origin RO" in df_raw_leg_full.columns else None,
             vendor_col="VendorName" if "VendorName" in df_raw_leg_full.columns else None,
+            route_pair_col="Route Pair" if "Route Pair" in df_raw_leg_full.columns else None,
             route_col="Route Path" if "Route Path" in df_raw_leg_full.columns else None,
             leg_col="Legwise" if "Legwise" in df_raw_leg_full.columns else None,
-            search_placeholder="Search Route, Leg, Vehicle..."
+            search_placeholder="Search Route Pair, Route, Leg, Vehicle..."
         )
         is_date_filtered = ops_filters["is_date_filtered"]
         dur_str_ops = ops_filters["dur_label"]
@@ -11683,7 +12807,7 @@ elif choice == "📊 Operations Summary":
         any_ops_filter = (
             is_date_filtered
             or not st.session_state.get('all_vendors', True)
-            or any(ops_filters[k] != "ALL" for k in ("zone", "ro", "vendor", "route", "leg"))
+            or any(ops_filters[k] != "ALL" for k in ("zone", "ro", "vendor", "route_pair", "route", "leg"))
             or bool(search_q)
         )
         df_leg_sum = build_ops_summary_from_raw(df_raw_leg) if any_ops_filter else data['Legwise_Route_Summary'].copy()
@@ -11758,20 +12882,21 @@ elif choice == "📊 Operations Summary":
         _ops_hdr_c1, _ops_hdr_c2 = st.columns([2.2, 1.4])
         ops_view_mode = _ops_hdr_c2.selectbox(
             "Group Performance By:",
-            ["RO-wise", "Branch-wise", "Route & Leg-wise", "Zone-wise"],
+            ["RO-wise", "Branch-wise", "Route Pair-wise", "Route & Leg-wise", "Zone-wise"],
             key="ops_main_group_mode"
         )
         _ops_hdr_c1.markdown(f"### 📋 Operations Performance ({ops_view_mode})")
 
         def _build_ops_grouped_view(src_df, mode):
-            work = src_df.copy()
+            work = ensure_route_pair_col(src_df.copy(), 'Route Path')
             if 'Origin Branch' not in work.columns:
                 work['Origin Branch'] = work.get('CD_FromBranch', work.get('Origin RO', '')).fillna('').astype(str).str.strip().str.upper()
             primary_outcomes = ['Ontime Dep, Ontime Arr', 'Ontime Dep, Late Arr', 'Late Dep, Late Arr', 'Late Dep, Ontime Arr']
             extra_outcomes = [lbl for lbl, _, _ in OPS_REMARK_OUTCOME_LABELS if lbl not in primary_outcomes and int(ops_outcome_counts.get(lbl, 0)) > 0]
             shown_outcomes = primary_outcomes + extra_outcomes
             key_map = {
-                "Route & Leg-wise": [c for c in ['Origin RO', 'Route Path', 'Legwise', 'Legs'] if c in work.columns],
+                "Route Pair-wise": [c for c in ['Route Pair'] if c in work.columns],
+                "Route & Leg-wise": [c for c in ['Origin RO', 'Route Pair', 'Route Path', 'Legwise', 'Legs'] if c in work.columns],
                 "RO-wise": [c for c in ['Zone', 'Origin RO'] if c in work.columns],
                 "Branch-wise": [c for c in ['Zone', 'Origin RO', 'Origin Branch'] if c in work.columns],
                 "Zone-wise": [c for c in ['Zone'] if c in work.columns],
@@ -11800,6 +12925,8 @@ elif choice == "📊 Operations Summary":
                     ent = f"RO {row_r.get('Origin RO', '')}"
                 elif mode == "Zone-wise":
                     ent = f"{row_r.get('Zone', '')} Zone"
+                elif mode == "Route Pair-wise":
+                    ent = f"Pair {row_r.get('Route Pair', '')}"
                 else:
                     ent = f"{row_r.get('Route Path', '')} {row_r.get('Legwise', '')}"
                 if ld_v == 0:
@@ -11819,7 +12946,10 @@ elif choice == "📊 Operations Summary":
             front_o = g_keys + ['Total Trips', 'Ontime Dep, Ontime Arr'] + [c for c in shown_outcomes if c != 'Ontime Dep, Ontime Arr'] + ['Status', 'Decision Remark']
             if mode == "Route & Leg-wise":
                 res['_leg_n'] = extract_leg_num_val(res['Legwise']) if 'Legwise' in res.columns else 999
-                if 'Route Path' in res.columns:
+                if 'Route Pair' in res.columns and 'Route Path' in res.columns:
+                    res['_grp_ld'] = res.groupby('Route Pair')['_sort_ld'].transform('sum')
+                    res = res.sort_values(by=['_grp_ld', 'Route Pair', 'Route Path', '_leg_n'], ascending=[False, True, True, True], kind='mergesort')
+                elif 'Route Path' in res.columns:
                     res['_grp_ld'] = res.groupby('Route Path')['_sort_ld'].transform('sum')
                     res = res.sort_values(by=['_grp_ld', 'Route Path', '_leg_n'], ascending=[False, True, True], kind='mergesort')
                 else:
@@ -11841,7 +12971,7 @@ elif choice == "📊 Operations Summary":
             o_idx = ops_drill_opts.index(chosen_ops_drill) - 1
             if 0 <= o_idx < len(ops_summary_df):
                 sel_or = ops_summary_df.iloc[o_idx]
-                work_insp = raw_status.copy()
+                work_insp = ensure_route_pair_col(raw_status.copy(), 'Route Path')
                 if 'Origin Branch' not in work_insp.columns:
                     work_insp['Origin Branch'] = work_insp.get('CD_FromBranch', work_insp.get('Origin RO', '')).fillna('').astype(str).str.strip().str.upper()
                 m_insp = pd.Series(True, index=work_insp.index)
@@ -11861,14 +12991,16 @@ elif choice == "📊 Operations Summary":
                 _z_df, _ = _build_ops_grouped_view(raw_status, "Zone-wise")
                 _ro_df, _ = _build_ops_grouped_view(raw_status, "RO-wise")
                 _br_df, _ = _build_ops_grouped_view(raw_status, "Branch-wise")
+                _rp_df, _ = _build_ops_grouped_view(raw_status, "Route Pair-wise")
                 _rl_df, _ = _build_ops_grouped_view(raw_status, "Route & Leg-wise")
                 dl_buf_o = io.BytesIO()
                 with pd.ExcelWriter(dl_buf_o, engine='xlsxwriter') as writer:
                     write_styled_sheet_to_excel(writer, _ro_df, '1_RO_Performance', sheet_type="generic", preserve_order=True)
                     write_styled_sheet_to_excel(writer, _br_df, '2_Branch_Performance', sheet_type="generic", preserve_order=True)
                     write_styled_sheet_to_excel(writer, _z_df, '3_Zone_Performance', sheet_type="generic", preserve_order=True)
-                    write_styled_sheet_to_excel(writer, _rl_df, '4_Route_Leg_Summary', sheet_type="generic", preserve_order=True)
-                    write_styled_sheet_to_excel(writer, raw_status.drop(columns=['_OpsRemarkOutcome', '_RemarkOutcome'], errors='ignore'), '5_Operations_Raw', sheet_type="ops_raw")
+                    write_styled_sheet_to_excel(writer, _rp_df, '4_Route_Pair_Summary', sheet_type="generic", preserve_order=True)
+                    write_styled_sheet_to_excel(writer, _rl_df, '5_Route_Leg_Summary', sheet_type="generic", preserve_order=True)
+                    write_styled_sheet_to_excel(writer, raw_status.drop(columns=['_OpsRemarkOutcome', '_RemarkOutcome'], errors='ignore'), '6_Operations_Raw', sheet_type="ops_raw")
                 st.session_state["_ops_excel_ready_bytes"] = (_ops_xl_sig, dl_buf_o.getvalue())
         if isinstance(st.session_state.get("_ops_excel_ready_bytes"), tuple) and st.session_state["_ops_excel_ready_bytes"][0] == _ops_xl_sig:
             ops_dl2.download_button(
@@ -11893,7 +13025,7 @@ elif choice == "🚚 Vendor Performance":
     st.markdown("<h2>Vendor Performance (Routewise/Legwise)</h2>", unsafe_allow_html=True)
 
     if 'Vendor_Perf_Summary' in data and 'Vendor_Perf_Raw' in data:
-        df_vperf_raw_full = data['Vendor_Perf_Raw'].copy()
+        df_vperf_raw_full = ensure_route_pair_col(data['Vendor_Perf_Raw'].copy(), 'Route Path')
 
         if not st.session_state.get('all_vendors', True):
             allowed_v = [normalize_vendor_name(v) for v in st.session_state.get('allowed_vendors', []) if v]
@@ -11908,9 +13040,10 @@ elif choice == "🚚 Vendor Performance":
             zone_col="Zone" if "Zone" in df_vperf_raw_full.columns else None,
             ro_col="Origin RO" if "Origin RO" in df_vperf_raw_full.columns else None,
             vendor_col="VendorName" if "VendorName" in df_vperf_raw_full.columns else None,
+            route_pair_col="Route Pair" if "Route Pair" in df_vperf_raw_full.columns else None,
             route_col="Route Path" if "Route Path" in df_vperf_raw_full.columns else None,
             leg_col="Legwise" if "Legwise" in df_vperf_raw_full.columns else None,
-            search_placeholder="Search Route, Leg, Vehicle..."
+            search_placeholder="Search Route Pair, Route, Leg, Vehicle..."
         )
         selected_zone = ven_filters["zone"]
         selected_ro = ven_filters["ro"]
@@ -11932,7 +13065,7 @@ elif choice == "🚚 Vendor Performance":
             st.warning("No Vendor trips found for the selected criteria/duration.")
             st.stop()
 
-        display_cols = ['Origin RO', 'Route Path', 'Legwise', 'Legs', 'VendorName', 'Total_Trips', 'Ontime Arrival', 'Late Arrival', 'In-Transit']
+        display_cols = ['Origin RO', 'Route Pair', 'Route Path', 'Legwise', 'Legs', 'VendorName', 'Total_Trips', 'Ontime Arrival', 'Late Arrival', 'In-Transit']
         df_display = df_vperf_sum[[c for c in display_cols if c in df_vperf_sum.columns]].copy()
         df_display = sort_by_route_and_leg(df_display)
         df_display['RowKey'] = df_display['Origin RO'].astype(str) + " || " + df_display['VendorName'].astype(str) + " | " + df_display['Route Path'].astype(str) + " | " + df_display['Legwise'].astype(str)
@@ -11971,13 +13104,13 @@ elif choice == "🚚 Vendor Performance":
         _vh1, _vh2 = st.columns([2.2, 1.4])
         ven_view_mode = _vh2.selectbox(
             "Group Vendor Performance By:",
-            ["Vendor + Route + Leg", "Vendor-wise", "RO-wise", "Zone-wise"],
+            ["Vendor + Route + Leg", "Vendor + Route Pair", "Vendor-wise", "RO-wise", "Zone-wise"],
             key="ven_main_group_mode"
         )
         _vh1.markdown(f"### 📋 Vendor Performance Breakdown ({ven_view_mode})")
 
         def _build_ven_grouped_view(src_v, mode):
-            wv = src_v.copy()
+            wv = ensure_route_pair_col(src_v.copy(), 'Route Path')
             s_v = wv.get('Remark with 15 min waiver', pd.Series('', index=wv.index)).fillna('').astype(str).str.strip()
             wv['_ot'] = s_v.eq('Ontime Arrival').astype(int)
             wv['_lt'] = s_v.eq('Late Arrival').astype(int)
@@ -11985,7 +13118,8 @@ elif choice == "🚚 Vendor Performance":
             wv['_ms'] = s_v.eq('Missing Schedule').astype(int)
             wv['_dhrs'] = wv.get('Delay Hours', pd.Series('', index=wv.index)).apply(_delay_str_to_hrs)
             k_map = {
-                "Vendor + Route + Leg": [c for c in ['Origin RO', 'VendorName', 'Route Path', 'Legwise', 'Legs'] if c in wv.columns],
+                "Vendor + Route + Leg": [c for c in ['Origin RO', 'VendorName', 'Route Pair', 'Route Path', 'Legwise', 'Legs'] if c in wv.columns],
+                "Vendor + Route Pair": [c for c in ['VendorName', 'Route Pair'] if c in wv.columns],
                 "Vendor-wise": [c for c in ['VendorName'] if c in wv.columns],
                 "RO-wise": [c for c in ['Zone', 'Origin RO'] if c in wv.columns],
                 "Zone-wise": [c for c in ['Zone'] if c in wv.columns],
@@ -12017,7 +13151,7 @@ elif choice == "🚚 Vendor Performance":
             if not out_v.empty:
                 if 'Legwise' in out_v.columns and 'Route Path' in out_v.columns:
                     out_v['_leg_n'] = extract_leg_num_val(out_v['Legwise'])
-                    _grp_k = [c for c in ['VendorName', 'Route Path'] if c in out_v.columns]
+                    _grp_k = [c for c in ['VendorName', 'Route Pair', 'Route Path'] if c in out_v.columns]
                     out_v['_grp_sl'] = out_v.groupby(_grp_k)['_sl'].transform('sum')
                     out_v['_grp_tr'] = out_v.groupby(_grp_k)['Total Trips'].transform('sum')
                     out_v['_grp_sp'] = np.where(out_v['_grp_tr'] > 0, out_v['_grp_sl'] / out_v['_grp_tr'] * 100.0, 0.0)
@@ -12058,11 +13192,13 @@ elif choice == "🚚 Vendor Performance":
         if ven_dl_col1.button("📥 Prepare Styled Vendor Excel Report", key="ven_prepare_excel_btn", type="primary", use_container_width=True):
             with st.spinner("Generating styled Vendor Performance Excel..."):
                 _v_roll, _ = _build_ven_grouped_view(df_vperf_raw, "Vendor-wise")
+                _v_rp, _ = _build_ven_grouped_view(df_vperf_raw, "Vendor + Route Pair")
                 dl_buf_v = io.BytesIO()
                 with pd.ExcelWriter(dl_buf_v, engine='xlsxwriter') as writer:
                     write_styled_sheet_to_excel(writer, _v_roll, '1_Vendor_Rollup', sheet_type="generic", preserve_order=True)
-                    write_styled_sheet_to_excel(writer, df_vperf_sum, '2_Vendor_Route_Leg', sheet_type="ven_sum")
-                    write_styled_sheet_to_excel(writer, df_vperf_raw, '3_Vendor_Raw_Data', sheet_type="ven_raw")
+                    write_styled_sheet_to_excel(writer, _v_rp, '2_Vendor_Route_Pair', sheet_type="generic", preserve_order=True)
+                    write_styled_sheet_to_excel(writer, df_vperf_sum, '3_Vendor_Route_Leg', sheet_type="ven_sum")
+                    write_styled_sheet_to_excel(writer, df_vperf_raw, '4_Vendor_Raw_Data', sheet_type="ven_raw")
                 st.session_state["_ven_excel_ready_bytes"] = (_ven_xl_sig, dl_buf_v.getvalue())
         if isinstance(st.session_state.get("_ven_excel_ready_bytes"), tuple) and st.session_state["_ven_excel_ready_bytes"][0] == _ven_xl_sig:
             ven_dl_col2.download_button(
@@ -12605,8 +13741,8 @@ elif choice == "📱 Communication Hub":
     # === [MODULE_START: Communication Hub] ===
     st.markdown("<h2>📱 Communication Hub (National Routes, Vendors & Regional Offices)</h2>", unsafe_allow_html=True)
     
-    df_ops_raw_base = data.get('Legwise_Processed_Data', pd.DataFrame()).copy()
-    df_ven_raw_base = data.get('Vendor_Perf_Raw', pd.DataFrame()).copy()
+    df_ops_raw_base = ensure_route_pair_col(data.get('Legwise_Processed_Data', pd.DataFrame()).copy(), 'Route Path')
+    df_ven_raw_base = ensure_route_pair_col(data.get('Vendor_Perf_Raw', pd.DataFrame()).copy(), 'Route Path')
     if not df_ven_raw_base.empty and 'VendorName' in df_ven_raw_base.columns:
         df_ven_raw_base['VendorName'] = df_ven_raw_base['VendorName'].apply(normalize_vendor_name)
     if not st.session_state.get('all_vendors', True):
@@ -12632,7 +13768,7 @@ elif choice == "📱 Communication Hub":
             df_cpk_raw_hub = df_cpk_raw_base
     else:
         df_ops_raw_hub = df_ops_raw_base
-        df_ops_sum_hub = data.get('Legwise_Route_Summary', pd.DataFrame()).copy()
+        df_ops_sum_hub = ensure_route_pair_col(data.get('Legwise_Route_Summary', pd.DataFrame()).copy(), 'Route Path')
         df_ven_sum_hub = build_vendor_summary_from_raw(df_ven_raw_hub)
         df_cpk_raw_hub = df_cpk_raw_base
 
@@ -12835,8 +13971,10 @@ elif choice == "📱 Communication Hub":
                             st.success(f"Contact details for {vm_name} saved successfully!")
                 st.markdown("---")
             
+            df_vperf_sum = ensure_route_pair_col(df_vperf_sum, 'Route Path')
+            df_vperf_raw = ensure_route_pair_col(df_vperf_raw, 'Route Path')
             st.markdown("### 🔍 Individual Vendor Messaging & Report")
-            col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
+            col1, col2, col_rp, col3, col4 = st.columns([0.9, 0.9, 1.1, 1.1, 1.6])
             
             all_zones = sorted(df_vperf_sum['Zone'].dropna().unique().tolist()) if 'Zone' in df_vperf_sum.columns else []
             selected_zone = col1.selectbox("Filter Zone:", ["ALL"] + all_zones, key="vh_z")
@@ -12849,6 +13987,12 @@ elif choice == "📱 Communication Hub":
             if selected_ro != "ALL":
                 df_vperf_sum = df_vperf_sum[df_vperf_sum['Origin RO'] == selected_ro]
                 df_vperf_raw = df_vperf_raw[df_vperf_raw['Origin RO'] == selected_ro]
+
+            all_rpairs = sorted(df_vperf_sum['Route Pair'].dropna().unique().tolist()) if 'Route Pair' in df_vperf_sum.columns else []
+            selected_rpair = col_rp.selectbox("Filter Route Pair:", ["ALL"] + all_rpairs, key="vh_rp")
+            if selected_rpair != "ALL":
+                df_vperf_sum = df_vperf_sum[df_vperf_sum['Route Pair'] == selected_rpair]
+                df_vperf_raw = df_vperf_raw[df_vperf_raw['Route Pair'] == selected_rpair]
 
             all_routes = sorted(df_vperf_sum['Route Path'].dropna().unique().tolist())
             selected_route = col3.selectbox("Filter Route:", ["ALL"] + all_routes, key="vh_rt")
