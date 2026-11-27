@@ -8302,6 +8302,536 @@ def build_admin_eod_brief_text(tasks, today_d):
     return "\n".join(lines)
 
 
+
+LD_MICRO_LESSON_LIBRARY = {
+    "Practice 5 concise status-update sentences (No filler words, direct numbers first)": {
+        "mins": 10,
+        "hinglish_concept": "Senior leadership (CEO/AVP) ko lambi kahani nahi, pehle exact number aur action chahiye. 'Actually sir, basically...' jaise filler words hata kar **Number → Root Cause → Action → Timeline** bolna seekh.",
+        "trackon_example": (
+            "❌ Weak: 'Sir actually yesterday some vehicles got delayed in North because of loading issue, we are checking.'\n"
+            "✅ Crisp Leadership Style:\n"
+            "1. 'Sir, National Linehaul on-time departure was 88% yesterday; 4 trips delayed at DELAP due to late bag handover.'\n"
+            "2. 'Cost per kg dropped from ₹4.85 to ₹4.62 after consolidating Attibele into Makali hub.'\n"
+            "3. 'Three Fleetx GPS units are offline since 14 Nov; escalation mail is sent to Vivek with a 4 PM deadline.'\n"
+            "4. 'Payment hold of ₹14,380 for KA09D1386 is reconciled and submitted for one-time approval by 30 Nov.'\n"
+            "5. 'Bhiwandi SXL placement is 50% done; vehicle number will be confirmed by 5:30 PM today.'"
+        ),
+        "practice_drill": "Aaj ke apne kisi bhi 1 pending task (e.g. Bhiwandi SXL ya SDS Transport) par neeche **1 crisp English line** likh (Number + Status + Timeline) aur 2 baar zor se bol.",
+        "cheat_sheet": "Formula: [Metric/Entity] + [Exact Number/Status] + [Reason in 4 words] + [Next Action & Time]."
+    },
+    "Rehearse 2-minute National Linehaul cost & utilization review pitch for CEO/AVP": {
+        "mins": 15,
+        "hinglish_concept": "2-minute CEO review pitch hamesha 3 parts mein honi chahiye: **1) Headline (30s)** — total cost, weight, CPK, util %; **2) Top 2 Wins + Top 2 Leakages (60s)**; **3) Next Week Action Plan (30s)**.",
+        "trackon_example": (
+            "🎤 2-Min Script Template:\n"
+            "• Headline: 'Sir, this month we ran [X] National trips carrying [Y] MT at [Z]% utilization and ₹[CPK]/kg.'\n"
+            "• Win: 'Hub consolidation and route clubbing saved ₹[Amount] Lakhs on [Route].'\n"
+            "• Leakage: 'Two corridors ([Route A], [Route B]) are below 60% utilization; we are evaluating downsizing from 22 ft to 19 ft.'\n"
+            "• Close: 'By Friday, we will share revised vendor quotes and close pending GPS billing recoveries.'"
+        ),
+        "practice_drill": "Apne pichhle executive review ka 1 win aur 1 leakage yaad kar, aur neeche 4 bullet lines mein English pitch likh kar 90 seconds mein padh.",
+        "cheat_sheet": "Never read raw Excel rows to CEO. Always lead with: Headline → Variance → Action."
+    },
+    "Learn 10 polite escalation phrases for RO & Vendor calls (e.g. 'Could you please expedite...')": {
+        "mins": 10,
+        "hinglish_concept": "RO ya Vendor se kaam jaldi nikalwana ho toh gusse ki jagah **firm + polite** English phrases use karne se response fast aata hai aur mail trail professional lagta hai.",
+        "trackon_example": (
+            "📞 10 Ready-to-Use Phrases:\n"
+            "1. 'Could you please expedite this by 5 PM today?'\n"
+            "2. 'Requesting your urgent confirmation on vehicle placement.'\n"
+            "3. 'This is impacting our National Linehaul SLA; kindly prioritize.'\n"
+            "4. 'As discussed on call, please share the revised invoice by EOD.'\n"
+            "5. 'Gentle reminder — this has been pending since [Date].'\n"
+            "6. 'Kindly help us close this on priority to avoid billing hold.'\n"
+            "7. 'Could you confirm the exact ETA so I can update leadership?'\n"
+            "8. 'We noticed a variance of [X] km; please verify and revert.'\n"
+            "9. 'Appreciate your quick support on this.'\n"
+            "10. 'Let us align on a concrete timeline today.'"
+        ),
+        "practice_drill": "Inmein se 3 phrases choose kar aur apne aaj ke `Waiting on RO/Vendor` task (e.g. Vivek / MUMRO) ke liye ek 2-line polite follow-up message likh.",
+        "cheat_sheet": "Polite + Specific Time ('by 5 PM today') = 3x faster replies than 'ASAP'."
+    },
+    "Record a 60-second voice summary of today's Fleet Exceptions & review clarity": {
+        "mins": 10,
+        "hinglish_concept": "Roz sirf 60 second apni awaaz mein aaj ka ops update bol kar sunne se confidence aur fluency dono 2 hafte mein visibly improve ho jate hain.",
+        "trackon_example": (
+            "🎙️ 60-Second Structure:\n"
+            "• 0–15s: 'Good evening, quick update on today's fleet operations.'\n"
+            "• 15–35s: Top 2 exceptions (e.g. 'Late departure at DELAP, GPS offline on 2 vehicles').\n"
+            "• 35–50s: Action taken ('Called vendor, backup vehicle arranged').\n"
+            "• 50–60s: 'Will share final closure by 10 AM tomorrow. Thank you.'"
+        ),
+        "practice_drill": "Phone ka voice recorder khol, upar ke 4 points 60 second mein bol, aur sun kar note kar: speed theek thi? 'umm/actually' kitni baar aaya?",
+        "cheat_sheet": "Slow down by 15% when speaking numbers — clarity beats speed every time."
+    },
+    "Master crisp email replies (Acknowledge -> Verify -> Action -> Timeline)": {
+        "mins": 10,
+        "hinglish_concept": "Har corporate email ka 4-step golden structure hota hai: **Acknowledge** (noted) → **Verify** (checked data) → **Action** (kya kiya) → **Timeline** (kab tak close hoga).",
+        "trackon_example": (
+            "✉️ Sample 4-Line Email:\n"
+            "Hi Sir,\n"
+            "Noted. We cross-verified GPS vs odometer logs for KA09D1386 across Aug–Oct 2026 (1,438 extra km, ₹14,380).\n"
+            "Power-disconnect issue has been escalated to Fleetx team for resolution.\n"
+            "Requesting one-time approval by 30 Nov 2026 to clear the pending invoice.\n"
+            "Regards, Ajay"
+        ),
+        "practice_drill": "Apne inbox ka koi 1 pending mail soch aur uska 4-line reply (Acknowledge → Verify → Action → Timeline) neeche practice box mein likh.",
+        "cheat_sheet": "Ideal corporate email = 4 to 6 lines max. Details go in table/attachment."
+    },
+    "Build 1 in-memory Scripting.Dictionary VBA lookup macro (zero VLOOKUP lag)": {
+        "mins": 15,
+        "hinglish_concept": "4 Lakh rows par Excel 2013 mein `VLOOKUP` sheet ko hang kar deta hai. `Scripting.Dictionary` + Variant Array use karne par wahi lookup **2 second** mein ho jata hai!",
+        "trackon_example": (
+            '```vba\n'
+            'Sub FastDictLookup()\n'
+            '    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")\n'
+            '    Dim arrM As Variant, arrD As Variant, i As Long\n'
+            '    arrM = Sheets("Master").Range("A2:B10000").Value\n'
+            '    For i = 1 To UBound(arrM, 1)\n'
+            '        dict(UCase(Trim(arrM(i, 1)))) = arrM(i, 2)\n'
+            '    Next i\n'
+            '    arrD = Sheets("Data").Range("A2:C400000").Value\n'
+            '    For i = 1 To UBound(arrD, 1)\n'
+            '        If dict.Exists(UCase(Trim(arrD(i, 1)))) Then arrD(i, 3) = dict(UCase(Trim(arrD(i, 1))))\n'
+            '    Next i\n'
+            '    Sheets("Data").Range("A2:C400000").Value = arrD\n'
+            'End Sub\n'
+            '```'
+        ),
+        "practice_drill": "Upar ke 3 steps yaad kar: (1) Master range ko Array mein load → Dictionary banao, (2) Data range ko Array mein loop karo, (3) Ek hi line mein wapas sheet par write karo.",
+        "cheat_sheet": "Rule: Never read/write cells inside a 400k loop. Always use Variant Arrays + Scripting.Dictionary."
+    },
+    "Use Power Query to clean & append 3 monthly CSV/Excel exports in 1 click": {
+        "mins": 15,
+        "hinglish_concept": "Har mahine 3 files manually copy-paste karne ki jagah Power Query ka **From Folder → Combine & Transform** use kar — agle mahine bas nayi file folder mein daal aur **Refresh All** daba!",
+        "trackon_example": (
+            "Steps in Excel 2013 (Power Query Add-in):\n"
+            "1. Power Query → From File → From Folder → apna monthly folder select kar.\n"
+            "2. Filter `.xlsx` files → Combine Files par click kar.\n"
+            "3. Clean steps lagao: Trim/Uppercase VehicleNo, Change Type (Date, Decimal), Remove Blank Rows.\n"
+            "4. Close & Load To → Only Create Connection / PivotTable Report."
+        ),
+        "practice_drill": "Apne agle 3-month CPK/Billing folder ke liye 4 cleaning steps list kar jo tu Power Query mein automate karega.",
+        "cheat_sheet": "Power Query steps record once, replay forever on 1 click Refresh."
+    },
+    "Master SUMIFS / IFERROR / dynamic Named Ranges compatible with Excel 2013": {
+        "mins": 10,
+        "hinglish_concept": "Excel 2013 mein `XLOOKUP` ya `FILTER` nahi chalta, isliye `SUMIFS`, `COUNTIFS`, `INDEX/MATCH` aur `IFERROR` sabse reliable aur fast formulas hain.",
+        "trackon_example": (
+            "• Weighted CPK (Zero Div/0 Error): `=IFERROR(SUMIFS(CostCol, ROCol, A2) / SUMIFS(WtCol, ROCol, A2), 0)`\n"
+            "• Utilization %: `=IFERROR(SUMIFS(WtCol, RouteCol, A2) / SUMIFS(CapCol, RouteCol, A2), 0)`\n"
+            '• Safe Lookup (Excel 2013): `=IFERROR(INDEX(Master!$B$2:$B$5000, MATCH(A2, Master!$A$2:$A$5000, 0)), "UNMAPPED")`'
+        ),
+        "practice_drill": "CPK aur Util % ke liye upar wala `IFERROR(SUMIFS(...)/SUMIFS(...), 0)` formula neeche practice box mein bina dekhe likh kar verify kar.",
+        "cheat_sheet": "Always wrap division in IFERROR(..., 0) so Pivot/Charts never break on 0 weight."
+    },
+    "Practice Conditional Formatting rules (<60% Red, 60-80% Amber, >=80% Green)": {
+        "mins": 10,
+        "hinglish_concept": "Management sheet par aankh padte hi problem dikhni chahiye: **<60% Red** (action needed), **60–80% Amber** (watch), **>=80% Green** (healthy).",
+        "trackon_example": (
+            "Excel 2013 → Home → Conditional Formatting → Highlight Cell Rules:\n"
+            "1. Less Than `0.60` → Light Red Fill, Dark Red Text (`#FCE1E1` / `#8A1C1C`)\n"
+            "2. Between `0.60` and `0.799` → Soft Yellow Fill (`#FFF3CD` / `#856404`)\n"
+            "3. Greater Than or Equal To `0.80` → Soft Green Fill (`#D4EDDA` / `#155724`)"
+        ),
+        "practice_drill": "Yaad rakhna: agar cell `%` formatted hai toh Excel mein 60% = `0.6`, `60` nahi! Is mistake ko avoid karna hai.",
+        "cheat_sheet": "Percentage cells store 0.60, not 60. Always test rule on 59%, 60%, and 80%."
+    },
+    "Write a clean Pandas groupby + agg pipeline with weighted utilization & CPK": {
+        "mins": 15,
+        "hinglish_concept": "Kabhi bhi Utilization % ya CPK ka simple `.mean()` mat lena — hamesha **Weighted** nikalo: `Total_Wt / Total_Cap` aur `Total_Cost / Total_Wt`!",
+        "trackon_example": (
+            "```python\n"
+            "summary = (\n"
+            "    df.groupby(['Origin_RO', 'Route_Pair'], as_index=False)\n"
+            "      .agg(Trips=('Trips', 'sum'), Wt=('Wt', 'sum'), Cap=('Cap', 'sum'), Cost=('Cost', 'sum'))\n"
+            "      .assign(\n"
+            "          Util_Pct=lambda d: (d['Wt'] / d['Cap'].replace(0, np.nan) * 100).fillna(0).round(1),\n"
+            "          CPK=lambda d: (d['Cost'] / d['Wt'].replace(0, np.nan)).fillna(0).round(2)\n"
+            "      )\n"
+            "      .sort_values('Util_Pct', ascending=True)\n"
+            ")\n"
+            "```"
+        ),
+        "practice_drill": "Soch: agar Trip 1 mein 100kg/1000kg (10%) aur Trip 2 mein 9000kg/10000kg (90%) hai, toh simple average 50% galat hai — asli weighted util `(9100/11000)=82.7%` hai!",
+        "cheat_sheet": "Weighted Ratio = Sum(Numerator) / Sum(Denominator). Never average percentages."
+    },
+    "Automate a repetitive Excel report using XlsxWriter with native formulas": {
+        "mins": 15,
+        "hinglish_concept": "XlsxWriter mein static values ki jagah `write_formula()` se real Excel SUM/division formulas daalne par CEO/Finance sheet mein number edit karte hi totals live update hote hain.",
+        "trackon_example": (
+            "```python\n"
+            "ws.write_formula(last_row, 3, f'=SUM(D2:D{last_row})', total_fmt)\n"
+            "ws.write_formula(last_row, 4, f'=IFERROR(C{last_row+1}/B{last_row+1}, 0)', pct_fmt)\n"
+            "ws.autofilter(0, 0, last_row - 1, ncols - 1)\n"
+            "ws.freeze_panes(1, 0)\n"
+            "```"
+        ),
+        "practice_drill": "Apne kisi 1 daily Excel report ka naam soch aur note kar ki usmein kaunse 3 columns mein live Excel formulas hone chahiye.",
+        "cheat_sheet": "Always add autofilter + freeze_panes + fit_to_pages(1, 0) for print-ready reports."
+    },
+    "Understand GitHub Actions cron jobs & Streamlit Secrets management": {
+        "mins": 10,
+        "hinglish_concept": "GitHub Actions **UTC time** par chalta hai (IST = UTC + 5:30). Aur API keys / tokens kabhi code mein nahi likhte — hamesha `st.secrets` ya GitHub Repo Secrets mein rakhte hain.",
+        "trackon_example": (
+            "⏰ IST → UTC Cron Cheat Sheet:\n"
+            "• 9:00 AM IST  → `30 3 * * *`\n"
+            "• 2:00 PM IST  → `30 8 * * *`\n"
+            "• 6:00 PM IST  → `30 12 * * *`\n"
+            "• Safe Read in Python: `token = st.secrets.get('GITHUB_TOKEN', '')`"
+        ),
+        "practice_drill": "Calculate kar: agar subah **8:30 AM IST** par scraper chalana ho toh UTC cron kya hoga? (Answer: `0 3 * * *`).",
+        "cheat_sheet": "IST minus 5 hrs 30 mins = UTC. Always add `workflow_dispatch:` for manual test button."
+    },
+    "Practice Playwright / PDFPlumber scraping error handling & retries": {
+        "mins": 15,
+        "hinglish_concept": "Fleetx jaise portals kabhi slow load hote hain — `wait_for_selector(timeout=30000)` + 3-attempt `for attempt in range(3): try ... except` loop lagane se scraper kabhi beech mein crash nahi hota.",
+        "trackon_example": (
+            "```python\n"
+            "for attempt in range(1, 4):\n"
+            "    try:\n"
+            "        page.goto(url, wait_until='networkidle', timeout=45000)\n"
+            "        break\n"
+            "    except Exception as e:\n"
+            "        if attempt == 3: raise\n"
+            "        time.sleep(5 * attempt)\n"
+            "```"
+        ),
+        "practice_drill": "Yaad kar: agar 4 accounts mein se 1 account fail ho jaye toh `try/except` har account ke andar lagao taaki baaki 3 accounts ka data save ho jaye!",
+        "cheat_sheet": "Isolate failures per account + exponential backoff (5s, 10s, 15s)."
+    },
+    "Design a 1-page executive scorecard (Trips, MT, Cost, Util %, CPK)": {
+        "mins": 15,
+        "hinglish_concept": "Executive scorecard ka rule hai **5-Second Readability**: Top par 5 KPI Cards (Trips, Weight MT, Total Cost, Util %, CPK), beech mein Worst-5 Routes bar chart, neeche Action Table.",
+        "trackon_example": (
+            "Power BI DAX Measures (Weighted):\n"
+            "• `Total MT = SUM(Trips[Weight_Kg]) / 1000`\n"
+            "• `Weighted Util % = DIVIDE(SUM(Trips[Weight_Kg]), SUM(Trips[Capacity_Kg]), 0)`\n"
+            "• `Weighted CPK = DIVIDE(SUM(Trips[Trip_Cost]), SUM(Trips[Weight_Kg]), 0)`"
+        ),
+        "practice_drill": "Power BI mein `DIVIDE(a, b, 0)` kyun use karte hain `/` ki jagah? Kyunki `DIVIDE` automatically divide-by-zero error handle karta hai!",
+        "cheat_sheet": "Top = 5 KPIs | Middle = Visual Variance | Bottom = Worst-First Action Table."
+    },
+    "Analyze Round-Trip vs One-Side underutilization & backhaul load clubbing": {
+        "mins": 15,
+        "hinglish_concept": "Har corridor par UP aur DOWN dono side dekho: agar **dono side <60%** hai toh **vehicle downsize** (e.g. 22ft → 19ft); agar **sirf 1 side <60%** hai toh **backhaul/return load clubbing** karo.",
+        "trackon_example": (
+            "Decision Matrix:\n"
+            "• UP 45% + DOWN 48% → Round-Trip Underutilized → Downsize truck immediately (saves 15–25% cost).\n"
+            "• UP 92% + DOWN 38% → One-Side Underutilized → Keep truck size, add en-route hub pickup on return leg.\n"
+            "• UP 88% + DOWN 85% → Balanced Star Route → Protect SLA & rate."
+        ),
+        "practice_drill": "Apne Network Utilization tab ka koi 1 red route soch — wo Round-Trip underutilized hai ya One-Side?",
+        "cheat_sheet": "Both sides low = Downsize. Only one side low = Backhaul clubbing."
+    },
+    "Audit Fixed-Per-Month (/26 vs /30) vs Fixed-Per-Trip cost parity across branches": {
+        "mins": 10,
+        "hinglish_concept": "Fixed-Per-Month vehicles ka daily cost `Monthly_Cost / 26` (ya 30-day contract par `/30`) hota hai. Agar gaadi mahine mein sirf 18 din chali, toh effective per-trip cost jump ho jati hai!",
+        "trackon_example": (
+            "Quick Audit Math:\n"
+            "• Monthly Fixed = ₹78,000 → Standard Daily (26d) = ₹3,000/day.\n"
+            "• If vehicle ran only 18 days → True Cost/Run = ₹78,000 / 18 = ₹4,333/day (+44% leakage!).\n"
+            "• Action: Shift low-frequency routes (<20 days/month) from Fixed Monthly to Per-Trip hiring."
+        ),
+        "practice_drill": "Check rule: jis Fixed-Monthly vehicle ke monthly trips < 20 hain, usko Per-Trip rate se compare karke savings nikalo.",
+        "cheat_sheet": "Fixed Monthly only wins when vehicle runs >= 22–24 days/month."
+    }
+}
+
+def _get_ld_micro_lesson_detail(track_name, topic_title):
+    """Return structured 10-15 min lesson content for any default or custom L&D item."""
+    if topic_title in LD_MICRO_LESSON_LIBRARY:
+        d = dict(LD_MICRO_LESSON_LIBRARY[topic_title])
+        d["track"] = track_name
+        d["title"] = topic_title
+        return d
+    return {
+        "track": track_name,
+        "title": topic_title,
+        "mins": 12,
+        "hinglish_concept": f"Aaj ka 10–15 min micro-focus: **{topic_title}**. Chhote daily steps se 30 din mein solid mastery banti hai — bina office kaam disturb kiye.",
+        "trackon_example": f"• Trackon Fleet Ops mein is skill ko apply karo: apne current Pan-India Linehaul, Billing ya Automation workflow ka 1 real case uthao aur `{topic_title}` apply karke dekho.",
+        "practice_drill": "5 minute mein is topic ke 3 key points ya 1 practical example neeche practice box mein likh kar save karo.",
+        "cheat_sheet": "10 min daily consistency > 3 hours once a month."
+    }
+
+def _build_ld_study_card_html(lesson):
+    """Printable clean HTML study card (1-click Open -> Print / Save as PDF)."""
+    ex_html = html_module.escape(str(lesson.get("trackon_example", ""))).replace("\n", "<br>")
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{html_module.escape(lesson['title'])}</title>
+<style>
+body{{font-family:Inter,Segoe UI,Arial,sans-serif;max-width:780px;margin:24px auto;padding:24px;color:#0f172a;background:#f8fafc;line-height:1.6;}}
+.card{{background:#fff;border:2px solid #0f6cbd;border-radius:14px;padding:24px 28px;box-shadow:0 8px 24px rgba(15,23,42,.08);}}
+.tag{{display:inline-block;background:#e0f2fe;color:#0369a1;font-weight:700;font-size:12px;padding:4px 10px;border-radius:999px;margin-bottom:8px;}}
+h1{{font-size:21px;margin:6px 0 14px;color:#0f172a;}}
+h3{{font-size:14px;text-transform:uppercase;letter-spacing:.05em;color:#0f6cbd;margin:18px 0 6px;}}
+.box{{background:#f1f5f9;border-left:4px solid #0f6cbd;padding:12px 14px;border-radius:8px;font-size:13.5px;}}
+.cheat{{background:#dcfce7;border-left:4px solid #16a34a;padding:10px 14px;border-radius:8px;font-weight:600;color:#14532d;margin-top:14px;}}
+@media print{{body{{background:#fff;margin:0;}} .no-print{{display:none;}}}}
+</style></head><body>
+<div class="card">
+  <div class="tag">🎓 Trackon L&amp;D Micro-Lesson · {html_module.escape(str(lesson.get('track','')))} · ⏱️ {lesson.get('mins',10)} Mins</div>
+  <h1>{html_module.escape(lesson['title'])}</h1>
+  <h3>1. Simple Concept (Hinglish)</h3>
+  <div class="box">{html_module.escape(str(lesson.get('hinglish_concept','')))}</div>
+  <h3>2. Trackon Real Example / Script / Code</h3>
+  <div class="box" style="font-family:Consolas,monospace;font-size:12.5px;">{ex_html}</div>
+  <h3>3. 5-Minute Practice Drill</h3>
+  <div class="box">{html_module.escape(str(lesson.get('practice_drill','')))}</div>
+  <div class="cheat">💡 Key Takeaway: {html_module.escape(str(lesson.get('cheat_sheet','')))}</div>
+  <p class="no-print" style="margin-top:18px;font-size:12px;color:#64748b;">Tip: Press <b>Ctrl + P</b> → <b>Save as PDF</b> to save this study sheet anytime.</p>
+</div></body></html>"""
+
+def _build_ld_study_excel_bytes(lesson, practice_text=""):
+    """Build a crisp 1-sheet Excel practice workbook for the active L&D micro-lesson."""
+    rows = [
+        {"Section": "Track", "Content": str(lesson.get("track", ""))},
+        {"Section": "Lesson Topic", "Content": str(lesson.get("title", ""))},
+        {"Section": "Suggested Time", "Content": f"{lesson.get('mins', 10)} Minutes (Optional Daily Micro-Learning)"},
+        {"Section": "Simple Concept", "Content": str(lesson.get("hinglish_concept", ""))},
+        {"Section": "Trackon Example / Code", "Content": str(lesson.get("trackon_example", ""))},
+        {"Section": "5-Min Practice Drill", "Content": str(lesson.get("practice_drill", ""))},
+        {"Section": "Key Takeaway", "Content": str(lesson.get("cheat_sheet", ""))},
+        {"Section": "My Practice / Notes", "Content": str(practice_text or "")},
+    ]
+    return build_formatted_excel_bytes(
+        pd.DataFrame(rows),
+        sheet_name="LD_Micro_Lesson",
+        report_title=f"L&D Micro-Lesson: {lesson['title'][:60]}",
+        width_overrides={"Section": 24, "Content": 88}
+    )
+
+def render_inline_ld_micro_coach(store, tasks, open_tasks, now_ist, today_d, today_iso, is_eod_time):
+    """
+    Optional, Dynamic 10-15 Min L&D Micro-Coach embedded right inside `My Task & Focus Hub`.
+    Auto-picks 1-2 pending topics from L&D Hub based on date & time slot (Morning / After Lunch / After Office),
+    lets Ajay study right in place with timer + PDF/Excel export, and close in 1 click!
+    """
+    ld_store = load_ld_progress()
+    done_set = set(ld_store.get("completed", []))
+
+    all_ld_items = []
+    for tr_name, tr_items in DEFAULT_LD_TRACKS.items():
+        for it in tr_items:
+            all_ld_items.append((tr_name, it, f"{tr_name}::{it}"))
+    for ci in ld_store.get("custom_items", []):
+        if isinstance(ci, dict) and ci.get("title"):
+            tr_c = ci.get("track", "Custom L&D")
+            all_ld_items.append((tr_c, ci["title"], f"CUSTOM::{ci['title']}"))
+
+    pending_ld = [x for x in all_ld_items if x[2] not in done_set]
+    total_ld = len(all_ld_items)
+    done_ld = total_ld - len(pending_ld)
+
+    # Smart Time-Slot Label (Morning / After Lunch / After Office / Quick Break)
+    hr = now_ist.hour
+    if is_eod_time or hr >= 17:
+        slot_badge = "🏠 Office Khatam / Ghar Jaate Time Slot (10–15 min)"
+    elif 13 <= hr < 16:
+        slot_badge = "🍽️ Lunch Ke Baad Fresh Reset Slot (10–15 min)"
+    elif hr < 12:
+        slot_badge = "🌅 Aate Time Morning Warm-Up Slot (10 min)"
+    else:
+        slot_badge = "☕ Quick Break Micro-Learning Slot (10–15 min)"
+
+    pool = pending_ld if pending_ld else all_ld_items
+    if not pool:
+        return
+
+    # Deterministic daily rotation + user Next Topic offset
+    day_seed = today_d.toordinal()
+    rot_off = int(st.session_state.get("adm_ld_rot_offset", 0) or 0)
+    pick_idx1 = (day_seed + rot_off) % len(pool)
+    pick1 = pool[pick_idx1]
+    pick2 = pool[(pick_idx1 + 1) % len(pool)] if len(pool) > 1 else None
+
+    lesson1 = _get_ld_micro_lesson_detail(pick1[0], pick1[1])
+    lesson2 = _get_ld_micro_lesson_detail(pick2[0], pick2[1]) if pick2 else None
+
+    reader_open_key = "adm_ld_reader_active_key"
+    active_reader = st.session_state.get(reader_open_key, "")
+
+    with st.expander(
+        f"🎓 Aaj Ka Optional 10–15 Min L&D Micro-Coach · {slot_badge} ({done_ld}/{total_ld} L&D Done)",
+        expanded=bool(active_reader)
+    ):
+        st.caption("💡 **Zaroori nahi (Zero Pressure):** Jab free time mile — aate time, lunch ke baad, ya office khatam hone par — 1 click mein yahin 10–15 min padh le aur kaam aate hi turant **❌ Band Karo** daba de.")
+
+        c_l1, c_l2 = st.columns(2)
+        with c_l1:
+            st.markdown(
+                f"<div style='border:1px solid {selected_theme['line']};border-radius:12px;padding:10px 13px;background:{selected_theme['card1']};'>"
+                f"<div style='font-size:11px;font-weight:800;color:{selected_theme['blue']};'>{html_module.escape(lesson1['track'])} · ⏱️ {lesson1['mins']} min</div>"
+                f"<div style='font-size:13.5px;font-weight:750;margin-top:4px;color:{selected_theme['text']};'>{html_module.escape(lesson1['title'])}</div>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+            b1a, b1b = st.columns([1.3, 1.0])
+            if b1a.button("📖 Yahin Padho", key="adm_ld_open_1", type="primary", use_container_width=True):
+                st.session_state[reader_open_key] = pick1[2]
+                st.session_state["adm_ld_reader_meta"] = pick1
+                st.rerun()
+            if b1b.button("➕ Task Queue", key="adm_ld_addt_1", use_container_width=True, help="Optional 15-min task ke roop mein aaj ki list mein add karo"):
+                seq = int(store.get("seq", len(store["tasks"]) + 1))
+                store["tasks"].insert(0, {
+                    "id": f"T-{seq:04d}",
+                    "order_no": len(open_tasks) + 1,
+                    "deadline_hrs": round(lesson1["mins"] / 60.0, 2),
+                    "title": f"🎓 L&D ({lesson1['mins']}m): {lesson1['title']}",
+                    "category": "📌 General / Personal",
+                    "priority": "🟢 P4 - Low",
+                    "status": "Not Started",
+                    "progress": 0,
+                    "due_date": today_iso,
+                    "time_slot": "🌆 Evening (4-8)" if hr >= 16 else "☀️ Afternoon (12-4)",
+                    "entity": "L&D Optional",
+                    "follow_up_with": "",
+                    "recurrence": "One-Time",
+                    "pinned": False,
+                    "next_action": lesson1["practice_drill"][:140],
+                    "remarks": f"Optional L&D ({lesson1['track']})",
+                    "created_at": now_ist.strftime("%Y-%m-%d %H:%M"),
+                    "updated_at": now_ist.strftime("%Y-%m-%d %H:%M"),
+                    "completed_at": ""
+                })
+                store["seq"] = seq + 1
+                save_admin_tasks_store(store)
+                st.success("✅ Optional L&D task aaj ki list mein add ho gaya!")
+                st.rerun()
+
+        with c_l2:
+            if lesson2:
+                st.markdown(
+                    f"<div style='border:1px solid {selected_theme['line']};border-radius:12px;padding:10px 13px;background:{selected_theme['card1']};'>"
+                    f"<div style='font-size:11px;font-weight:800;color:{selected_theme['accent']};'>{html_module.escape(lesson2['track'])} · ⏱️ {lesson2['mins']} min</div>"
+                    f"<div style='font-size:13.5px;font-weight:750;margin-top:4px;color:{selected_theme['text']};'>{html_module.escape(lesson2['title'])}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+                b2a, b2b = st.columns([1.3, 1.0])
+                if b2a.button("📖 Yahin Padho", key="adm_ld_open_2", use_container_width=True):
+                    st.session_state[reader_open_key] = pick2[2]
+                    st.session_state["adm_ld_reader_meta"] = pick2
+                    st.rerun()
+                if b2b.button("🔄 Dusra Topic", key="adm_ld_next_rot", use_container_width=True):
+                    st.session_state["adm_ld_rot_offset"] = rot_off + 2
+                    st.rerun()
+
+        # --- IN-PLACE INTERACTIVE STUDY READER (Opens right here & closes in 1 click!) ---
+        if active_reader:
+            meta_r = st.session_state.get("adm_ld_reader_meta") or pick1
+            cur_lesson = _get_ld_micro_lesson_detail(meta_r[0], meta_r[1])
+            st.markdown("---")
+            rh1, rh2 = st.columns([3.8, 1.0])
+            rh1.markdown(f"### 📖 Live Micro-Lesson ({cur_lesson['mins']} Mins): {cur_lesson['title']}")
+            if rh2.button("❌ Band Karo", key="adm_ld_close_reader_top", type="primary", use_container_width=True):
+                st.session_state[reader_open_key] = ""
+                st.rerun()
+
+            # Mini live 10/15-min study countdown inside the reader
+            _mins_int = int(cur_lesson.get("mins", 10))
+            st.components.v1.html(
+                f"""<div style="font-family:Inter,sans-serif;display:flex;justify-content:space-between;align-items:center;
+                padding:8px 14px;border-radius:10px;background:{selected_theme['card2']};border:1px solid {selected_theme['blue']};color:{selected_theme['text']};">
+                  <span style="font-size:12.5px;font-weight:700;">🎓 {html_module.escape(cur_lesson['track'])} · Focused Study Mode</span>
+                  <span id="ldStudyTmr" style="font-size:16px;font-weight:900;color:#16a34a;">⏳ {_mins_int:02d}:00</span>
+                </div>
+                <script>
+                (function(){{
+                  let rem = {_mins_int * 60};
+                  const el = document.getElementById('ldStudyTmr');
+                  setInterval(function(){{
+                    if(rem > 0) rem--;
+                    const m = String(Math.floor(rem/60)).padStart(2,'0');
+                    const s = String(rem%60).padStart(2,'0');
+                    el.textContent = rem > 0 ? ('⏳ ' + m + ':' + s + ' left') : '✅ Session Complete!';
+                  }}, 1000);
+                }})();
+                </script>""",
+                height=48,
+                scrolling=False
+            )
+
+            st.info(f"**1️⃣ Simple Concept (Hinglish):**\n\n{cur_lesson['hinglish_concept']}")
+            st.markdown("**2️⃣ Real Trackon Example / Ready Script / Code:**")
+            if "```" in cur_lesson["trackon_example"]:
+                st.markdown(cur_lesson["trackon_example"])
+            else:
+                st.code(cur_lesson["trackon_example"], language="text")
+            st.success(f"**3️⃣ 5-Min Practice Drill:** {cur_lesson['practice_drill']}\n\n**💡 Cheat Sheet:** {cur_lesson['cheat_sheet']}")
+
+            # Optional live AI deep-dive if GEMINI_API_KEY is configured
+            _gem_key = ""
+            try:
+                _gem_key = str(st.secrets.get("GEMINI_API_KEY", "")).strip()
+            except Exception:
+                _gem_key = ""
+            if _gem_key:
+                if st.button("🤖 AI Tutor Se Aur Examples / Q&A Lo", key="adm_ld_ai_boost"):
+                    with st.spinner("AI Tutor tayar kar raha hai..."):
+                        try:
+                            _ai_ans, _ = _call_gemini_rest_api(
+                                _gem_key,
+                                f"Teach me '{cur_lesson['title']}' in 8-10 crisp bullet points in natural Hinglish with 2 practical Indian logistics/Trackon fleet operations examples and 1 quick quiz question.",
+                                system_instruction="You are a warm, direct Indian peer coach for a Fleet Operations Executive.",
+                                use_google_search=False
+                            )
+                            st.session_state["adm_ld_ai_extra"] = (active_reader, _ai_ans)
+                        except Exception as _ae:
+                            st.warning(f"AI Tutor note: {_ae}")
+                _ai_saved = st.session_state.get("adm_ld_ai_extra")
+                if isinstance(_ai_saved, tuple) and _ai_saved[0] == active_reader:
+                    st.markdown(_ai_saved[1])
+
+            prac_note = st.text_area(
+                "✍️ Apni 2-Min Practice / Note Likho (L&D Hub mein auto-save hoga):",
+                value="",
+                height=85,
+                placeholder="Yahan apna English sentence, formula, ya takeaway likh de...",
+                key=f"adm_ld_prac_box_{active_reader[:24]}"
+            )
+
+            # Action Row: Complete | Download PDF-Print HTML | Download Excel | Close
+            ac1, ac2, ac3, ac4 = st.columns([1.3, 1.2, 1.2, 0.9])
+            if ac1.button("✅ Done & Sync to L&D Hub", key="adm_ld_mark_done", type="primary", use_container_width=True):
+                if active_reader not in ld_store["completed"]:
+                    ld_store["completed"].append(active_reader)
+                if prac_note.strip():
+                    prev_n = str(ld_store.get("notes", "") or "").strip()
+                    stamp = f"[{now_ist:%d-%b %I:%M %p} · {cur_lesson['title'][:36]}]\n{prac_note.strip()}"
+                    ld_store["notes"] = (stamp + "\n\n" + prev_n).strip() if prev_n else stamp
+                save_ld_progress(ld_store)
+                st.session_state[reader_open_key] = ""
+                st.session_state["adm_ld_rot_offset"] = rot_off + 1
+                st.success("🎉 L&D Micro-Lesson complete aur cloud par sync ho gaya!")
+                st.rerun()
+
+            _html_card_bytes = _build_ld_study_card_html(cur_lesson).encode("utf-8")
+            ac2.download_button(
+                "📄 Study Card (PDF/Print)",
+                data=_html_card_bytes,
+                file_name=f"LD_Study_Card_{now_ist:%d_%b}.html",
+                mime="text/html",
+                use_container_width=True,
+                key="adm_ld_dl_html_pdf"
+            )
+
+            _xl_bytes = _build_ld_study_excel_bytes(cur_lesson, prac_note)
+            ac3.download_button(
+                "📊 Practice Sheet (.xlsx)",
+                data=_xl_bytes,
+                file_name=f"LD_Practice_{now_ist:%d_%b}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="adm_ld_dl_xlsx"
+            )
+
+            if ac4.button("❌ Band Karo", key="adm_ld_close_reader_bot", use_container_width=True):
+                st.session_state[reader_open_key] = ""
+                st.rerun()
+
+
 def render_admin_task_hub(data):
     """Master Admin-only Lifetime Focus & Task Progress Command Center."""
     if st.session_state.get('username') != 'admin':
@@ -8595,19 +9125,32 @@ def render_admin_task_hub(data):
         ft_due = _task_due(focus_task)
         ft_due_tag = "🔴 OVERDUE" if ft_due < today_d else ("📅 TODAY" if ft_due == today_d else f"📆 {focus_task.get('due_date','')}")
         ft_prog = int(focus_task.get("progress", 0))
-        st.markdown(
-            f"""<div style="border:2px solid {selected_theme['blue']};border-radius:14px;padding:14px 18px;margin:8px 0 12px;background:linear-gradient(120deg,{selected_theme['card1']},{selected_theme['card2']});">
-            <div style="font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:{selected_theme['blue']};">🎯 ABHI SIRF YE EK KAAM KARNA HAI (PRIORITY #{int(focus_task.get('order_no', 1) or 1)})</div>
-            <div style="font-size:19px;font-weight:800;margin:4px 0;color:{selected_theme['text']};">{html_module.escape(str(focus_task.get('title','')))}</div>
-            <div style="font-size:12.5px;color:{selected_theme['muted']};">
-              <b>{html_module.escape(str(focus_task.get('id','')))}</b> &nbsp;·&nbsp; {html_module.escape(str(focus_task.get('priority','')))} &nbsp;·&nbsp; {html_module.escape(str(focus_task.get('category','')))} &nbsp;·&nbsp; {ft_due_tag} &nbsp;·&nbsp; {html_module.escape(str(focus_task.get('time_slot','')))}
-              {(' &nbsp;·&nbsp; 🏷️ ' + html_module.escape(str(focus_task.get('entity','')))) if focus_task.get('entity') else ''}
-              {(' &nbsp;·&nbsp; 👤 ' + html_module.escape(str(focus_task.get('follow_up_with','')))) if focus_task.get('follow_up_with') else ''}
-            </div>
-            <div style="margin-top:6px;font-size:13px;color:{selected_theme['text']};"><b>Next Step:</b> {html_module.escape(str(focus_task.get('next_action') or 'Execute & update progress'))} &nbsp;|&nbsp; <b>Progress:</b> {ft_prog}%</div>
-            </div>""",
-            unsafe_allow_html=True
+        _ft_meta_parts = [
+            f"<b>{html_module.escape(str(focus_task.get('id','')))}</b>",
+            html_module.escape(str(focus_task.get('priority',''))),
+            html_module.escape(str(focus_task.get('category',''))),
+            ft_due_tag,
+            html_module.escape(str(focus_task.get('time_slot','')))
+        ]
+        if focus_task.get('entity'):
+            _ft_meta_parts.append('🏷️ ' + html_module.escape(str(focus_task.get('entity',''))))
+        if focus_task.get('follow_up_with'):
+            _ft_meta_parts.append('👤 ' + html_module.escape(str(focus_task.get('follow_up_with',''))))
+        _ft_meta_html = " &nbsp;·&nbsp; ".join(p for p in _ft_meta_parts if p)
+        _ft_next_html = html_module.escape(str(focus_task.get('next_action') or 'Execute & update progress'))
+        _ft_card_html = (
+            f'<div style="border:2px solid {selected_theme["blue"]};border-radius:14px;padding:14px 18px;margin:8px 0 12px;'
+            f'background:linear-gradient(120deg,{selected_theme["card1"]},{selected_theme["card2"]});">'
+            f'<div style="font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:{selected_theme["blue"]};">'
+            f'🎯 ABHI SIRF YE EK KAAM KARNA HAI (PRIORITY #{int(focus_task.get("order_no", 1) or 1)})</div>'
+            f'<div style="font-size:19px;font-weight:800;margin:4px 0;color:{selected_theme["text"]};">'
+            f'{html_module.escape(str(focus_task.get("title","")))}</div>'
+            f'<div style="font-size:12.5px;color:{selected_theme["muted"]};">{_ft_meta_html}</div>'
+            f'<div style="margin-top:6px;font-size:13px;color:{selected_theme["text"]};">'
+            f'<b>Next Step:</b> {_ft_next_html} &nbsp;|&nbsp; <b>Progress:</b> {ft_prog}%</div>'
+            f'</div>'
         )
+        st.markdown(_ft_card_html, unsafe_allow_html=True)
         # --- FOCUS DEADLINE HOURS SELECTOR, ULTI GINTI & BONUS TIME CONTROLS ---
         _dl_choices = [0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
         _cur_hrs = float(focus_task.get("deadline_hrs", focus_task.get("focus_target_hrs", 1.0)) or 1.0)
@@ -8783,6 +9326,10 @@ def render_admin_task_hub(data):
                 park_list.pop(pi)
                 save_admin_tasks_store(store)
                 st.rerun()
+
+    # Optional Daily 10-15 Min L&D Micro-Coach (Auto-pulls from L&D Hub, in-place study + 1-click close)
+    if not focus_shield:
+        render_inline_ld_micro_coach(store, tasks, open_tasks, now_ist, today_d, today_iso, is_eod_time)
 
     # Quick Wins strip (chote 15-30 min wale tasks — momentum banane ke liye)
     quick_wins = [t for t in open_sorted if float(t.get("deadline_hrs", 1.0) or 1.0) <= 0.5]
@@ -15226,6 +15773,9 @@ elif choice == "🧩 Module Code Manager":
 
         def _build_merged_app_code(raw_pasted):
             _clean = raw_pasted.replace("\r\n", "\n")
+            _stripped_chk = _clean.strip()
+            if _stripped_chk.startswith("{") and ("\"tasks\"" in _stripped_chk or "\"pinned\"" in _stripped_chk or ": true" in _stripped_chk or ": false" in _stripped_chk):
+                raise ValueError("JSON_BACKUP_PASTED")
             # Strip accidental markdown code fences if user copied ```python ... ```
             _clean = re.sub(r'^\s*```(?:python)?\s*\n', '', _clean)
             _clean = re.sub(r'\n\s*```\s*$', '', _clean)
@@ -15248,12 +15798,17 @@ elif choice == "🧩 Module Code Manager":
             if not _pasted.strip():
                 st.error("Pehle updated module code paste kar.")
             else:
-                _merged = _build_merged_app_code(_pasted)
                 try:
+                    _merged = _build_merged_app_code(_pasted)
                     import ast as _ast_chk
                     _ast_chk.parse(_merged, filename="app.py")
                     st.session_state["_sf_mcm_ready_app"] = (_sel_mod, _merged)
                     st.success(f"✅ Full `app.py` ({len(_merged.splitlines()):,} lines) Syntax 100% Valid! Safe to Push or Download.")
+                except ValueError as _ve:
+                    if str(_ve) == "JSON_BACKUP_PASTED":
+                        st.error("🚫 Ye Tasks JSON Backup file hai, Python module code nahi! Isko **🎯 My Task & Focus Hub → Tab 4 → ♻️ Restore Tasks from Lifetime JSON Backup** mein upload karo.")
+                    else:
+                        st.error(f"❌ Error: {_ve}")
                 except SyntaxError as _se:
                     st.error(f"❌ SyntaxError on merged `app.py` line {_se.lineno}: {_se.msg}")
 
@@ -15263,10 +15818,15 @@ elif choice == "🧩 Module Code Manager":
             elif not _gh_tok:
                 st.error("GITHUB_TOKEN Streamlit Secrets mein set nahi hai. Side wale button se merged `app.py` download kar le.")
             else:
-                _merged = _build_merged_app_code(_pasted)
                 try:
+                    _merged = _build_merged_app_code(_pasted)
                     import ast as _ast_chk
                     _ast_chk.parse(_merged, filename="app.py")
+                except ValueError as _ve:
+                    if str(_ve) == "JSON_BACKUP_PASTED":
+                        st.error("🚫 Push Blocked — Ye Tasks JSON Backup file hai, Python module code nahi! Isko **🎯 My Task & Focus Hub → Tab 4 → ♻️ Restore Tasks from Lifetime JSON Backup** mein upload karo.")
+                    else:
+                        st.error(f"❌ Push Blocked: {_ve}")
                 except SyntaxError as _se:
                     st.error(f"❌ Push Blocked — SyntaxError on line {_se.lineno}: {_se.msg}")
                 else:
