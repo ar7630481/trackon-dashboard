@@ -1128,6 +1128,16 @@ TRACKON_FLEET_LADDER = [
     (13500, "32 ft MXL (13,500 kg)")
 ]
 
+def _fleet_size_label(cap_kg):
+    c = float(cap_kg or 0)
+    if c <= 0:
+        return "Unknown"
+    best = min(TRACKON_FLEET_LADDER, key=lambda x: abs(x[0] - c))
+    if abs(best[0] - c) <= max(250, c * 0.12):
+        return best[1]
+    return f"{int(round(c)):,} kg"
+
+
 
 def load_vehicle_type_lookup_maps():
     """Load National/Zonal + Regional/Feeder Vehicle Onboarding Masters into fast lookup dicts (Active + Latest wins)."""
@@ -6860,7 +6870,6 @@ def save_admin_tasks_store(store):
 
 if st.session_state.get('username') == 'admin':
     _maybe_run_daily_6pm_backup_in_app()
-    render_global_admin_live_focus_bar()
 
 try:
     import plotly.express as px
@@ -8345,49 +8354,62 @@ def render_admin_task_hub(data):
     )
 
     hdr_c1, hdr_c2 = st.columns([3.8, 1.4])
-    hdr_c1.markdown("## 🎯 My Task & Focus Hub")
-    hdr_c1.caption(f"Daily kaam, priority order aur live timer · 📅 {now_ist:%A, %d %b %Y} · 🔥 {streak_days}-Day Streak")
+    hdr_c1.markdown("## 🎯 My Task & Focus Hub (Admin Only)")
+    hdr_c1.caption(f"Daily kaam, priority order, live shift timer aur time chart · 📅 {now_ist:%A, %d %b %Y} · 🔥 {streak_days}-Day Streak")
     focus_shield = hdr_c2.toggle("🎯 Sirf Focus Dikhao", value=st.session_state.get("adm_focus_shield", False), key="adm_focus_shield")
 
+    # Live Big IST Clock + Active Focus Ulti Ginti + 08:30 Shift Countdown (Strictly Admin & ONLY in My Task & Focus Hub!)
+    render_global_admin_live_focus_bar()
+
     # =========================================================
-    # 0A. DYNAMIC SHIFT & LATE ARRIVAL PUNCH-IN STRIP (8h 30m / Sat-Sun)
+    # 0A. DYNAMIC SHIFT & CUSTOM ARRIVAL PUNCH-IN (Jitne Baje Aao + 08:30 Poore)
     # =========================================================
     sh = _get_today_shift_window(store, now_ist)
     is_eod_time = sh["rem_secs"] <= 0
     pending_today_list = [t for t in open_sorted if _task_due(t) <= today_d]
     queued_hrs_today = sum(float(t.get("deadline_hrs", t.get("focus_target_hrs", 1.0)) or 1.0) for t in pending_today_list)
     shift_rem_hrs = max(0.0, sh["rem_secs"] / 3600.0)
+    total_shift_secs = max(60, int(sh["dur_mins"]) * 60)
+    elapsed_secs = max(0, min(total_shift_secs, int((now_ist - sh["start_dt"]).total_seconds())))
+    rem_clamped_secs = max(0, total_shift_secs - elapsed_secs)
+    shift_pct = (elapsed_secs / total_shift_secs) * 100.0
 
     with st.expander(
-        f"🕒 Aaj Ki Shift: In {sh['start_dt']:%I:%M %p} → Out {sh['end_dt']:%I:%M %p} "
-        f"({sh['dur_mins']//60}h {sh['dur_mins']%60:02d}m · {'Punched In ✅' if sh['punched_in'] else 'Default — Late aaye ho toh Punch In karo'})",
-        expanded=(not sh["punched_in"] and now_ist.hour >= 9 and now_ist.hour <= 13)
+        f"🕒 Aaj Ki Shift (Jitne Baje Aao + {sh['dur_mins']//60:02d}:{sh['dur_mins']%60:02d} Poore): "
+        f"In {sh['start_dt']:%I:%M %p} → Out {sh['end_dt']:%I:%M %p} "
+        f"({'Punched In ✅' if sh['punched_in'] else 'Default — Apna Exact Aane Ka Time Set Karo'})",
+        expanded=(not sh["punched_in"] and not focus_shield)
     ):
-        sc1, sc2, sc3, sc4 = st.columns([1.2, 1.25, 1.35, 1.1])
+        sc1, sc2, sc3, sc4 = st.columns([1.15, 1.25, 1.45, 1.15])
         sc1.markdown("<div style='height:1.68rem'></div>", unsafe_allow_html=True)
-        if sc1.button("🟢 Punch In Now", key="adm_punch_in_now_btn", type="primary", use_container_width=True, help="Late aaye ho ya abhi office pahunche ho — 1 click mein abhi ka time set karo"):
+        if sc1.button("🟢 Punch In Now", key="adm_punch_in_now_btn", type="primary", use_container_width=True, help="Abhi office pahunche ho toh 1 click mein abhi ka exact time + 08:30 set karo"):
+            _dur_now = 510 if not sh["is_weekend"] else sh["dur_mins"]
             store.setdefault("shifts", {})[today_iso] = {
                 "start_hhmm": now_ist.strftime("%H:%M"),
-                "duration_mins": sh["dur_mins"],
-                "mode": sh["mode"]
+                "duration_mins": _dur_now,
+                "mode": "Normal Shift (8h 30m)" if _dur_now == 510 else sh["mode"]
             }
             save_admin_tasks_store(store)
-            st.success(f"✅ Punch-in saved: {now_ist:%I:%M %p} IST → Ghar jaane ka time: {(now_ist + datetime.timedelta(minutes=sh['dur_mins'])):%I:%M %p} IST")
+            st.success(f"✅ Punch-in: {now_ist:%I:%M %p} IST → Exact Out Time (+{_dur_now//60:02d}:{_dur_now%60:02d}): {(now_ist + datetime.timedelta(minutes=_dur_now)):%I:%M %p} IST")
             st.rerun()
 
         _def_t_obj = datetime.time(sh["start_dt"].hour, sh["start_dt"].minute)
-        picked_in_t = sc2.time_input("Aaj Office Aane Ka Time:", value=_def_t_obj, step=300, key="adm_shift_in_time")
+        picked_in_t = sc2.time_input("Exact Office Aane Ka Time (Custom):", value=_def_t_obj, step=60, key="adm_shift_in_time")
         preset_keys = list(SHIFT_PRESETS_MINS.keys())
         cur_p_idx = preset_keys.index(sh["mode"]) if sh["mode"] in preset_keys else (2 if sh["is_weekend"] else 0)
-        picked_mode = sc3.selectbox("Shift Duration (8:30 / Sat-Sun):", preset_keys, index=cur_p_idx, key="adm_shift_mode_sel")
+        picked_mode = sc3.selectbox("Kitne Ghante Poore Karne Hain:", preset_keys, index=cur_p_idx, key="adm_shift_mode_sel")
         if picked_mode == "Custom":
-            custom_hrs = st.number_input("Custom Shift Hours:", min_value=1.0, max_value=16.0, value=round(sh["dur_mins"]/60.0, 2), step=0.5, key="adm_shift_custom_hrs")
-            final_dur_mins = int(round(custom_hrs * 60))
+            ch_c1, ch_c2 = st.columns(2)
+            c_hr = ch_c1.number_input("Custom Hours:", min_value=0, max_value=16, value=int(sh["dur_mins"] // 60), step=1, key="adm_shift_custom_h")
+            c_mn = ch_c2.number_input("Custom Minutes:", min_value=0, max_value=55, value=int(sh["dur_mins"] % 60), step=5, key="adm_shift_custom_m")
+            final_dur_mins = max(30, int(c_hr) * 60 + int(c_mn))
         else:
             final_dur_mins = SHIFT_PRESETS_MINS[picked_mode]
 
+        _preview_in_dt = datetime.datetime(now_ist.year, now_ist.month, now_ist.day, picked_in_t.hour, picked_in_t.minute)
+        _preview_out_dt = _preview_in_dt + datetime.timedelta(minutes=final_dur_mins)
         sc4.markdown("<div style='height:1.68rem'></div>", unsafe_allow_html=True)
-        if sc4.button("💾 Save Shift", key="adm_save_shift_btn", use_container_width=True):
+        if sc4.button("💾 Save Shift Time", key="adm_save_shift_btn", use_container_width=True):
             store.setdefault("shifts", {})[today_iso] = {
                 "start_hhmm": picked_in_t.strftime("%H:%M"),
                 "duration_mins": final_dur_mins,
@@ -8395,6 +8417,81 @@ def render_admin_task_hub(data):
             }
             save_admin_tasks_store(store)
             st.rerun()
+        st.caption(f"📌 Preview: Aana **{_preview_in_dt:%I:%M %p}** + **{final_dur_mins//60:02d}h {final_dur_mins%60:02d}m** = Ghar Jaana **{_preview_out_dt:%I:%M %p} IST**")
+
+    # Dynamic Visual Time & Shift Charts (STRICTLY Admin Only & Inside My Task & Focus Hub!)
+    if not focus_shield and PLOTLY_AVAILABLE:
+        _bonus_hrs_today = round(int((store.get("bonus_bank") or {}).get(today_iso, 0) or 0) / 3600.0, 2)
+        _el_hrs = round(elapsed_secs / 3600.0, 2)
+        _rm_hrs = round(rem_clamped_secs / 3600.0, 2)
+        _ch_c1, _ch_c2 = st.columns([1.0, 1.45])
+        with _ch_c1:
+            _donut_df = pd.DataFrame({
+                "Part": ["Kaam Ho Gaya (Elapsed)", "Shift Bacha Time"],
+                "Hours": [max(0.01, _el_hrs), max(0.0, _rm_hrs)]
+            })
+            _fig_sh = px.pie(
+                _donut_df,
+                names="Part",
+                values="Hours",
+                hole=0.62,
+                color="Part",
+                color_discrete_map={
+                    "Kaam Ho Gaya (Elapsed)": selected_theme['blue'],
+                    "Shift Bacha Time": "#16a34a" if not is_eod_time else "#dc2626"
+                },
+                title=f"⏱️ Aaj Ki Shift ({sh['start_dt']:%I:%M %p} → {sh['end_dt']:%I:%M %p})"
+            )
+            _fig_sh.update_traces(textinfo="label+percent", hovertemplate="%{label}: %{value:.2f} hrs<extra></extra>")
+            _fig_sh.update_layout(
+                height=270,
+                margin=dict(t=42, b=10, l=10, r=10),
+                showlegend=False,
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color=selected_theme['text'], size=11),
+                annotations=[dict(
+                    text=f"<b>{shift_pct:.0f}%</b><br>{_fmt_hm_secs(rem_clamped_secs)} left" if not is_eod_time else "<b>100%</b><br>Shift Done!",
+                    x=0.5, y=0.5, font_size=13, showarrow=False, font=dict(color=selected_theme['text'])
+                )]
+            )
+            st.plotly_chart(_fig_sh, use_container_width=True, key="adm_shift_donut_chart")
+
+        with _ch_c2:
+            _bar_rows = [
+                {"Item": "🏠 Shift Bacha Time", "Hours": round(shift_rem_hrs, 2), "Color": selected_theme['blue']},
+                {"Item": f"📋 Aaj Ke {len(pending_today_list)} Pending Tasks", "Hours": round(queued_hrs_today, 2), "Color": "#dc2626" if (queued_hrs_today > shift_rem_hrs + 0.25 and not is_eod_time) else "#16a34a"},
+            ]
+            if _bonus_hrs_today > 0:
+                _bar_rows.append({"Item": "🏆 Bonus Time Saved", "Hours": _bonus_hrs_today, "Color": "#10b981"})
+            for _t_top in pending_today_list[:5]:
+                _t_h = float(_t_top.get("deadline_hrs", _t_top.get("focus_target_hrs", 1.0)) or 1.0)
+                _t_ord = int(_t_top.get("order_no", 1) or 1)
+                _bar_rows.append({
+                    "Item": f"#{_t_ord} {str(_t_top.get('title',''))[:26]}",
+                    "Hours": round(_t_h, 2),
+                    "Color": "#f59e0b" if _t_top.get("status") == "In Progress" else "#64748b"
+                })
+            _bar_df = pd.DataFrame(_bar_rows)
+            _fig_tm = px.bar(
+                _bar_df,
+                x="Hours",
+                y="Item",
+                orientation="h",
+                text=_bar_df["Hours"].apply(lambda h: f"{h:g}h"),
+                title="📊 Bacha Time vs Aaj Ka Kaam (Hours Breakdown)"
+            )
+            _fig_tm.update_traces(marker_color=_bar_df["Color"].tolist(), textposition="outside")
+            _fig_tm.update_layout(
+                height=270,
+                margin=dict(t=42, b=10, l=10, r=30),
+                yaxis=dict(autorange="reversed", title=""),
+                xaxis=dict(title="Hours"),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color=selected_theme['text'], size=11)
+            )
+            st.plotly_chart(_fig_tm, use_container_width=True, key="adm_time_workload_bar")
 
     # Psychological & Logical Workload Reality Check
     if pending_today_list and not is_eod_time:
@@ -9385,14 +9482,6 @@ def render_ai_and_learning_hub(data):
 # === [MODULE_END: AI Analyst & Learning Hub (Admin Only)] ===
 
 # === [MODULE_START: Network Utilization] ===
-def _fleet_size_label(cap_kg):
-    c = float(cap_kg or 0)
-    if c <= 0:
-        return "Unknown"
-    best = min(TRACKON_FLEET_LADDER, key=lambda x: abs(x[0] - c))
-    if abs(best[0] - c) <= max(250, c * 0.12):
-        return best[1]
-    return f"{int(round(c)):,} kg"
 
 def _recommend_smaller_truck(curr_cap, req_wt_kg):
     """Pick the smallest standard truck that safely carries req_wt_kg (~80-95% util) and is smaller than curr_cap."""
