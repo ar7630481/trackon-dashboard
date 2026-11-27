@@ -8817,15 +8817,18 @@ def render_inline_ld_micro_coach(store, tasks, open_tasks, now_ist, today_d, tod
                 key="adm_ld_dl_html_pdf"
             )
 
-            _xl_bytes = _build_ld_study_excel_bytes(cur_lesson, prac_note)
-            ac3.download_button(
-                "📊 Practice Sheet (.xlsx)",
-                data=_xl_bytes,
-                file_name=f"LD_Practice_{now_ist:%d_%b}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key="adm_ld_dl_xlsx"
-            )
+            if ac3.button("📊 Prepare Excel (.xlsx)", key="adm_ld_prep_xlsx", use_container_width=True):
+                st.session_state["_adm_ld_xl_ready"] = (active_reader, _build_ld_study_excel_bytes(cur_lesson, prac_note))
+            _ld_xl_hit = st.session_state.get("_adm_ld_xl_ready")
+            if isinstance(_ld_xl_hit, tuple) and _ld_xl_hit[0] == active_reader:
+                ac3.download_button(
+                    "⬇️ Download Practice (.xlsx)",
+                    data=_ld_xl_hit[1],
+                    file_name=f"LD_Practice_{now_ist:%d_%b}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="adm_ld_dl_xlsx"
+                )
 
             if ac4.button("❌ Band Karo", key="adm_ld_close_reader_bot", use_container_width=True):
                 st.session_state[reader_open_key] = ""
@@ -9351,7 +9354,7 @@ def render_admin_task_hub(data):
         "📤 4. EOD Brief, Excel & Lifetime Backup"
     ])
 
-    # --- TAB 1: DYNAMIC ACTION & INLINE EDITABLE TABLE ---
+    # --- TAB 1: MODERN VISUAL TASK CARDS, KANBAN BOARD & PRO INLINE TABLE ---
     with tab_act:
         tf1, tf2, tf3, tf4, tf5 = st.columns([1.25, 1.15, 1.0, 1.0, 1.4])
         scope_view = tf1.selectbox(
@@ -9401,31 +9404,302 @@ def render_admin_task_hub(data):
             )
         )
 
+        # Clean View Switcher + 1-Click Auto-Number Bar
+        vw_c1, vw_c2 = st.columns([3.6, 1.1])
+        task_view_mode = vw_c1.radio(
+            "Task View Style:",
+            ["🎨 Smart Action Cards", "📋 Kanban Board", "✏️ Bulk Edit Table"],
+            horizontal=True,
+            key="adm_task_view_mode",
+            label_visibility="collapsed"
+        )
+        if vw_c2.button("🔢 1,2,3 Auto-Number", key="adm_renum_top_btn", use_container_width=True, help="Open tasks ko clean 1, 2, 3... order mein set karo"):
+            _open_now = sorted(
+                [t for t in store["tasks"] if t.get("status") != "Completed"],
+                key=lambda x: (int(x.get("order_no", 9999) or 9999), _task_due(x))
+            )
+            for _ni, _nt in enumerate(_open_now, start=1):
+                _nt["order_no"] = _ni
+            save_admin_tasks_store(store)
+            st.success("✅ Saare open tasks 1, 2, 3... order mein set ho gaye!")
+            st.rerun()
+
         if not filtered:
             st.info("No tasks match the selected filters. Switch to Tab 2 to add a task or load your Morning Transport & GPS Routine!")
+        elif task_view_mode == "🎨 Smart Action Cards":
+            st.caption(f"Showing **{len(filtered)}** task(s) · Color-coded cards with 1-click **Focus, +25%, Done, Wait & Quick Edit** (zero horizontal scroll!).")
+
+            _tmrw_d_c = today_d + datetime.timedelta(days=1)
+            for idx_c, t in enumerate(filtered):
+                tid = t["id"]
+                t_ord = int(t.get("order_no", idx_c + 1) or (idx_c + 1))
+                t_prog = max(0, min(100, int(t.get("progress", 0) or 0)))
+                t_stat = str(t.get("status", "Not Started"))
+                t_pri = str(t.get("priority", "🟡 P3 - Medium"))
+                t_cat = str(t.get("category", ADMIN_TASK_CATEGORIES[0]))
+                t_ent = str(t.get("entity", "") or "").strip()
+                t_fw = str(t.get("follow_up_with", "") or "").strip()
+                t_next = str(t.get("next_action", "") or "").strip()
+                t_rem = str(t.get("remarks", "") or "").strip()
+                t_hrs = float(t.get("deadline_hrs", t.get("focus_target_hrs", 1.0)) or 1.0)
+                t_rec = str(t.get("recurrence", "One-Time"))
+                d_val = _task_due(t)
+                is_done_t = t_stat == "Completed"
+                is_active_f = (tid == store.get("active_focus_id", ""))
+
+                # Accent color by status / priority
+                if is_done_t:
+                    accent_col = "#16a34a"
+                    st_bg, st_fg = "#dcfce7", "#166534"
+                elif d_val < today_d:
+                    accent_col = "#dc2626"
+                    st_bg, st_fg = "#fee2e2", "#991b1b"
+                elif t_stat == "In Progress":
+                    accent_col = "#2563eb"
+                    st_bg, st_fg = "#dbeafe", "#1e40af"
+                elif t_stat in ("Waiting on RO/Vendor", "Blocked"):
+                    accent_col = "#d97706"
+                    st_bg, st_fg = "#fef3c7", "#92400e"
+                elif "P1" in t_pri:
+                    accent_col = "#ef4444"
+                    st_bg, st_fg = "#fee2e2", "#991b1b"
+                else:
+                    accent_col = "#0f6cbd"
+                    st_bg, st_fg = "#f1f5f9", "#334155"
+
+                if is_done_t:
+                    due_pill = f"<span style='background:#dcfce7;color:#166534;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;'>✅ Done {html_module.escape(str(t.get('completed_at',''))[:10])}</span>"
+                elif d_val < today_d:
+                    due_pill = f"<span style='background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:800;'>🔴 Overdue ({d_val:%d %b})</span>"
+                elif d_val == today_d:
+                    due_pill = "<span style='background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:800;'>📅 Due Today</span>"
+                elif d_val == _tmrw_d_c:
+                    due_pill = "<span style='background:#e0f2fe;color:#0369a1;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;'>📆 Tomorrow</span>"
+                else:
+                    due_pill = f"<span style='background:#f1f5f9;color:#475569;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;'>📆 {d_val:%d %b}</span>"
+
+                meta_pills = [
+                    f"<span style='background:{st_bg};color:{st_fg};padding:2px 8px;border-radius:999px;font-size:11px;font-weight:750;'>{html_module.escape(t_stat)}</span>",
+                    due_pill,
+                    f"<span style='background:{selected_theme['card2']};color:{selected_theme['text']};border:1px solid {selected_theme['line']};padding:2px 8px;border-radius:999px;font-size:11px;font-weight:650;'>{html_module.escape(t_pri)}</span>",
+                    f"<span style='background:{selected_theme['card2']};color:{selected_theme['muted']};border:1px solid {selected_theme['line']};padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;'>{html_module.escape(t_cat)}</span>",
+                    f"<span style='background:{selected_theme['card2']};color:{selected_theme['muted']};padding:2px 7px;border-radius:999px;font-size:11px;font-weight:650;'>⏱️ {int(t_hrs*60)}m</span>" if t_hrs < 1 else f"<span style='background:{selected_theme['card2']};color:{selected_theme['muted']};padding:2px 7px;border-radius:999px;font-size:11px;font-weight:650;'>⏱️ {t_hrs:g}h</span>",
+                ]
+                if t_ent:
+                    meta_pills.append(f"<span style='background:#ede9fe;color:#5b21b6;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:750;'>🏷️ {html_module.escape(t_ent)}</span>")
+                if t_fw:
+                    meta_pills.append(f"<span style='background:#ffedd5;color:#9a3412;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:750;'>👤 {html_module.escape(t_fw)}</span>")
+                if t_rec and t_rec != "One-Time":
+                    meta_pills.append(f"<span style='background:#e0e7ff;color:#3730a3;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;'>🔁 {html_module.escape(t_rec)}</span>")
+
+                focus_glow = f"box-shadow:0 0 0 2px {selected_theme['blue']}55, 0 6px 16px rgba(15,23,42,.08);" if is_active_f else "box-shadow:0 3px 10px rgba(15,23,42,.045);"
+                pin_tag = "📌 " if t.get("pinned") else ""
+                live_tag = " <span style='background:#2563eb;color:#fff;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:800;vertical-align:middle;'>LIVE FOCUS</span>" if is_active_f else ""
+                next_line_html = (
+                    f"<div style='margin-top:6px;font-size:12px;color:{selected_theme['text']};'>👉 <b>Next Step:</b> {html_module.escape(t_next)}</div>"
+                    if t_next else ""
+                )
+                rem_line_html = (
+                    f"<div style='margin-top:2px;font-size:11.5px;color:{selected_theme['muted']};'>📝 {html_module.escape(t_rem)}</div>"
+                    if t_rem else ""
+                )
+                bar_col = "#16a34a" if t_prog >= 80 else ("#2563eb" if t_prog >= 40 else "#f59e0b")
+
+                card_html = (
+                    f"<div style='border:1px solid {selected_theme['line']};border-left:5px solid {accent_col};border-radius:12px;"
+                    f"padding:11px 14px;margin:6px 0 4px;background:{selected_theme['card1']};{focus_glow}'>"
+                    f"<div style='display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;'>"
+                    f"<div style='font-size:15px;font-weight:800;color:{selected_theme['text']};'>"
+                    f"<span style='color:{accent_col};margin-right:6px;'>#{t_ord}</span>{pin_tag}{html_module.escape(str(t.get('title','')))}{live_tag}</div>"
+                    f"<div style='font-size:11.5px;font-weight:750;color:{selected_theme['muted']};'>{html_module.escape(tid)} · <b>{t_prog}%</b></div>"
+                    f"</div>"
+                    f"<div style='display:flex;flex-wrap:wrap;gap:6px;margin-top:7px;'>{''.join(meta_pills)}</div>"
+                    f"<div style='margin-top:8px;height:6px;border-radius:999px;background:{selected_theme['card2']};overflow:hidden;'>"
+                    f"<div style='width:{t_prog}%;height:100%;background:{bar_col};border-radius:999px;'></div></div>"
+                    f"{next_line_html}{rem_line_html}"
+                    f"</div>"
+                )
+                st.markdown(card_html, unsafe_allow_html=True)
+
+                # Compact 1-click action strip directly under each card
+                ab1, ab2, ab3, ab4, ab5, ab6 = st.columns([1.05, 0.9, 0.95, 1.05, 0.95, 0.55])
+                if not is_done_t:
+                    if ab1.button("🎯 Focus", key=f"card_foc_{tid}", use_container_width=True, help="Is task ko Top Focus mein set karke timer chalao"):
+                        _start_task_countdown(store, t, now_ist)
+                        save_admin_tasks_store(store)
+                        st.rerun()
+                    if ab2.button("⚡ +25%", key=f"card_p25_{tid}", use_container_width=True):
+                        np_v = min(100, t_prog + 25)
+                        t["progress"] = np_v
+                        t["status"] = "Completed" if np_v >= 100 else "In Progress"
+                        t["updated_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
+                        if np_v >= 100:
+                            _award_early_finish_bonus(store, t, now_ist, today_iso)
+                            t["completed_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
+                            _spawn_recurring_task_if_needed(store, t, today_d)
+                            if store.get("active_focus_id") == tid:
+                                store["active_focus_id"] = ""
+                        save_admin_tasks_store(store)
+                        st.rerun()
+                    if ab3.button("✅ Done", key=f"card_done_{tid}", type="primary", use_container_width=True):
+                        _eb = _award_early_finish_bonus(store, t, now_ist, today_iso)
+                        t["progress"] = 100
+                        t["status"] = "Completed"
+                        t["completed_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
+                        t["updated_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
+                        _spawn_recurring_task_if_needed(store, t, today_d)
+                        if store.get("active_focus_id") == tid:
+                            store["active_focus_id"] = ""
+                        save_admin_tasks_store(store)
+                        log_user_activity("admin", "Task Completed", f"{tid} · {t.get('title','')}" + (f" (Bonus {_fmt_bonus_secs(_eb)})" if _eb > 0 else ""))
+                        st.rerun()
+                    if ab4.button("⏳ Wait RO/Ven", key=f"card_wait_{tid}", use_container_width=True):
+                        t["status"] = "Waiting on RO/Vendor"
+                        t["updated_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
+                        save_admin_tasks_store(store)
+                        st.rerun()
+                else:
+                    if ab1.button("↩️ Reopen", key=f"card_reopen_{tid}", use_container_width=True):
+                        t["status"] = "In Progress"
+                        t["progress"] = 50
+                        t["completed_at"] = ""
+                        t["updated_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
+                        save_admin_tasks_store(store)
+                        st.rerun()
+
+                edit_state_k = f"adm_card_edit_open_{tid}"
+                if ab5.button("✏️ Edit", key=f"card_ed_btn_{tid}", use_container_width=True):
+                    st.session_state[edit_state_k] = not st.session_state.get(edit_state_k, False)
+                    st.rerun()
+                if ab6.button("🗑️", key=f"card_del_{tid}", use_container_width=True, help="Delete task"):
+                    store["tasks"] = [x for x in store["tasks"] if x["id"] != tid]
+                    if store.get("active_focus_id") == tid:
+                        store["active_focus_id"] = ""
+                    save_admin_tasks_store(store)
+                    st.rerun()
+
+                if st.session_state.get(edit_state_k, False):
+                    with st.form(f"card_edit_form_{tid}"):
+                        ec1, ec2, ec3, ec4 = st.columns([0.7, 2.1, 1.1, 1.1])
+                        e_ord = ec1.number_input("Serial #", min_value=1, max_value=999, value=t_ord, step=1)
+                        e_title = ec2.text_input("Task Title", value=str(t.get("title", "")))
+                        e_pri = ec3.selectbox("Priority", ADMIN_TASK_PRIORITIES, index=ADMIN_TASK_PRIORITIES.index(t_pri) if t_pri in ADMIN_TASK_PRIORITIES else 1)
+                        e_stat = ec4.selectbox("Status", ADMIN_TASK_STATUSES, index=ADMIN_TASK_STATUSES.index(t_stat) if t_stat in ADMIN_TASK_STATUSES else 0)
+
+                        ec5, ec6, ec7, ec8 = st.columns([1.0, 1.0, 1.1, 1.1])
+                        e_prog = ec5.slider("Progress %", 0, 100, t_prog, 5)
+                        e_due = ec6.date_input("Due Date", value=d_val if d_val.year < 2099 else today_d)
+                        e_ent = ec7.text_input("RO / Vendor / Veh", value=t_ent)
+                        e_fw = ec8.text_input("Follow-Up With", value=t_fw)
+
+                        ec9, ec10 = st.columns([2.2, 1.8])
+                        e_next = ec9.text_input("Next Step (Anti-Distraction)", value=t_next, placeholder="e.g., Call Vivek at 5 PM for approval")
+                        e_rem = ec10.text_input("Remarks", value=t_rem)
+
+                        eb1, eb2 = st.columns([1.4, 1.0])
+                        save_ed = eb1.form_submit_button("💾 Save Changes", type="primary", use_container_width=True)
+                        cancel_ed = eb2.form_submit_button("❌ Close", use_container_width=True)
+                        if save_ed:
+                            was_d = t.get("status") == "Completed"
+                            now_d = (e_stat == "Completed") or (int(e_prog) >= 100)
+                            t["order_no"] = int(e_ord)
+                            t["title"] = e_title.strip() or t["title"]
+                            t["priority"] = e_pri
+                            t["entity"] = e_ent.strip()
+                            t["follow_up_with"] = e_fw.strip()
+                            t["next_action"] = e_next.strip()
+                            t["remarks"] = e_rem.strip()
+                            t["due_date"] = e_due.isoformat()
+                            if now_d:
+                                t["status"] = "Completed"
+                                t["progress"] = 100
+                                if not was_d:
+                                    t["completed_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
+                                    _spawn_recurring_task_if_needed(store, t, today_d)
+                            else:
+                                t["status"] = e_stat
+                                t["progress"] = int(e_prog)
+                                t["completed_at"] = ""
+                            t["updated_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
+                            save_admin_tasks_store(store)
+                            st.session_state[edit_state_k] = False
+                            st.rerun()
+                        elif cancel_ed:
+                            st.session_state[edit_state_k] = False
+                            st.rerun()
+
+        elif task_view_mode == "📋 Kanban Board":
+            st.caption("📋 **Visual Kanban Board:** Teeno stages ek saath dekho — 1 click mein Focus ya Done kar do.")
+            kb1, kb2, kb3 = st.columns(3)
+            kb_buckets = [
+                (kb1, "📋 Not Started", "#64748b", [t for t in filtered if t.get("status") == "Not Started"]),
+                (kb2, "⚡ In Progress", "#2563eb", [t for t in filtered if t.get("status") == "In Progress"]),
+                (kb3, "⏳ Waiting / Blocked", "#d97706", [t for t in filtered if t.get("status") in ("Waiting on RO/Vendor", "Blocked")]),
+            ]
+            for col_k, hdr_k, clr_k, items_k in kb_buckets:
+                with col_k:
+                    st.markdown(
+                        f"<div style='padding:8px 12px;border-radius:10px;background:{clr_k}18;border-left:4px solid {clr_k};"
+                        f"font-weight:800;font-size:13.5px;color:{selected_theme['text']};margin-bottom:8px;'>{hdr_k} ({len(items_k)})</div>",
+                        unsafe_allow_html=True
+                    )
+                    if not items_k:
+                        st.caption("— Clear ✓")
+                    for tk in items_k:
+                        tk_id = tk["id"]
+                        tk_d = _task_due(tk)
+                        tk_p = int(tk.get("progress", 0) or 0)
+                        tk_ent = str(tk.get("entity", "") or "").strip()
+                        tk_due_s = "🔴 Overdue" if tk_d < today_d else ("📅 Today" if tk_d == today_d else f"{tk_d:%d %b}")
+                        st.markdown(
+                            f"<div style='border:1px solid {selected_theme['line']};border-top:3px solid {clr_k};border-radius:10px;"
+                            f"padding:9px 11px;margin-bottom:4px;background:{selected_theme['card1']};'>"
+                            f"<div style='font-size:13px;font-weight:800;color:{selected_theme['text']};'>#{int(tk.get('order_no',1) or 1)} {html_module.escape(str(tk.get('title','')))}</div>"
+                            f"<div style='font-size:11px;color:{selected_theme['muted']};margin-top:3px;'>{html_module.escape(str(tk.get('priority','')))} · {tk_due_s}"
+                            f"{(' · 🏷️ ' + html_module.escape(tk_ent)) if tk_ent else ''} · <b>{tk_p}%</b></div>"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
+                        kba, kbb = st.columns(2)
+                        if kba.button("🎯 Focus", key=f"kb_foc_{tk_id}", use_container_width=True):
+                            _start_task_countdown(store, tk, now_ist)
+                            save_admin_tasks_store(store)
+                            st.rerun()
+                        if kbb.button("✅ Done", key=f"kb_done_{tk_id}", use_container_width=True):
+                            _award_early_finish_bonus(store, tk, now_ist, today_iso)
+                            tk["progress"] = 100
+                            tk["status"] = "Completed"
+                            tk["completed_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
+                            tk["updated_at"] = now_ist.strftime("%Y-%m-%d %H:%M")
+                            _spawn_recurring_task_if_needed(store, tk, today_d)
+                            if store.get("active_focus_id") == tk_id:
+                                store["active_focus_id"] = ""
+                            save_admin_tasks_store(store)
+                            st.rerun()
+
         else:
-            st.caption("✏️ **Live Action Table:** Directly tick `Done`, change `Status`, `Progress %`, `Priority`, `Pin 🎯`, `Due Date`, or `Next Action` inline — then click **💾 Save Table Changes**.")
+            st.caption("✏️ **Pro Bulk Edit Table:** Visual progress bars + cleanest column order — ek saath multiple rows edit karke **💾 Save Table Changes** daba do.")
             edit_rows = []
             for t in filtered:
                 d_val = _task_due(t)
                 due_obj = d_val if d_val.year < 2099 else today_d
                 edit_rows.append({
                     "Serial #": int(t.get("order_no", 99) or 99),
-                    "ID": t["id"],
                     "Done ✅": t.get("status") == "Completed",
                     "Pin 🎯": bool(t.get("pinned", False)),
-                    "Priority": t.get("priority", "🟡 P3 - Medium"),
-                    "Category": t.get("category", ADMIN_TASK_CATEGORIES[0]),
                     "Task Title": t.get("title", ""),
+                    "Priority": t.get("priority", "🟡 P3 - Medium"),
                     "Status": t.get("status", "Not Started"),
                     "Progress %": int(t.get("progress", 0)),
-                    "Deadline (Hrs)": float(t.get("deadline_hrs", t.get("focus_target_hrs", 1.0)) or 1.0),
                     "Due Date": due_obj,
                     "RO / Vendor / Veh": t.get("entity", ""),
                     "Follow-Up With": t.get("follow_up_with", ""),
                     "Next Action": t.get("next_action", ""),
+                    "Deadline (Hrs)": float(t.get("deadline_hrs", t.get("focus_target_hrs", 1.0)) or 1.0),
+                    "Category": t.get("category", ADMIN_TASK_CATEGORIES[0]),
                     "Recurrence": t.get("recurrence", "One-Time"),
-                    "Remarks": t.get("remarks", "")
+                    "Remarks": t.get("remarks", ""),
+                    "ID": t["id"],
                 })
             df_edit_in = pd.DataFrame(edit_rows)
 
@@ -9434,30 +9708,30 @@ def render_admin_task_hub(data):
                 use_container_width=True,
                 hide_index=True,
                 num_rows="fixed",
-                height=min(560, 95 + len(df_edit_in) * 36),
+                height=min(560, 95 + len(df_edit_in) * 38),
                 disabled=["ID"],
                 column_config={
-                    "Serial #": st.column_config.NumberColumn("Serial #", min_value=1, max_value=999, step=1, width="small", help="Set 1, 2, 3... to reorder tasks anytime!"),
-                    "ID": st.column_config.TextColumn("ID", width="small"),
-                    "Done ✅": st.column_config.CheckboxColumn("Done ✅", width="small"),
-                    "Pin 🎯": st.column_config.CheckboxColumn("Pin 🎯", width="small"),
-                    "Priority": st.column_config.SelectboxColumn("Priority", options=ADMIN_TASK_PRIORITIES, required=True),
-                    "Category": st.column_config.SelectboxColumn("Category", options=ADMIN_TASK_CATEGORIES, required=True),
+                    "Serial #": st.column_config.NumberColumn("#", min_value=1, max_value=999, step=1, width="small"),
+                    "Done ✅": st.column_config.CheckboxColumn("Done", width="small"),
+                    "Pin 🎯": st.column_config.CheckboxColumn("Pin", width="small"),
                     "Task Title": st.column_config.TextColumn("Task Title", width="large", required=True),
+                    "Priority": st.column_config.SelectboxColumn("Priority", options=ADMIN_TASK_PRIORITIES, required=True),
                     "Status": st.column_config.SelectboxColumn("Status", options=ADMIN_TASK_STATUSES, required=True),
                     "Progress %": st.column_config.NumberColumn("Progress %", min_value=0, max_value=100, step=5, format="%d%%"),
-                    "Deadline (Hrs)": st.column_config.NumberColumn("Deadline (Hrs)", min_value=0.25, max_value=12.0, step=0.25, format="%.2fh"),
                     "Due Date": st.column_config.DateColumn("Due Date", format="DD-MM-YYYY"),
-                    "RO / Vendor / Veh": st.column_config.TextColumn("RO / Vendor / Veh", width="medium"),
-                    "Follow-Up With": st.column_config.TextColumn("Follow-Up With", width="medium"),
+                    "RO / Vendor / Veh": st.column_config.TextColumn("RO / Vendor", width="small"),
+                    "Follow-Up With": st.column_config.TextColumn("Follow-Up", width="small"),
                     "Next Action": st.column_config.TextColumn("Next Action", width="large"),
-                    "Recurrence": st.column_config.SelectboxColumn("Recurrence", options=ADMIN_TASK_RECURRENCES, required=True),
+                    "Deadline (Hrs)": st.column_config.NumberColumn("Hrs", min_value=0.25, max_value=12.0, step=0.25, format="%.2fh"),
+                    "Category": st.column_config.SelectboxColumn("Category", options=ADMIN_TASK_CATEGORIES, required=True),
+                    "Recurrence": st.column_config.SelectboxColumn("Repeat", options=ADMIN_TASK_RECURRENCES, required=True),
                     "Remarks": st.column_config.TextColumn("Remarks", width="medium"),
+                    "ID": st.column_config.TextColumn("ID", width="small"),
                 },
                 key=f"adm_task_editor_{scope_view}_{len(filtered)}"
             )
 
-            sv_c1, sv_c2, sv_c3 = st.columns([1.6, 1.8, 2.0])
+            sv_c1, sv_c2, sv_c3 = st.columns([1.6, 1.8, 1.8])
             if sv_c1.button("💾 Save Table Changes", key="adm_save_table_btn", type="primary", use_container_width=True):
                 task_by_id = {t["id"]: t for t in store["tasks"]}
                 spawned_cnt = 0
@@ -9507,14 +9781,7 @@ def render_admin_task_hub(data):
             sel_id_opts = [f"{t['id']} | {t['title'][:50]}" for t in filtered]
             picked_manage = sv_c2.selectbox("Quick Action on Task:", sel_id_opts, key="adm_quick_manage_sel", label_visibility="collapsed")
             m_tid = picked_manage.split(" | ")[0]
-            qa0, qa1, qa2 = sv_c3.columns(3)
-            if qa0.button("🔢 1,2,3 Auto", key="adm_renum_serial_btn", use_container_width=True, help="Cleanly re-number all open tasks 1, 2, 3..."):
-                _open_now = sorted([t for t in store["tasks"] if t.get("status") != "Completed"], key=lambda x: (int(x.get("order_no", 9999) or 9999), _task_due(x)))
-                for _ni, _nt in enumerate(_open_now, start=1):
-                    _nt["order_no"] = _ni
-                save_admin_tasks_store(store)
-                st.success("✅ Open tasks cleanly numbered 1, 2, 3...!")
-                st.rerun()
+            qa1, qa2 = sv_c3.columns(2)
             if qa1.button("🎯 Start Focus", key="adm_lock_focus_btn", use_container_width=True):
                 _lk_obj = next((t for t in store["tasks"] if t["id"] == m_tid), None)
                 if _lk_obj is not None:
