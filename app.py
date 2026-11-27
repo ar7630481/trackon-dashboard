@@ -3695,309 +3695,994 @@ def build_clean_email_message(recipient_title, duration_label, ops_sum_df=None, 
 # 4. UI & EXCEL HIGHLIGHTING ENGINE
 # ==========================================
 # === [MODULE_START: Excel Styling & VIP Export Engine] ===
-{
-  "seq": 15,
-  "active_focus_id": "T-0010",
-  "bonus_bank": {},
-  "shifts": {},
-  "parking_lot": [],
-  "tasks": [
-    {
-      "id": "T-0010",
-      "order_no": 1,
-      "deadline_hrs": 1.0,
-      "title": "SDS TRANSPORT KMS APPROVAL",
-      "category": "🔥 Vendor Escalation",
-      "priority": "🔴 P1 - Urgent",
-      "status": "Waiting on RO/Vendor",
-      "progress": 0,
-      "due_date": "2026-11-27",
-      "time_slot": "🌅 Morning (9-12)",
-      "entity": "BLRRO",
-      "follow_up_with": "Vivek",
-      "recurrence": "One-Time",
-      "pinned": true,
-      "next_action": "",
-      "remarks": "",
-      "created_at": "2026-11-27 16:21",
-      "updated_at": "2026-11-27 16:21",
-      "completed_at": ""
-    },
-    {
-      "id": "T-0004",
-      "order_no": 2,
-      "deadline_hrs": 1.0,
-      "title": "BHIWANDI SXL Placement",
-      "category": "🚛 Linehaul Placement",
-      "priority": "🟠 P2 - High",
-      "status": "Waiting on RO/Vendor",
-      "progress": 50,
-      "due_date": "2026-11-27",
-      "time_slot": "🌅 Morning (9-12)",
-      "entity": "MUMRO",
-      "follow_up_with": "",
-      "recurrence": "One-Time",
-      "pinned": false,
-      "next_action": "",
-      "remarks": "",
-      "created_at": "2026-11-27 16:21",
-      "updated_at": "2026-11-27 16:21",
-      "completed_at": ""
-    },
-    {
-      "id": "T-0005",
-      "order_no": 3,
-      "deadline_hrs": 1.0,
-      "title": "Talwar ji, 22 ft Veh Change",
-      "category": "🚛 Linehaul Placement",
-      "priority": "🟠 P2 - High",
-      "status": "Not Started",
-      "progress": 0,
-      "due_date": "2026-11-27",
-      "time_slot": "🌅 Morning (9-12)",
-      "entity": "DELRO",
-      "follow_up_with": "",
-      "recurrence": "One-Time",
-      "pinned": false,
-      "next_action": "",
-      "remarks": "",
-      "created_at": "2026-11-27 16:21",
-      "updated_at": "2026-11-27 16:21",
-      "completed_at": ""
-    },
-    {
-      "id": "T-0008",
-      "order_no": 4,
-      "deadline_hrs": 1.0,
-      "title": "Gupta ji One time approval",
-      "category": "💰 Billing & Held Invoices",
-      "priority": "🔴 P1 - Urgent",
-      "status": "Not Started",
-      "progress": 0,
-      "due_date": "2026-11-28",
-      "time_slot": "🌅 Morning (9-12)",
-      "entity": "DELRO",
-      "follow_up_with": "",
-      "recurrence": "One-Time",
-      "pinned": false,
-      "next_action": "",
-      "remarks": "",
-      "created_at": "2026-11-27 16:21",
-      "updated_at": "2026-11-27 16:21",
-      "completed_at": ""
-    },
-    {
-      "id": "T-0009",
-      "order_no": 5,
-      "deadline_hrs": 1.0,
-      "title": "TEJAS VEHICLE APPROVAL",
-      "category": "🚛 Linehaul Placement",
-      "priority": "🔴 P1 - Urgent",
-      "status": "In Progress",
-      "progress": 0,
-      "due_date": "2026-11-28",
-      "time_slot": "🌅 Morning (9-12)",
-      "entity": "MUMRO",
-      "follow_up_with": "",
-      "recurrence": "One-Time",
-      "pinned": false,
-      "next_action": "",
-      "remarks": "",
-      "created_at": "2026-11-27 16:21",
-      "updated_at": "2026-11-27 16:21",
-      "completed_at": ""
-    },
-    {
-      "id": "T-0011",
-      "order_no": 6,
-      "deadline_hrs": 1.0,
-      "title": "Automatic Provision Creation in Portal",
-      "category": "📌 General / Personal",
-      "priority": "🔴 P1 - Urgent",
-      "status": "Not Started",
-      "progress": 0,
-      "due_date": "2026-11-28",
-      "time_slot": "🌅 Morning (9-12)",
-      "entity": "PAN INDIA",
-      "follow_up_with": "",
-      "recurrence": "One-Time",
-      "pinned": false,
-      "next_action": "",
-      "remarks": "",
-      "created_at": "2026-11-27 16:21",
-      "updated_at": "2026-11-27 16:21",
-      "completed_at": ""
-    },
-    {
-      "id": "T-0012",
-      "order_no": 7,
-      "deadline_hrs": 1.0,
-      "title": "Bills queries solve",
-      "category": "💰 Billing & Held Invoices",
-      "priority": "🔴 P1 - Urgent",
-      "status": "Not Started",
-      "progress": 0,
-      "due_date": "2026-11-28",
-      "time_slot": "🌅 Morning (9-12)",
-      "entity": "",
-      "follow_up_with": "",
-      "recurrence": "One-Time",
-      "pinned": false,
-      "next_action": "",
-      "remarks": "",
-      "created_at": "2026-11-27 16:21",
-      "updated_at": "2026-11-27 16:21",
-      "completed_at": ""
-    },
-    {
-      "id": "T-0013",
-      "order_no": 8,
-      "deadline_hrs": 1.0,
-      "title": "Vandana Extra kms Work and approval",
-      "category": "📌 General / Personal",
-      "priority": "🔴 P1 - Urgent",
-      "status": "Not Started",
-      "progress": 0,
-      "due_date": "2026-11-28",
-      "time_slot": "🌅 Morning (9-12)",
-      "entity": "DELRO",
-      "follow_up_with": "",
-      "recurrence": "One-Time",
-      "pinned": false,
-      "next_action": "",
-      "remarks": "",
-      "created_at": "2026-11-27 16:21",
-      "updated_at": "2026-11-27 16:21",
-      "completed_at": ""
-    },
-    {
-      "id": "T-0014",
-      "order_no": 9,
-      "deadline_hrs": 1.0,
-      "title": "CCURO WRONG MARKET HIRING AMOUNT APPROVAL",
-      "category": "🚛 Linehaul Placement",
-      "priority": "🔴 P1 - Urgent",
-      "status": "Not Started",
-      "progress": 0,
-      "due_date": "2026-11-28",
-      "time_slot": "🌅 Morning (9-12)",
-      "entity": "",
-      "follow_up_with": "",
-      "recurrence": "One-Time",
-      "pinned": false,
-      "next_action": "",
-      "remarks": "",
-      "created_at": "2026-11-27 16:21",
-      "updated_at": "2026-11-27 16:21",
-      "completed_at": ""
-    },
-    {
-      "id": "T-0006",
-      "order_no": 10,
-      "deadline_hrs": 0.5,
-      "title": "Concall Practice",
-      "category": "📌 General / Personal",
-      "priority": "🟠 P2 - High",
-      "status": "Not Started",
-      "progress": 0,
-      "due_date": "2026-11-28",
-      "time_slot": "🌅 Morning (9-12)",
-      "entity": "",
-      "follow_up_with": "",
-      "recurrence": "Daily",
-      "pinned": false,
-      "next_action": "",
-      "remarks": "",
-      "created_at": "2026-11-27 16:21",
-      "updated_at": "2026-11-27 16:21",
-      "completed_at": ""
-    },
-    {
-      "id": "T-0007",
-      "order_no": 11,
-      "deadline_hrs": 0.5,
-      "title": "Daily Concall",
-      "category": "📌 General / Personal",
-      "priority": "🟠 P2 - High",
-      "status": "Not Started",
-      "progress": 0,
-      "due_date": "2026-11-28",
-      "time_slot": "🌅 Morning (9-12)",
-      "entity": "",
-      "follow_up_with": "",
-      "recurrence": "Daily",
-      "pinned": false,
-      "next_action": "",
-      "remarks": "",
-      "created_at": "2026-11-27 16:21",
-      "updated_at": "2026-11-27 16:21",
-      "completed_at": ""
-    },
-    {
-      "id": "T-0003",
-      "order_no": 99,
-      "deadline_hrs": 1.0,
-      "title": "PALGHAR PICKUP",
-      "category": "🚛 Linehaul Placement",
-      "priority": "🔴 P1 - Urgent",
-      "status": "Completed",
-      "progress": 100,
-      "due_date": "2026-11-28",
-      "time_slot": "🌅 Morning (9-12)",
-      "entity": "MUMRO",
-      "follow_up_with": "",
-      "recurrence": "One-Time",
-      "pinned": false,
-      "next_action": "",
-      "remarks": "",
-      "created_at": "2026-11-27 16:05",
-      "updated_at": "2026-11-27 16:05",
-      "completed_at": "2026-11-27 16:05"
-    },
-    {
-      "id": "T-0002",
-      "order_no": 99,
-      "deadline_hrs": 1.0,
-      "title": "Ashwini Vendor Name Change",
-      "category": "📌 General / Personal",
-      "priority": "🟠 P2 - High",
-      "status": "Completed",
-      "progress": 100,
-      "due_date": "2026-11-27",
-      "time_slot": "🌆 Evening (4-8)",
-      "entity": "HPJRO",
-      "follow_up_with": "",
-      "recurrence": "One-Time",
-      "pinned": false,
-      "next_action": "",
-      "remarks": "",
-      "created_at": "2026-11-27 15:53",
-      "updated_at": "2026-11-27 15:53",
-      "completed_at": "2026-11-27 15:53"
-    },
-    {
-      "id": "T-0001",
-      "order_no": 99,
-      "deadline_hrs": 1.0,
-      "title": "VANDANA hike reply",
-      "category": "🔥 Vendor Escalation",
-      "priority": "🔴 P1 - Urgent",
-      "status": "Completed",
-      "progress": 100,
-      "due_date": "2026-11-27",
-      "time_slot": "🌆 Evening (4-8)",
-      "entity": "DELRO",
-      "follow_up_with": "",
-      "recurrence": "One-Time",
-      "pinned": false,
-      "next_action": "",
-      "remarks": "",
-      "created_at": "2026-11-27 14:53",
-      "updated_at": "2026-11-27 14:53",
-      "completed_at": "2026-11-27 14:53"
+def clean_dataframe_for_excel(df_in, sheet_type="generic", preserve_order=False):
+    if df_in is None or df_in.empty:
+        return pd.DataFrame()
+    df = df_in.copy()
+    
+    if 'VendorName' in df.columns:
+        df['VendorName'] = df['VendorName'].apply(normalize_vendor_name)
+        
+    if not preserve_order:
+        df = sort_by_route_and_leg(df)
+    
+    if sheet_type in ("late_dep", "zone_insights"):
+        cols_to_remove = [c for c in JUNK_EXCEL_COLS if c in df.columns and c != 'Zone']
+        df.drop(columns=cols_to_remove, inplace=True, errors='ignore')
+        return df
+    cols_to_remove = [c for c in JUNK_EXCEL_COLS if c in df.columns]
+    df.drop(columns=cols_to_remove, inplace=True, errors='ignore')
+    
+    if sheet_type in ("ops_sum", "ops_raw", "ven_sum", "ven_raw") and 'Route Path' in df.columns:
+        df = ensure_route_pair_col(df, 'Route Path')
+    if sheet_type == "ops_sum":
+        preferred = [
+            'Origin RO', 'Route Pair', 'Route Path', 'Legwise', 'Legs', 'Total_Trips',
+            'Ontime Dep, Ontime Arr %', 'Late Dep, Late Arr %',
+            'Ontime Dep, Late Arr %', 'Late Dep, Ontime Arr %'
+        ]
+        df.drop(columns=['Ontime Dep, In-Transit', 'Late Dep, In-Transit'], errors='ignore', inplace=True)
+        pct_cols = [c for c in df.columns if '%' in c]
+        for c in pct_cols:
+            df[c] = df[c].apply(format_ops_badge)
+    elif sheet_type == "ops_raw":
+        preferred = [
+            'MCD_StartDate', 'Remark', 'Origin RO', 'Route Pair', 'Route Path', 'Legwise', 'Legs',
+            'Scheduled Departure Time', 'Actual Departure Time',
+            'Scheduled Arrival Time', 'Actual Arrival Time',
+            'Scheduled Halting', 'Actual Halting', 'VendorName',
+            'VehicleNo', 'MasterCDNo', 'RouteCode'
+        ]
+    elif sheet_type == "ven_sum":
+        preferred = [
+            'Origin RO', 'Route Pair', 'Route Path', 'Legwise', 'Legs', 'VendorName',
+            'Total_Trips', 'Ontime Arrival', 'Late Arrival', 'In-Transit', 'Missing Schedule'
+        ]
+    elif sheet_type == "ven_raw":
+        preferred = [
+            'Date', 'Remark with 15 min waiver', 'Origin RO', 'Route Pair', 'Route Path', 'Legwise', 'Legs',
+            'VendorName', 'VehicleNo', 'Actual Departure Time',
+            'Actual Arrival Time', 'Given Driving Hours',
+            'Actual Driving Hours', 'Delay Hours',
+            'MasterCDNo', 'RouteCode'
+        ]
+    elif sheet_type == "cpk_raw":
+        preferred = [
+            'RO_Clean', 'Final_Route', 'Final_Type', 'VendorName',
+            'Vehicle No', 'Date', 'Cap', 'Wt', 'Trips', 'Cost'
+        ]
+    else:
+        preferred = [
+            'Origin RO', 'VendorRO', 'RO Name', 'Route Path', 'Route',
+            'Legwise', 'Legs', 'VendorName', 'Vendor(s)', 'VehicleNo',
+            'Vehicle No', 'Total_Trips', 'Total Trips'
+        ]
+        
+    front_cols = [c for c in preferred if c in df.columns]
+    remaining_cols = [c for c in df.columns if c not in front_cols]
+    df = df[front_cols + remaining_cols]
+    return df
+
+def style_ui_dataframe(df_in):
+    """Applies Green (Achievement), Red (Failure), Yellow (Warning), Purple highlights to Streamlit UI tables."""
+    if df_in is None or df_in.empty:
+        return df_in
+
+    def tone_css(tone):
+        bg, fg = THEME_STATUS_PALETTE.get(tone, THEME_STATUS_PALETTE['muted'])
+        return f'background-color: {bg}; color: {fg}; font-weight: bold;'
+
+    def ui_cell_color(val, col_name):
+        if pd.isna(val):
+            return ''
+        s_val = str(val).strip()
+        s_lower = s_val.lower()
+        c_lower = str(col_name).lower()
+        pct = parse_pct_from_str(s_val)
+        if 'util' in c_lower and pct is not None and pct <= 1:
+            pct *= 100
+        if not s_lower or s_lower in ('-', 'nan', 'none'):
+            return ''
+
+        if c_lower == 'payment pending / paid' or s_lower == 'payment pending / paid':
+            return tone_css('green')
+        if c_lower == 'finance hold' or s_lower == 'finance hold':
+            return tone_css('red')
+        if c_lower == 'finance pending' or s_lower == 'finance pending':
+            return tone_css('yellow')
+        if c_lower == 'other' or s_lower == 'other':
+            return tone_css('yellow')
+        if c_lower in ['draft', 'draft bills'] or s_lower == 'draft':
+            return tone_css('red')
+        if c_lower == 'underutilized routes':
+            return tone_css('red')
+        if c_lower == 'efficiently utilized routes':
+            return tone_css('green')
+
+        # Schedule outcomes follow the Remark pair first, before generic arrival/departure rules.
+        if 'late dep, in-transit' in c_lower:
+            return tone_css('yellow' if pct is None or pct > 0 else 'muted')
+        if 'ontime dep, late arr' in c_lower:
+            return tone_css('soft_red' if pct is None or pct > 0 else 'muted')
+        if 'late dep, ontime arr' in c_lower:
+            return tone_css('purple' if pct is None or pct > 0 else 'muted')
+        if 'late dep, late arr' in c_lower:
+            return tone_css('red' if pct is None or pct > 0 else 'muted')
+        if 'ontime dep, ontime arr' in c_lower:
+            return tone_css('green' if pct is None or pct > 0 else 'muted')
+        if 'in-transit' in c_lower:
+            return tone_css('yellow' if pct is None or pct > 0 else 'muted')
+        if 'missing schedule' in c_lower:
+            return tone_css('yellow' if pct is None or pct > 0 else 'muted')
+        if 'no departure' in c_lower:
+            return tone_css('red' if pct is None or pct > 0 else 'muted')
+        if 'late arrival' in c_lower or 'late departure' in c_lower or 'late dep' in c_lower or 'late arr' in c_lower:
+            return tone_css('red' if pct is None or pct > 0 else 'muted')
+        if 'ontime arrival' in c_lower:
+            return tone_css('green' if pct is None or pct > 0 else 'muted')
+        if 'on-time' in c_lower and 'departure' not in c_lower and any(period in c_lower for period in ['previous 7 days', 'current 7 days', 'all available']):
+            return tone_css('green' if pct is not None and pct > 0 else 'muted')
+        if 'ontime departure' in c_lower or ('on-time' in c_lower and 'departure' in c_lower):
+            if pct is not None:
+                return tone_css('green' if pct >= 95 else ('yellow' if pct >= 80 else 'red'))
+
+        # Status text rules also cover raw-trip and payment tables.
+        if 'late dep, late arr' in s_lower:
+            return tone_css('red')
+        if 'ontime dep, late arr' in s_lower:
+            return tone_css('soft_red')
+        if 'late dep, in-transit' in s_lower:
+            return tone_css('yellow')
+        if 'ontime dep, ontime arr' in s_lower:
+            return tone_css('green')
+        if 'late dep, ontime arr' in s_lower:
+            return tone_css('yellow')
+        if 'missing sch' in s_lower or 'missing schedule' in s_lower:
+            return tone_css('yellow')
+        if 'ontime dep, in-transit' in s_lower or 'in-transit' in s_lower or 'finance pending' in s_lower or 'finance hold' in s_lower or 'cost control pending' in s_lower or 'pending' in s_lower:
+            return tone_css('yellow')
+        if any(k in s_lower for k in ['late arrival', 'late departure', 'no dep', 'no arrival', 'other', 'draft', 'disabled', 'underutilized']):
+            return tone_css('red')
+        if 'ontime arrival' in s_lower or 'ontime departure' in s_lower or s_lower == 'paid' or 'paid achievement' in s_lower or 'active' in s_lower or 'efficiently utilized' in s_lower:
+            return tone_css('green')
+        if 'payment pending / paid' in s_lower:
+            return tone_css('green')
+
+        if 'util' in c_lower and pct is not None:
+            return tone_css('red') if pct < 60 else (tone_css('yellow') if pct < 80 else tone_css('green'))
+
+        if any(word in c_lower for word in ['payment pending / paid', 'payment pending']):
+            return tone_css('yellow') if pct is None or pct > 0 else tone_css('muted')
+        if any(word in c_lower for word in ['other', 'draft']):
+            return tone_css('red') if pct is None or pct > 0 else tone_css('green')
+        if any(word in c_lower for word in ['finance pending', 'finance hold', 'cost control pending']):
+            return tone_css('yellow') if pct is None or pct > 0 else tone_css('green')
+        if 'underutilized' in c_lower:
+            return tone_css('red') if pct is None or pct > 0 else tone_css('green')
+        if 'efficiently utilized' in c_lower:
+            return tone_css('green') if pct is None or pct > 0 else tone_css('muted')
+
+        if c_lower == 'delay hours' and s_val not in ['', '-', '0:00']:
+            if not s_val.startswith('-'):
+                try:
+                    parts = s_val.split(':')
+                    if (int(parts[0]) + int(parts[1]) / 60.0) > 0.25:
+                        return tone_css('red')
+                except:
+                    pass
+            return tone_css('green')
+
+        if pct is not None and 'late' in c_lower:
+            return tone_css('red' if pct > 0 else 'muted')
+        if pct is not None and ('previous 7 days' in c_lower or 'current 7 days' in c_lower or 'all available' in c_lower) and 'on-time' in c_lower:
+            return tone_css('green' if pct > 0 else 'muted')
+
+        if '%' in c_lower and pct is not None:
+            if pct == 0:
+                return tone_css('muted')
+            if any(k in c_lower for k in ['achievement', 'ontime', 'on-time']):
+                return tone_css('green' if pct >= 95 else ('yellow' if pct >= 80 else 'red'))
+            return tone_css('muted')
+
+        return ''
+
+    styled = df_in.style.set_properties(**{
+        'background-color': selected_theme['card1'],
+        'color': selected_theme['text'],
+        'border-color': selected_theme['line'],
+        'font-size': '12px',
+        'padding': '7px 9px',
+        'text-align': 'center',
+        'vertical-align': 'middle'
+    }).set_table_styles([
+        {'selector': 'th', 'props': [
+            ('background-color', selected_theme['card2']), ('color', selected_theme['text']),
+            ('font-weight', '700'), ('border-color', selected_theme['line']),
+            ('padding', '8px 9px'), ('text-align', 'center')
+        ]},
+        {'selector': 'td', 'props': [('border-color', selected_theme['line']), ('text-align', 'center'), ('vertical-align', 'middle')]},
+    ], overwrite=False)
+    for col in df_in.columns:
+        if hasattr(styled, 'map'):
+            styled = styled.map(lambda x, c=col: ui_cell_color(x, c), subset=[col])
+        else:
+            styled = styled.applymap(lambda x, c=col: ui_cell_color(x, c), subset=[col])
+    status_cols = [col for col in ['Payment Group', 'Operations Outcome', 'Remark with 15 min waiver', 'Remark', 'Dep_Status', 'Arr_Status'] if col in df_in.columns]
+    status_text = df_in[status_cols].fillna('').astype(str).apply(lambda col: col.str.lower()) if status_cols else pd.DataFrame(index=df_in.index)
+    def contains_status(pattern):
+        if status_text.empty:
+            return pd.Series(False, index=df_in.index)
+        return status_text.apply(lambda col: col.str.contains(pattern, regex=True, na=False)).any(axis=1)
+    row_tones = pd.Series('', index=df_in.index, dtype=object)
+    payment_good = contains_status(r'^paid$|paid achievement|payment completed')
+    row_tones.loc[payment_good] = 'green'
+    row_tones.loc[contains_status(r'payment pending|finance pending|finance hold|cost control pending|in-transit')] = 'yellow'
+    row_tones.loc[contains_status(r'late dep, ontime arr')] = 'yellow'
+    row_tones.loc[contains_status(r'ontime dep, ontime arr|ontime arrival')] = 'green'
+    row_tones.loc[contains_status(r'ontime dep, late arr')] = 'soft_red'
+    # Apply exact paired Remark outcomes last, so a mixed row follows its actual trip result.
+    row_tones.loc[contains_status(r'late dep, in-transit')] = 'yellow'
+    row_tones.loc[contains_status(r'late dep, late arr|^draft$|late arrival|late departure|no dep|no arrival')] = 'red'
+    row_tones.loc[contains_status(r'missing sch|missing schedule')] = 'yellow'
+    row_tones.loc[contains_status(r'payment pending / paid')] = 'green'
+    row_tones.loc[contains_status(r'finance hold')] = 'red'
+    row_tones.loc[contains_status(r'^other$')] = 'yellow'
+    if 'Utilization Class' in df_in.columns:
+        util_class = df_in['Utilization Class'].fillna('').astype(str).str.lower()
+        row_tones.loc[util_class.str.contains('efficiently', na=False)] = 'green'
+        row_tones.loc[util_class.str.contains('underutilized', na=False)] = 'red'
+    row_style = pd.DataFrame('', index=df_in.index, columns=df_in.columns)
+    for tone in ['green', 'soft_red', 'red', 'yellow', 'purple', 'muted']:
+        row_style.loc[row_tones.eq(tone), :] = tone_css(tone)
+    styled = styled.apply(lambda col: row_style[col.name], axis=0)
+    return styled
+
+def write_styled_sheet_to_excel(writer, df_in, sheet_name, sheet_type="generic", preserve_order=False):
+    df = clean_dataframe_for_excel(df_in, sheet_type=sheet_type, preserve_order=preserve_order)
+    if not df.empty and df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated()].copy()
+    workbook = writer.book
+    worksheet = workbook.add_worksheet(sheet_name)
+    writer.sheets[sheet_name] = worksheet
+    
+    header_fmt = workbook.add_format({
+        'bold': True, 'bg_color': '#1E3A8A', 'font_color': 'white',
+        'border': 1, 'align': 'center', 'valign': 'vcenter', 'text_wrap': True
+    })
+    cell_fmt = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter'})
+    center_fmt = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter'})
+    muted_fmt = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter', 'font_color': '#9CA3AF'})
+    
+    green_fmt = workbook.add_format({
+        'border': 1, 'bg_color': '#D4EDDA', 'font_color': '#155724',
+        'bold': True, 'align': 'center', 'valign': 'vcenter'
+    })
+    red_fmt = workbook.add_format({
+        'border': 1, 'bg_color': '#F8D7DA', 'font_color': '#721C24',
+        'bold': True, 'align': 'center', 'valign': 'vcenter'
+    })
+    soft_red_fmt = workbook.add_format({
+        'border': 1, 'bg_color': '#FFF1F2', 'font_color': '#9F1239',
+        'bold': True, 'align': 'center', 'valign': 'vcenter'
+    })
+    yellow_fmt = workbook.add_format({
+        'border': 1, 'bg_color': '#FFF3CD', 'font_color': '#856404',
+        'bold': True, 'align': 'center', 'valign': 'vcenter'
+    })
+    purple_fmt = workbook.add_format({
+        'border': 1, 'bg_color': '#E2D9F3', 'font_color': '#4A148C',
+        'bold': True, 'align': 'center', 'valign': 'vcenter'
+    })
+    blue_bold_fmt = workbook.add_format({
+        'border': 1, 'bg_color': '#DBEAFE', 'font_color': '#1E3A8A',
+        'bold': True, 'align': 'center', 'valign': 'vcenter'
+    })
+    total_row_fmt = workbook.add_format({
+        'bold': True, 'bg_color': '#D9E8FB', 'font_color': '#0F172A',
+        'border': 1, 'top': 2, 'bottom': 2, 'top_color': '#1E3A8A', 'bottom_color': '#1E3A8A',
+        'align': 'center', 'valign': 'vcenter'
+    })
+    sub_row_fmt = workbook.add_format({
+        'bold': True, 'bg_color': '#EAF2FB', 'font_color': '#0F172A',
+        'border': 1, 'top': 1, 'bottom': 2, 'top_color': '#64748B', 'bottom_color': '#1E3A8A',
+        'align': 'center', 'valign': 'vcenter'
+    })
+    row_green_fmt = workbook.add_format({'border': 1, 'bg_color': '#E2F0D9', 'font_color': '#1F4E2B', 'align': 'center', 'valign': 'vcenter'})
+    row_red_fmt = workbook.add_format({'border': 1, 'bg_color': '#FCE4D6', 'font_color': '#7F1D1D', 'align': 'center', 'valign': 'vcenter'})
+    row_soft_red_fmt = workbook.add_format({'border': 1, 'bg_color': '#FFF1F2', 'font_color': '#9F1239', 'align': 'center', 'valign': 'vcenter'})
+    row_yellow_fmt = workbook.add_format({'border': 1, 'bg_color': '#FFF2CC', 'font_color': '#7F6000', 'align': 'center', 'valign': 'vcenter'})
+    row_purple_fmt = workbook.add_format({'border': 1, 'bg_color': '#E4DFEC', 'font_color': '#4C2A69', 'align': 'center', 'valign': 'vcenter'})
+
+    if df.empty:
+        worksheet.write(0, 0, "No Data Available", header_fmt)
+        return
+
+    _num_fmt_cache = {}
+    worksheet.set_row(0, 26)
+    for col_idx, col_name in enumerate(df.columns):
+        worksheet.write(0, col_idx, str(col_name), header_fmt)
+
+    _sla_xl = get_sla_thresholds()
+    _xl_u_cut = _sla_xl["util_red_pct"]
+    _xl_cpk_cut = _sla_xl["high_cpk"]
+    for row_idx, (_, row) in enumerate(df.iterrows(), start=1):
+        _first_val_u = str(row.iloc[0]).strip().upper() if len(row) > 0 else ''
+        _side_val_u = str(row.get('Side', '')).strip().upper()
+        is_sub_row = _first_val_u.startswith('↳') or _side_val_u == 'UP+DOWN' or (_first_val_u.endswith(' TOTAL') and _first_val_u != 'GRAND TOTAL')
+        is_total_row = (
+            _first_val_u in ('TOTAL', 'GRAND TOTAL', 'TOTAL SAVINGS', 'NETWORK TOTAL')
+            or any(str(row.get(k, '')).strip().upper() in ('TOTAL', 'GRAND TOTAL') for k in ('VendorRO', 'RO Name', 'Route Path', 'Origin RO', 'Route Pair', 'RO'))
+        )
+        row_labels = ' '.join(str(row.get(col, '')).strip().lower() for col in ['Payment Group', 'Operations Outcome', 'Remark with 15 min waiver', 'Remark', 'Status'] if col in row.index)
+        if 'late dep, late arr' in row_labels or 'late arrival' in row_labels or 'no dep' in row_labels:
+            row_status_fmt = row_red_fmt
+        elif 'ontime dep, late arr' in row_labels:
+            row_status_fmt = row_soft_red_fmt
+        elif 'late dep, in-transit' in row_labels or 'ontime dep, in-transit' in row_labels or 'missing sch' in row_labels or 'missing schedule' in row_labels:
+            row_status_fmt = row_yellow_fmt
+        elif 'ontime dep, ontime arr' in row_labels or 'ontime arrival' in row_labels or 'payment pending / paid' in row_labels or 'paid' in row_labels:
+            row_status_fmt = row_green_fmt
+        elif 'other' in row_labels or 'draft' in row_labels or 'late departure' in row_labels or 'missing' in row_labels:
+            row_status_fmt = row_red_fmt
+        elif 'finance pending' in row_labels or 'finance hold' in row_labels or 'cost control pending' in row_labels or 'in-transit' in row_labels:
+            row_status_fmt = row_yellow_fmt
+        elif 'late dep, ontime arr' in row_labels:
+            row_status_fmt = row_purple_fmt
+        else:
+            row_status_fmt = None
+        for col_idx, col_name in enumerate(df.columns):
+            val = row[col_name]
+            if pd.isna(val):
+                val_str = ""
+            elif isinstance(val, float) and val.is_integer():
+                val_str = int(val)
+            else:
+                val_str = val
+                
+            s_val = str(val_str).strip()
+            s_lower = s_val.lower()
+            c_lower = str(col_name).lower()
+            
+            chosen_fmt = total_row_fmt if is_total_row else (sub_row_fmt if is_sub_row else (row_status_fmt or cell_fmt))
+            
+            # Always highlight Util % (<60% Red, 60-80% Amber, >=80% Green), CPK (>cutoff Red), Priority & Underutil Status even on Subtotal rows
+            if 'util' in c_lower and 'class' not in c_lower and 'status' not in c_lower:
+                pct_u = parse_pct_from_str(s_val)
+                if pct_u is None and isinstance(val_str, (int, float)) and not isinstance(val_str, bool):
+                    pct_u = float(val_str) * 100.0 if float(val_str) <= 2.0 else float(val_str)
+                if pct_u is not None:
+                    chosen_fmt = red_fmt if pct_u < _xl_u_cut else (yellow_fmt if pct_u < 80.0 else green_fmt)
+            elif 'underutil' in c_lower or c_lower in ('classification', 'priority'):
+                if any(k in s_lower for k in ('round trip', 'round-trip', 'single side under', 'single-side <', 'fail', 'p1')):
+                    chosen_fmt = red_fmt
+                elif any(k in s_lower for k in ('one side', 'one-side', 'watch', 'p2')):
+                    chosen_fmt = yellow_fmt
+                elif any(k in s_lower for k in ('balanced', 'star', 'healthy', 'efficient')):
+                    chosen_fmt = green_fmt
+            elif 'cpk' in c_lower:
+                _cpk_m = re.search(r'(\d+(?:\.\d+)?)', s_val.replace(',', ''))
+                if _cpk_m and float(_cpk_m.group(1)) > _xl_cpk_cut:
+                    chosen_fmt = red_fmt
+                elif not is_total_row and not is_sub_row:
+                    chosen_fmt = blue_bold_fmt
+            elif not is_total_row:
+                if any(k in c_lower for k in ['payment pending / paid', 'payment pending', 'paid achievement']):
+                    chosen_fmt = green_fmt if (parse_pct_from_str(s_val) or 0) > 0 or (s_val.isdigit() and int(s_val) > 0) else muted_fmt
+                elif 'other' in c_lower or 'draft' in c_lower:
+                    chosen_fmt = red_fmt if (parse_pct_from_str(s_val) or 0) > 0 or (s_val.isdigit() and int(s_val) > 0) else muted_fmt
+                elif 'cost control pending' in c_lower or 'finance pending' in c_lower or 'finance hold' in c_lower:
+                    chosen_fmt = yellow_fmt if (parse_pct_from_str(s_val) or 0) > 0 or (s_val.isdigit() and int(s_val) > 0) else muted_fmt
+                elif 'late dep, in-transit' in c_lower:
+                    pct = parse_pct_from_str(s_val)
+                    if pct is not None:
+                        chosen_fmt = yellow_fmt if pct > 0 else muted_fmt
+                elif 'ontime dep, late arr' in c_lower:
+                    pct = parse_pct_from_str(s_val)
+                    if pct is not None:
+                        chosen_fmt = soft_red_fmt if pct > 0 else muted_fmt
+                elif 'late dep, ontime arr' in c_lower:
+                    pct = parse_pct_from_str(s_val)
+                    if pct is not None:
+                        chosen_fmt = purple_fmt if pct > 0 else muted_fmt
+                elif 'late dep, late arr' in c_lower or 'late arrival' in c_lower or 'late departure' in c_lower:
+                    pct = parse_pct_from_str(s_val)
+                    if pct is not None:
+                        chosen_fmt = red_fmt if pct > 0 else muted_fmt
+                    elif c_lower == 'late departures':
+                        try:
+                            chosen_fmt = red_fmt if float(val_str) > 0 else muted_fmt
+                        except Exception:
+                            pass
+                elif c_lower == 'severity':
+                    if 'chronic' in s_lower or 'critical' in s_lower or 'action' in s_lower:
+                        chosen_fmt = red_fmt
+                    elif 'watch' in s_lower:
+                        chosen_fmt = yellow_fmt
+                    elif 'isolated' in s_lower or 'controlled' in s_lower or 'strong' in s_lower:
+                        chosen_fmt = green_fmt
+                elif 'ontime dep, ontime arr' in c_lower or 'ontime arrival' in c_lower:
+                    pct = parse_pct_from_str(s_val)
+                    if pct is not None:
+                        chosen_fmt = green_fmt if pct > 0 else muted_fmt
+                elif 'missing schedule' in c_lower:
+                    pct = parse_pct_from_str(s_val)
+                    if pct is not None:
+                        chosen_fmt = yellow_fmt if pct > 0 else muted_fmt
+                elif 'no departure' in c_lower:
+                    pct = parse_pct_from_str(s_val)
+                    if pct is not None:
+                        chosen_fmt = red_fmt if pct > 0 else muted_fmt
+                elif 'on-time' in c_lower and 'departure' not in c_lower and any(period in c_lower for period in ['previous 7 days', 'current 7 days', 'all available']):
+                    pct = parse_pct_from_str(s_val)
+                    if pct is not None:
+                        chosen_fmt = green_fmt if pct > 0 else muted_fmt
+                elif 'ontime departure' in c_lower or ('on-time' in c_lower and 'departure' in c_lower):
+                    pct = parse_pct_from_str(s_val)
+                    if pct is not None:
+                        chosen_fmt = green_fmt if pct >= 95 else (yellow_fmt if pct >= 80 else red_fmt)
+                elif 'late' in c_lower:
+                    pct = parse_pct_from_str(s_val)
+                    if pct is not None:
+                        chosen_fmt = red_fmt if pct > 0 else muted_fmt
+                elif 'in-transit' in c_lower:
+                    pct = parse_pct_from_str(s_val)
+                    if pct is not None:
+                        chosen_fmt = yellow_fmt if pct > 0 else muted_fmt
+                elif 'remark' in c_lower:
+                    if 'late dep, late arr' in s_lower or 'late arrival' in s_lower or 'no dep' in s_lower:
+                        chosen_fmt = red_fmt
+                    elif 'ontime dep, late arr' in s_lower:
+                        chosen_fmt = soft_red_fmt
+                    elif 'late dep, in-transit' in s_lower or 'ontime dep, in-transit' in s_lower or 'in-transit' in s_lower or 'missing sch' in s_lower:
+                        chosen_fmt = yellow_fmt
+                    elif 'ontime dep, ontime arr' in s_lower or 'ontime arrival' in s_lower:
+                        chosen_fmt = green_fmt
+                    elif 'late dep, ontime arr' in s_lower:
+                        chosen_fmt = purple_fmt
+                elif c_lower == 'delay hours' and s_val not in ['', '-', '0:00']:
+                    if not s_val.startswith('-'):
+                        try:
+                            parts = s_val.split(':')
+                            hrs_delay = int(parts[0]) + int(parts[1]) / 60.0
+                            chosen_fmt = red_fmt if hrs_delay > 0.25 else green_fmt
+                        except:
+                            pass
+                    else:
+                        chosen_fmt = green_fmt
+                elif 'overall util %' in c_lower:
+                    pct = parse_pct_from_str(s_val)
+                    if pct is not None and isinstance(val_str, (int, float)) and pct <= 1:
+                        pct *= 100
+                    if pct is not None:
+                        chosen_fmt = red_fmt if pct < 60 else (yellow_fmt if pct < 80 else green_fmt)
+                elif 'overall cpk' in c_lower:
+                    chosen_fmt = blue_bold_fmt
+                elif '1. user / draft pending' in c_lower:
+                    try:
+                        if float(val_str) > 0: chosen_fmt = red_fmt
+                    except: pass
+                elif '2. cost control pending' in c_lower or '3. finance pending' in c_lower:
+                    try:
+                        if float(val_str) > 0: chosen_fmt = yellow_fmt
+                    except: pass
+                elif c_lower in ['total_trips', 'total trips', 'legwise', 'date', 'mcd_startdate']:
+                    chosen_fmt = center_fmt
+
+            # Excel 2013 Friendly: store pure ₹ / % / numeric strings as real Excel numbers so SUM/Sort/Filter work natively
+            _written_num = False
+            if not is_total_row and isinstance(val_str, str) and s_val:
+                _s_clean = s_val.replace(',', '').strip()
+                if _s_clean.startswith('₹') and re.match(r'^₹-?\d+(?:\.\d+)?$', _s_clean):
+                    try:
+                        _num_v = float(_s_clean[1:])
+                        _nf = '₹#,##0.00' if '.' in _s_clean else '₹#,##0'
+                        _fk = (id(chosen_fmt), _nf)
+                        if _fk not in _num_fmt_cache:
+                            _props = {k: getattr(chosen_fmt, k) for k in ('bold', 'bg_color', 'font_color', 'border', 'align', 'valign') if hasattr(chosen_fmt, k)}
+                            _props['num_format'] = _nf
+                            _num_fmt_cache[_fk] = workbook.add_format(_props)
+                        worksheet.write_number(row_idx, col_idx, _num_v, _num_fmt_cache[_fk])
+                        _written_num = True
+                    except Exception:
+                        pass
+                elif _s_clean.endswith('%') and re.match(r'^-?\d+(?:\.\d+)?%$', _s_clean):
+                    try:
+                        _num_v = float(_s_clean[:-1]) / 100.0
+                        _nf = '0.0%'
+                        _fk = (id(chosen_fmt), _nf)
+                        if _fk not in _num_fmt_cache:
+                            _props = {k: getattr(chosen_fmt, k) for k in ('bold', 'bg_color', 'font_color', 'border', 'align', 'valign') if hasattr(chosen_fmt, k)}
+                            _props['num_format'] = _nf
+                            _num_fmt_cache[_fk] = workbook.add_format(_props)
+                        worksheet.write_number(row_idx, col_idx, _num_v, _num_fmt_cache[_fk])
+                        _written_num = True
+                    except Exception:
+                        pass
+            if not _written_num:
+                worksheet.write(row_idx, col_idx, val_str, chosen_fmt)
+
+    for i, col in enumerate(df.columns):
+        if not df.empty:
+            _s_len = df.iloc[:, i].fillna('').astype(str).str.len().max()
+            max_val_len = int(_s_len) if pd.notna(_s_len) else 10
+        else:
+            max_val_len = 10
+        col_len = max(max_val_len, len(str(col))) + 3
+        worksheet.set_column(i, i, min(col_len, 42))
+    worksheet.autofilter(0, 0, len(df), max(len(df.columns) - 1, 0))
+    worksheet.freeze_panes(1, 0)
+    worksheet.set_landscape()
+    worksheet.fit_to_pages(1, 0)
+    worksheet.repeat_rows(0)
+    worksheet.set_margins(0.25, 0.25, 0.4, 0.4)
+
+def get_selected_cell_from_event(event, displayed_df):
+    """Return (row index, column name) from a Streamlit dataframe selection event."""
+    try:
+        selection = getattr(event, 'selection', {})
+        if not isinstance(selection, dict):
+            selection = {name: getattr(selection, name, None) for name in ['rows', 'columns', 'cells']}
+        cells = selection.get('cells') or []
+        if cells:
+            cell = cells[-1]
+            if isinstance(cell, (tuple, list)) and len(cell) >= 2:
+                row_idx, col_ref = cell[0], cell[1]
+            else:
+                row_text, col_text = str(cell).replace(':', ',').split(',', 1)
+                row_idx, col_ref = int(row_text), col_text
+            col_name = col_ref if isinstance(col_ref, str) and col_ref in displayed_df.columns else displayed_df.columns[int(col_ref)]
+            return int(row_idx), col_name
+        rows = selection.get('rows') or []
+        if rows:
+            cols = selection.get('columns') or []
+            col_name = cols[-1] if cols and cols[-1] in displayed_df.columns else None
+            return int(rows[-1]), col_name
+    except Exception:
+        pass
+    return None, None
+
+
+def compact_detail_frame(frame, kind):
+    if frame is None or frame.empty:
+        return pd.DataFrame()
+    if kind in ('ven_raw', 'ops_raw') and 'Route Path' in frame.columns:
+        frame = ensure_route_pair_col(frame, 'Route Path')
+    preferred_by_kind = {
+        'ven_raw': ['Date', 'Remark with 15 min waiver', 'Origin RO', 'Route Pair', 'Route Path', 'Legwise', 'VendorName', 'Actual Arrival Time', 'Delay Hours', 'MasterCDNo'],
+        'ops_raw': ['MCD_StartDate', 'Remark', 'Operations Outcome', 'Zone', 'Origin RO', 'Route Pair', 'Route Path', 'Legwise', 'Legs', 'CD_FromBranch', 'CD_ToBranch', 'MasterCDNo'],
+        'pay_raw': ['Invoice Id', 'Bill No.', 'Invoice Month', 'Start Date', 'End Date', 'Invoice Date', 'Bill Uploader', 'RO Name', 'Zone', 'Vendor Name', 'Vendor Mapping Category', 'Category', 'Base Amount', 'Amount', 'Status', 'Payment Group', 'Pending With', 'Pending Since', 'Days Pending', 'Month Audit', 'Hold Key'],
+        'cpk_raw': ['Date', 'RO_Clean', 'Final_Route', 'Final_Type', 'VendorName', 'Vehicle No', 'Cap', 'Wt', 'Trips', 'Cost']
     }
-  ]
-}
+    cols = [col for col in preferred_by_kind.get(kind, list(frame.columns)) if col in frame.columns]
+    out = frame.loc[:, cols].copy() if cols else frame.copy()
+    for col in out.columns:
+        if pd.api.types.is_datetime64_any_dtype(out[col]) or col in ['Date', 'Invoice Date', 'Start Date', 'End Date', 'Base Date', 'Last Approved At', 'MCD_StartDate']:
+            parsed = pd.to_datetime(out[col], dayfirst=True, errors='coerce')
+            if pd.api.types.is_datetime64_any_dtype(out[col]) or parsed.notna().sum() >= max(1, int(out[col].notna().sum() * 0.7)):
+                out[col] = parsed.dt.strftime('%d-%b-%Y').fillna('')
+    return out.reset_index(drop=True)
+
+
+def render_summary_with_raw_drilldown(summary, raw, title, raw_kind, key, match_columns=None):
+    """A compact, selectable summary that opens only the clicked row's raw records below."""
+    if summary is None or summary.empty:
+        st.info(f'No {title.lower()} summary is available for this selection.')
+        return
+    display = summary.reset_index(drop=True).copy()
+    try:
+        event = st.dataframe(
+            style_ui_dataframe(display), use_container_width=True, hide_index=True,
+            on_select='rerun', selection_mode='single-cell', key=key
+        )
+    except TypeError:
+        st.dataframe(style_ui_dataframe(display), use_container_width=True, hide_index=True)
+        st.caption('Select a summary cell to open its focused raw records.')
+        return
+    row_idx, selected_col = get_selected_cell_from_event(event, display)
+    if row_idx is None or not (0 <= row_idx < len(display)):
+        st.caption('Click a count or percentage above to open the matching raw records.')
+        return
+    selected = display.iloc[row_idx]
+    detail = raw.copy() if isinstance(raw, pd.DataFrame) else pd.DataFrame()
+    match_pairs = match_columns or [
+        ('Origin RO', 'Origin RO'), ('RO Name', 'RO Name'), ('VendorRO', 'RO_Clean'),
+        ('Route Path', 'Route Path'), ('Route (UP/DOWN)', 'Final_Route'), ('Final_Route', 'Final_Route'),
+        ('Route Pair', 'Final_Route'), ('Type', 'Final_Type'), ('Legwise', 'Legwise'),
+        ('VendorName', 'VendorName'), ('Vendor(s)', 'VendorName'), ('Vendor Name', 'Vendor Name')
+    ]
+    for summary_col, raw_col in match_pairs:
+        if summary_col in selected.index and raw_col in detail.columns:
+            target = str(selected[summary_col]).strip()
+            if target and target.casefold() not in ('nan', 'none', 'all', 'total', 'grand total'):
+                detail = detail[detail[raw_col].fillna('').astype(str).str.strip().eq(target)].copy()
+    clicked_metric = str(selected_col or '').strip().lower()
+    if raw_kind == 'ven_raw':
+        target_status = None
+        if 'ontime arrival' in clicked_metric or 'on-time' in clicked_metric:
+            target_status = 'Ontime Arrival'
+        elif 'late arrival' in clicked_metric or clicked_metric.endswith(' late'):
+            target_status = 'Late Arrival'
+        elif 'in-transit' in clicked_metric:
+            target_status = 'In-Transit'
+        status_col = get_col(detail, ['Remark with 15 min waiver'])
+        if target_status and status_col:
+            detail = detail[detail[status_col].fillna('').astype(str).str.strip().str.casefold().eq(target_status.casefold())].copy()
+    elif raw_kind == 'ops_raw':
+        outcome_map = {
+            'ontime dep, ontime arr': 'Ontime Dep, Ontime Arr',
+            'ontime dep, late arr': 'Ontime Dep, Late Arr',
+            'late dep, late arr': 'Late Dep, Late Arr',
+            'late dep, ontime arr': 'Late Dep, Ontime Arr'
+        }
+        clicked_outcome = next((outcome for token, outcome in outcome_map.items() if token in clicked_metric), None)
+        remark_col = get_col(detail, ['Remark'])
+        if clicked_outcome and remark_col:
+            detail = detail[detail[remark_col].fillna('').astype(str).str.contains(re.escape(clicked_outcome), case=False, na=False)].copy()
+        elif clicked_outcome:
+            dep_col, arr_col = get_col(detail, ['Dep_Status']), get_col(detail, ['Arr_Status'])
+            if dep_col and arr_col:
+                dep_wanted, arr_wanted = clicked_outcome.split(', ')
+                detail = detail[
+                    detail[dep_col].fillna('').astype(str).str.contains(dep_wanted.replace(' Dep', ''), case=False, na=False) &
+                    detail[arr_col].fillna('').astype(str).str.contains(arr_wanted.replace(' Arr', ''), case=False, na=False)
+                ].copy()
+    st.markdown(f'#### {title} · {selected_col or "selected row"} detail · {len(detail):,} records')
+    compact = compact_detail_frame(detail, raw_kind)
+    if compact.empty:
+        st.info('No matching raw rows were found for the selected summary line.')
+        return
+    render_centered_html_table(compact, height=380)
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+        write_styled_sheet_to_excel(writer, compact, 'Focused_Raw_Data', sheet_type=raw_kind)
+    st.download_button(
+        f'📥 Download {title} detail (formatted Excel)', data=buffer.getvalue(),
+        file_name=f'{re.sub(r"[^A-Za-z0-9_-]+", "_", title)}_Detail.xlsx',
+        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        key=f'{key}_download'
+    )
+
+
+def add_total_row_cpk_df(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    df_c = df.copy()
+    tot_trips = df_c['Total Trips'].sum() if 'Total Trips' in df_c.columns else 0
+    tot_cap = df_c['Total Capacity'].sum() if 'Total Capacity' in df_c.columns else 0
+    tot_wt = df_c['Total Carried Wt'].sum() if 'Total Carried Wt' in df_c.columns else 0
+    tot_cost = df_c['Total Trip Cost'].sum() if 'Total Trip Cost' in df_c.columns else 0
+    
+    tot_cpk = tot_cost / tot_wt if tot_wt > 0 else 0
+    tot_util = tot_wt / tot_cap if tot_cap > 0 else 0
+    
+    tot_dict = {c: '-' for c in df_c.columns}
+    if 'VendorRO' in df_c.columns: tot_dict['VendorRO'] = 'TOTAL'
+    if 'Route Path' in df_c.columns: tot_dict['Route Path'] = 'TOTAL'
+    if 'Unique Vendors' in df_c.columns: tot_dict['Unique Vendors'] = df_c['Unique Vendors'].sum()
+    if 'Total Trips' in df_c.columns: tot_dict['Total Trips'] = tot_trips
+    if 'Total Capacity' in df_c.columns: tot_dict['Total Capacity'] = tot_cap
+    if 'Total Carried Wt' in df_c.columns: tot_dict['Total Carried Wt'] = tot_wt
+    if 'Total Trip Cost' in df_c.columns: tot_dict['Total Trip Cost'] = tot_cost
+    if 'Overall CPK' in df_c.columns: tot_dict['Overall CPK'] = tot_cpk
+    if 'Overall Util %' in df_c.columns: tot_dict['Overall Util %'] = tot_util
+    if 'Route Pair' in df_c.columns: tot_dict['Route Pair'] = 'TOTAL'
+    
+    df_out = pd.concat([df_c, pd.DataFrame([tot_dict])], ignore_index=True)
+    for col in ['Overall CPK', 'Total Trip Cost']:
+        if col in df_out.columns:
+            df_out[col] = df_out[col].apply(lambda x: f"₹{x:.2f}" if isinstance(x, (int, float)) else x)
+    if 'Overall Util %' in df_out.columns:
+        df_out['Overall Util %'] = df_out['Overall Util %'].apply(lambda x: f"{x * 100:.2f}%" if isinstance(x, (int, float)) else x)
+    return df_out
+
+def _max_consecutive_days(date_iterable):
+    """Return longest consecutive-day streak of issues for repeat offender detection."""
+    uniq = sorted({d for d in date_iterable if pd.notna(d)})
+    if not uniq:
+        return 0
+    best = cur = 1
+    for i in range(1, len(uniq)):
+        try:
+            if (uniq[i] - uniq[i - 1]).days == 1:
+                cur += 1
+                if cur > best:
+                    best = cur
+            else:
+                cur = 1
+        except Exception:
+            cur = 1
+    return best
+
+
+def _delay_str_to_hrs(val):
+    if pd.isna(val):
+        return np.nan
+    s = str(val).strip()
+    if not s or s in ('-', 'nan', 'None'):
+        return np.nan
+    neg = s.startswith('-')
+    s_abs = s[1:] if neg else s
+    if ':' in s_abs:
+        pts = s_abs.split(':')
+        try:
+            v = float(pts[0]) + float(pts[1]) / 60.0
+            return -v if neg else v
+        except Exception:
+            return np.nan
+    try:
+        return float(s)
+    except Exception:
+        return np.nan
+
+
+def build_vip_late_departures_sheet(ops_raw):
+    """
+    Build the dedicated, logically sorted `Late_Departures` sheet EXCLUSIVELY for
+    Prepare VIP Executive Report (never shown as a confusing column in UI modules).
+    Sorting order (worst-first & clean hierarchy):
+      1. Severity Rank (Chronic Repeat -> Watchlist -> Isolated)
+      2. Late Departures count (DESC)
+      3. Late Departure % (DESC)
+      4. Repeat Days (DESC)
+      5. Avg Dep Delay Hrs (DESC)
+      6. Zone (A->Z) -> Origin RO (A->Z) -> Origin Branch (A->Z) -> Route Path (A->Z) -> Leg_Num (1->N)
+    """
+    if not isinstance(ops_raw, pd.DataFrame) or ops_raw.empty:
+        return pd.DataFrame()
+
+    o = ops_raw.copy()
+    if '_OpsRemarkOutcome' not in o.columns:
+        o['_OpsRemarkOutcome'] = ops_remark_outcome_series(o)
+
+    o['_zone'] = o.get('Zone', pd.Series('UNKNOWN ZONE', index=o.index)).fillna('UNKNOWN ZONE').astype(str).str.strip().str.upper()
+    o['_ro'] = _clean_ro_series(o.get('Origin RO', pd.Series('', index=o.index)))
+    o['_brn'] = o.get('CD_FromBranch', pd.Series('', index=o.index)).fillna('').astype(str).str.strip().str.upper()
+    o.loc[o['_brn'].eq(''), '_brn'] = o['_ro']
+    o['_route'] = o.get('Route Path', pd.Series('', index=o.index)).fillna('').astype(str).str.strip()
+    o['_legwise'] = o.get('Legwise', pd.Series('', index=o.index)).fillna('').astype(str).str.strip()
+    o['_legs'] = o.get('Legs', pd.Series('', index=o.index)).fillna('').astype(str).str.strip()
+    o['_dt'] = pd.to_datetime(o.get('MCD_StartDate', pd.Series('', index=o.index)), dayfirst=True, errors='coerce').dt.date
+
+    sch_dep = pd.to_datetime(o.get('Scheduled Departure Time', pd.Series('', index=o.index)), dayfirst=True, errors='coerce')
+    act_dep = pd.to_datetime(o.get('Actual Departure Time', pd.Series('', index=o.index)), dayfirst=True, errors='coerce')
+    o['_dep_delay_hrs'] = (act_dep - sch_dep).dt.total_seconds() / 3600.0
+
+    out_s = o['_OpsRemarkOutcome'].fillna('Other').astype(str)
+    o['_is_ld'] = out_s.str.contains('Late Dep|No Departure', case=False, regex=True, na=False).astype(int)
+    o['_ll'] = out_s.eq('Late Dep, Late Arr').astype(int)
+    o['_lo'] = out_s.eq('Late Dep, Ontime Arr').astype(int)
+    o['_lit'] = out_s.eq('Late Dep, In-Transit').astype(int)
+    o['_nd'] = out_s.eq('No Departure').astype(int)
+
+    has_lit = bool(o['_lit'].sum() > 0)
+    has_nd = bool(o['_nd'].sum() > 0)
+
+    sla = get_sla_thresholds()
+    chr_d = sla["chronic_days"]
+    esc_pct = sla["late_dep_esc_pct"]
+
+    g_cols = ['_zone', '_ro', '_brn', '_route', '_legwise', '_legs']
+    rows = []
+    for keys, grp in o.groupby(g_cols, dropna=False):
+        ld_cnt = int(grp['_is_ld'].sum())
+        if ld_cnt == 0:
+            continue
+        z_v, ro_v, brn_v, rt_v, lgw_v, lgs_v = keys
+        tot = len(grp)
+        ld_pct = (ld_cnt / tot * 100.0) if tot else 0.0
+        ll_c = int(grp['_ll'].sum())
+        lo_c = int(grp['_lo'].sum())
+        lit_c = int(grp['_lit'].sum())
+        nd_c = int(grp['_nd'].sum())
+
+        ld_grp = grp[grp['_is_ld'] == 1]
+        ld_dates = ld_grp['_dt'].dropna().tolist()
+        rep_days = len(set(ld_dates))
+        streak = _max_consecutive_days(ld_dates)
+
+        valid_delays = ld_grp['_dep_delay_hrs'].dropna()
+        pos_delays = valid_delays[valid_delays > 0]
+        avg_d = float(pos_delays.mean()) if not pos_delays.empty else 0.0
+        max_d = float(pos_delays.max()) if not pos_delays.empty else 0.0
+
+        if rep_days >= chr_d or streak >= chr_d or (ld_cnt >= 5 and ld_pct >= esc_pct):
+            sev_lbl = "🔴 Chronic Repeat"
+            sev_rank = 0
+        elif rep_days >= 2 or ld_cnt >= 2:
+            sev_lbl = "🟡 Watchlist"
+            sev_rank = 1
+        else:
+            sev_lbl = "🟢 Isolated"
+            sev_rank = 2
+
+        leg_num_m = re.search(r'(\d+)', str(lgw_v))
+        leg_num_val = int(leg_num_m.group(1)) if leg_num_m else 999
+        avg_str = format_hrs_safe(avg_d) if avg_d > 0 else "0:00"
+        max_str = format_hrs_safe(max_d) if max_d > 0 else "0:00"
+
+        rem = f"{brn_v} · {lgw_v} ({lgs_v}): {ld_cnt}/{tot} late dep ({ld_pct:.1f}%), {rep_days}d repeat, avg {avg_str}h"
+        rec = {
+            'Zone': z_v,
+            'Origin RO': ro_v,
+            'Origin Branch': brn_v,
+            'Route Path': rt_v,
+            'Legwise': lgw_v,
+            'Legs': lgs_v,
+            'Total Trips': tot,
+            'Late Departures': ld_cnt,
+            'Late Departure %': format_pct_cnt(ld_cnt, tot),
+            'Late Dep, Late Arr': format_pct_cnt(ll_c, tot),
+            'Late Dep, Ontime Arr': format_pct_cnt(lo_c, tot),
+        }
+        if has_lit:
+            rec['Late Dep, In-Transit'] = format_pct_cnt(lit_c, tot)
+        if has_nd:
+            rec['No Departure'] = format_pct_cnt(nd_c, tot)
+        rec.update({
+            'Avg Dep Delay (Hrs)': avg_str,
+            'Max Dep Delay (Hrs)': max_str,
+            'Repeat Days': rep_days,
+            'Max Streak': f"{streak}d",
+            'Severity': sev_lbl,
+            'Action Remark': rem,
+            '_s_sev': sev_rank,
+            '_s_cnt': ld_cnt,
+            '_s_pct': ld_pct,
+            '_s_rep': rep_days,
+            '_s_avg': avg_d,
+            '_s_leg': leg_num_val,
+        })
+        rows.append(rec)
+
+    if not rows:
+        return pd.DataFrame(columns=['Zone', 'Origin RO', 'Origin Branch', 'Route Path', 'Legwise', 'Legs', 'Total Trips', 'Late Departures', 'Late Departure %', 'Severity', 'Action Remark'])
+
+    df_ld = pd.DataFrame(rows).sort_values(
+        by=['_s_sev', '_s_cnt', '_s_pct', '_s_rep', '_s_avg', 'Zone', 'Origin RO', 'Origin Branch', 'Route Path', '_s_leg'],
+        ascending=[True, False, False, False, False, True, True, True, True, True]
+    ).drop(columns=['_s_sev', '_s_cnt', '_s_pct', '_s_rep', '_s_avg', '_s_leg']).reset_index(drop=True)
+
+    # Grand Total row across ALL affected route-legs (and Pan-India reference note)
+    tot_trips_all = int(len(o))
+    tot_ld_all = int(o['_is_ld'].sum())
+    tot_ll_all = int(o['_ll'].sum())
+    tot_lo_all = int(o['_lo'].sum())
+    tot_lit_all = int(o['_lit'].sum())
+    tot_nd_all = int(o['_nd'].sum())
+    all_pos_delays = o.loc[o['_is_ld'] == 1, '_dep_delay_hrs'].dropna()
+    all_pos_delays = all_pos_delays[all_pos_delays > 0]
+    g_avg = format_hrs_safe(float(all_pos_delays.mean())) if not all_pos_delays.empty else "0:00"
+    g_max = format_hrs_safe(float(all_pos_delays.max())) if not all_pos_delays.empty else "0:00"
+
+    gt = {
+        'Zone': 'ALL ZONES',
+        'Origin RO': 'GRAND TOTAL',
+        'Origin Branch': f'{len(df_ld):,} Affected Legs',
+        'Route Path': '-',
+        'Legwise': '-',
+        'Legs': '-',
+        'Total Trips': tot_trips_all,
+        'Late Departures': tot_ld_all,
+        'Late Departure %': format_pct_cnt(tot_ld_all, tot_trips_all),
+        'Late Dep, Late Arr': format_pct_cnt(tot_ll_all, tot_trips_all),
+        'Late Dep, Ontime Arr': format_pct_cnt(tot_lo_all, tot_trips_all),
+    }
+    if has_lit:
+        gt['Late Dep, In-Transit'] = format_pct_cnt(tot_lit_all, tot_trips_all)
+    if has_nd:
+        gt['No Departure'] = format_pct_cnt(tot_nd_all, tot_trips_all)
+    gt.update({
+        'Avg Dep Delay (Hrs)': g_avg,
+        'Max Dep Delay (Hrs)': g_max,
+        'Repeat Days': '-',
+        'Max Streak': '-',
+        'Severity': 'TOTAL',
+        'Action Remark': f"Pan-India: {tot_ld_all:,}/{tot_trips_all:,} late departures ({(tot_ld_all/tot_trips_all*100):.1f}%) across {len(df_ld):,} route-legs" if tot_trips_all else "-"
+    })
+    return pd.concat([df_ld, pd.DataFrame([gt])], ignore_index=True)
+
+
+def generate_vip_executive_report_to_disk(data_dict, output_path=None):
+    """
+    Generate the Decision-First, AI-Ready VIP Executive Master Report.
+    Includes Executive Control Totals & Cross-Check Sheet, Zone/RO/Branch/Vendor-Leg
+    Decision Insights, an embedded AI_Context_Guide sheet, plus all Summary & Raw tabs.
+    """
+    ops_raw = data_dict.get('Legwise_Processed_Data', pd.DataFrame()).copy()
+    ven_raw = data_dict.get('Vendor_Perf_Raw', pd.DataFrame()).copy()
+    if not ven_raw.empty and 'LH Type' in ven_raw.columns:
+        _nz_v = ven_raw['LH Type'].astype(str).isin(['National LH', 'Zonal LH'])
+        if _nz_v.any():
+            ven_raw = ven_raw[_nz_v].copy()
+    pay_raw = data_dict.get('Master_Database', pd.DataFrame()).copy()
+    cpk_raw = data_dict.get('CPK_Raw_Data', pd.DataFrame()).copy()
+
+    pack = build_daily_overall_issues_pack(ops_raw, ven_raw, pay_raw, cpk_raw, group_by_mode="RO-wise")
+
+    # Build 0_Executive_Scorecard (Cross-Check Control Totals + Top Priority Decisions)
+    ops_tot = len(ops_raw)
+    ops_exc = len(pack.get("ops_raw_exc", pd.DataFrame()))
+    ven_tot = len(ven_raw)
+    ven_late = len(pack.get("ven_raw_exc", pd.DataFrame()))
+    pay_tot = len(pay_raw)
+    pay_stuck = len(pack.get("pay_raw_exc", pd.DataFrame()))
+    pay_stuck_amt = float(pd.to_numeric(pack.get("pay_raw_exc", pd.DataFrame()).get("Amount", 0), errors="coerce").fillna(0).sum()) if pay_stuck else 0.0
+    util_df = pack.get("utilization_summary", pd.DataFrame())
+    util_under = int(util_df["Utilization Class"].astype(str).str.contains("Underutilized", na=False).sum()) if not util_df.empty else 0
+    chronic_brn = int(pack.get("branch_repeat", pd.DataFrame()).get("Status", pd.Series(dtype=str)).astype(str).str.contains("Chronic", na=False).sum()) if not pack.get("branch_repeat", pd.DataFrame()).empty else 0
+
+    late_dep_sheet_df = build_vip_late_departures_sheet(ops_raw)
+    ld_total_cnt = int(late_dep_sheet_df.iloc[-1]['Late Departures']) if not late_dep_sheet_df.empty and str(late_dep_sheet_df.iloc[-1].get('Origin RO', '')) == 'GRAND TOTAL' else 0
+
+    scorecard_df = pd.DataFrame([
+        {"Metric / Control Check": "Operations Scheduled Trips (National + Zonal)", "Count / Value": ops_tot, "Exception / Red Flag": ops_exc, "Exception %": f"{(ops_exc/ops_tot*100):.1f}%" if ops_tot else "0.0%", "Cross-Check Sheet": "Operations_Raw"},
+        {"Metric / Control Check": "Late Departures (Dedicated Sorted Audit)", "Count / Value": ops_tot, "Exception / Red Flag": ld_total_cnt, "Exception %": f"{(ld_total_cnt/ops_tot*100):.1f}%" if ops_tot else "0.0%", "Cross-Check Sheet": "Late_Departures"},
+        {"Metric / Control Check": "Chronic Repeat Branches (3+ Repeat Days)", "Count / Value": len(pack.get("branch_repeat", pd.DataFrame())), "Exception / Red Flag": chronic_brn, "Exception %": f"{(chronic_brn/max(len(pack.get('branch_repeat', pd.DataFrame())),1)*100):.1f}%", "Cross-Check Sheet": "3_Branch_Insights"},
+        {"Metric / Control Check": "Vendor Scheduled Trips (National + Zonal)", "Count / Value": ven_tot, "Exception / Red Flag": ven_late, "Exception %": f"{(ven_late/ven_tot*100):.1f}%" if ven_tot else "0.0%", "Cross-Check Sheet": "Vendor_Perf_Raw"},
+        {"Metric / Control Check": "Active Payment Bills (Excl. Cancelled/Failed)", "Count / Value": pay_tot, "Exception / Red Flag": pay_stuck, "Exception %": f"₹{pay_stuck_amt/1e7:.2f} Cr stuck", "Cross-Check Sheet": "Payment_Raw"},
+        {"Metric / Control Check": f"National & Zonal Routes (<{int(get_sla_thresholds()['util_red_pct'])}% Utilization)", "Count / Value": len(util_df), "Exception / Red Flag": util_under, "Exception %": f"{(util_under/len(util_df)*100):.1f}%" if len(util_df) else "0.0%", "Cross-Check Sheet": "CPK_Nat_Zon"},
+    ])
+
+    ai_guide_df = pd.DataFrame([
+        {"Section": "1. AI Role & Output", "Rule / Verification Formula": "Act as Trackon Fleet Operations Decision Analyst. Always give crisp, worst-first insights for Pan-India, Zone, RO, Branch, or Vendor — zero fluff."},
+        {"Section": "2. Cross-Check Rule", "Rule / Verification Formula": "Always verify every count/percentage against 0_Executive_Scorecard and Raw sheets (Operations_Raw, Vendor_Perf_Raw, Payment_Raw, Network_Raw) before stating numbers."},
+        {"Section": "3. Operations SLA", "Rule / Verification Formula": "National + Zonal SCHEDULED primary trips only (Non-Scheduled/Manual excluded). Late Dep = Actual Dep > Scheduled Dep + 15 min waiver."},
+        {"Section": "4. Vendor SLA", "Rule / Verification Formula": "Late Arrival = Actual Driving Hours > Given Driving Hours + 15 min waiver. Always report Vendor + Origin RO + Route + Legwise + Legs + Avg Delay (Hrs)."},
+        {"Section": "5. Repeat Offender Rule", "Rule / Verification Formula": "Chronic Repeat = >=3 distinct late days or >=3d consecutive streak. Watchlist = 2 days. Pure branch accountability is on 3_Branch_Insights; Branch+Route on 4_Branch_Route_Insights."},
+        {"Section": "6. Utilization & CPK", "Rule / Verification Formula": "Red Flag = Utilization < 60% or CPK > Rs 5.00. Review vehicle downsizing or load consolidation."},
+        {"Section": "7. Payment Audit", "Rule / Verification Formula": "Stuck Bills = Draft + Cost Control Pending + Finance Pending + Finance Hold. Cancelled/Declined/Failed are excluded."},
+        {"Section": "8. VBA Compatibility", "Rule / Verification Formula": "Any VBA macro requested for this workbook must be 100% Excel 2013 compatible (use Scripting.Dictionary / arrays, no XLOOKUP/LET/LAMBDA)."},
+    ])
+
+    with pd.ExcelWriter(output_path or FILE_MAP["EXECUTIVE_REPORT"], engine='xlsxwriter') as writer:
+        # Decision-First Executive & AI-Ready Sheets at the front
+        write_styled_sheet_to_excel(writer, scorecard_df, '0_Executive_Scorecard', sheet_type="generic", preserve_order=True)
+        if not late_dep_sheet_df.empty:
+            write_styled_sheet_to_excel(writer, late_dep_sheet_df, 'Late_Departures', sheet_type="late_dep", preserve_order=True)
+        if not pack.get("top_actions", pd.DataFrame()).empty:
+            write_styled_sheet_to_excel(writer, pack["top_actions"], '0B_Top_Priority_Actions', sheet_type="generic", preserve_order=True)
+        if not pack.get("zone_summary", pd.DataFrame()).empty:
+            write_styled_sheet_to_excel(writer, pack["zone_summary"], '1_Zone_Insights', sheet_type="zone_insights", preserve_order=True)
+        if not pack.get("ro_summary", pd.DataFrame()).empty:
+            write_styled_sheet_to_excel(writer, pack["ro_summary"], '2_RO_Insights', sheet_type="generic", preserve_order=True)
+        if not pack.get("branch_repeat", pd.DataFrame()).empty:
+            write_styled_sheet_to_excel(writer, pack["branch_repeat"], '3_Branch_Insights', sheet_type="generic", preserve_order=True)
+        if not pack.get("branch_route_repeat", pd.DataFrame()).empty:
+            write_styled_sheet_to_excel(writer, pack["branch_route_repeat"], '4_Branch_Route_Insights', sheet_type="generic", preserve_order=True)
+        if not pack.get("vendor_leg_repeat", pd.DataFrame()).empty:
+            write_styled_sheet_to_excel(writer, pack["vendor_leg_repeat"], '5_Vendor_Leg_Insights', sheet_type="generic", preserve_order=True)
+        write_styled_sheet_to_excel(writer, ai_guide_df, '6_AI_Context_Guide', sheet_type="generic", preserve_order=True)
+
+        # Standard Module Summary & Raw Sheets (for 100% cross-checking)
+        if 'Legwise_Route_Summary' in data_dict:
+            write_styled_sheet_to_excel(writer, data_dict['Legwise_Route_Summary'], 'Operations_Summary', sheet_type="ops_sum")
+        if 'Legwise_Processed_Data' in data_dict:
+            write_styled_sheet_to_excel(writer, data_dict['Legwise_Processed_Data'], 'Operations_Raw', sheet_type="ops_raw")
+        if 'Vendor_Perf_Summary' in data_dict:
+            write_styled_sheet_to_excel(writer, data_dict['Vendor_Perf_Summary'], 'Vendor_Perf_Summary', sheet_type="ven_sum")
+        if 'Vendor_Perf_Raw' in data_dict:
+            write_styled_sheet_to_excel(writer, data_dict['Vendor_Perf_Raw'], 'Vendor_Perf_Raw', sheet_type="ven_raw")
+
+        if not pay_raw.empty:
+            df_pay = pay_raw.copy()
+            pvt = pd.pivot_table(df_pay, values='Invoice Id', index='RO Name', columns='Department Bucket', aggfunc='count', fill_value=0, margins=True, margins_name='Grand Total')
+            cols_order = ["1. USER / DRAFT PENDING", "2. COST CONTROL PENDING", "3. FINANCE PENDING", "4. PAYMENT PENDING", "5. OTHER PENDING", "Grand Total"]
+            existing_cols = [c for c in cols_order if c in pvt.columns]
+            pvt = pvt.reindex(columns=existing_cols).reset_index()
+            write_styled_sheet_to_excel(writer, pvt, 'Payment_Summary', sheet_type="pay_sum")
+            write_styled_sheet_to_excel(writer, df_pay, 'Payment_Raw', sheet_type="pay_raw")
+
+        if 'CPK_National_Zonal_Master' in data_dict and not data_dict['CPK_National_Zonal_Master'].empty:
+            df_cpk1 = add_total_row_cpk_df(data_dict['CPK_National_Zonal_Master'].sort_values(by='Overall Util %', ascending=True))
+            write_styled_sheet_to_excel(writer, df_cpk1, 'CPK_Nat_Zon', sheet_type="cpk")
+        if 'CPK_Feeder_Regional' in data_dict and not data_dict['CPK_Feeder_Regional'].empty:
+            df_cpk2 = add_total_row_cpk_df(data_dict['CPK_Feeder_Regional'].sort_values(by='Overall Util %', ascending=True))
+            write_styled_sheet_to_excel(writer, df_cpk2, 'CPK_Feed_Reg', sheet_type="cpk")
+        if 'CPK_Coloader' in data_dict and not data_dict['CPK_Coloader'].empty:
+            df_cpk3 = add_total_row_cpk_df(data_dict['CPK_Coloader'].sort_values(by='Overall Util %', ascending=True))
+            write_styled_sheet_to_excel(writer, df_cpk3, 'CPK_Coloader', sheet_type="cpk")
+        if not cpk_raw.empty:
+            write_styled_sheet_to_excel(writer, cpk_raw, 'Network_Raw', sheet_type="cpk_raw")
 # === [MODULE_END: Excel Styling & VIP Export Engine] ===
 
 # ==========================================
